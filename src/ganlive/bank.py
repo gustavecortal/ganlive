@@ -176,7 +176,7 @@ def _compiled(net, nz: int, device, dtype, options: LoadOptions):
 def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
     """A converted StyleGAN2 made ready to play, dials measured rather than remembered."""
     from ganlive.dials import derive as D
-    from ganlive.dials import onnx_dials as A
+    from ganlive.models import calibrate as A
     from ganlive.models import stylegan2 as S2
 
     net, knobs, push, bands = open_stylegan2(path, device, exact=options.exact, dtype=dtype)
@@ -419,8 +419,8 @@ def directions_for(net, nz: int, device, dtype, read=None, into=None,
     first affine and is far too slow to run with the picture stopped. Here rather than in one
     family's `read`, because nothing about a cached proposal is StyleGAN2's business."""
     from ganlive.dials import derive as D
-    from ganlive.dials.onnx_dials import TARGET_LEVELS
     from ganlive.dials.table import DIRECTION_RANGE, DIRECTIONS
+    from ganlive.models.calibrate import TARGET_LEVELS
 
     # A pool, not a shortlist: the eigenvalue order is a poor selector in W-space (see
     # `D.CANDIDATES`), so `rank` is handed several times what the strip can show and picks by

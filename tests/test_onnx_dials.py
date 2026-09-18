@@ -57,7 +57,8 @@ def test_a_graph_that_answers_the_same_latent_differently_is_made_to_stop(tmp_pa
     measured against that would have been measuring the boiling, and the picture looks
     entirely like a working GAN the whole time.
     """
-    from ganlive.dials.onnx_dials import Probe, adopt, deterministic
+    from ganlive.models.calibrate import Probe, deterministic
+    from ganlive.models.onnx_adopt import adopt
 
     torch.manual_seed(0)
     raw = _export(tmp_path, _Noisy(), 16)
@@ -73,8 +74,9 @@ def test_every_derived_dial_moves_the_picture_through_the_real_graph(tmp_path):
     """The inert-knob failure, in the place it would now come from. A dial derived by shape
     is a guess until it is driven, and a guess on the strip is exactly what this project has
     paid for three times."""
-    from ganlive.dials.onnx_dials import Probe, adopt, levels
+    from ganlive.models.calibrate import Probe, levels
     from ganlive.models.onnx import settings_of
+    from ganlive.models.onnx_adopt import adopt
 
     torch.manual_seed(1)
     out = tmp_path / "playable.onnx"
@@ -96,7 +98,8 @@ def test_a_dial_buys_the_same_change_on_any_model_it_is_derived_from(tmp_path):
     """Calibration is the whole argument for deriving rather than shipping a range: the same
     gain does not buy the same effect on another model, and four grain dials shipped with a
     fixed range once felt like four different instruments."""
-    from ganlive.dials.onnx_dials import TARGET_LEVELS, Probe, adopt, levels
+    from ganlive.models.calibrate import TARGET_LEVELS, Probe, levels
+    from ganlive.models.onnx_adopt import adopt
 
     torch.manual_seed(2)
     out = tmp_path / "playable.onnx"
@@ -124,7 +127,7 @@ def test_a_band_is_picture_shaped_and_not_merely_four_dimensional(tmp_path):
     a bare four-dimensional test on the first foreign model tried here and arrived on the
     strip as `gain_1` and `gain_3`, which are not resolutions and are not what those tensors
     are."""
-    from ganlive.dials.onnx_dials import MIN_BAND, adopt
+    from ganlive.models.onnx_adopt import MIN_BAND, adopt
 
     torch.manual_seed(3)
     found = adopt(_export(tmp_path, _Noisy(), 16), tmp_path / "playable.onnx")
@@ -141,7 +144,7 @@ def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
     answer is one fewer dial, not the same dial under the band's name."""
     import onnx
 
-    from ganlive.dials.onnx_dials import _squash, adopt
+    from ganlive.models.onnx_adopt import _squash, adopt
 
     torch.manual_seed(4)
     source = _export(tmp_path, _Noisy(), 16)
@@ -160,8 +163,8 @@ def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
 
 def test_the_strip_reads_an_adopted_graph_without_knowing_the_architecture(tmp_path):
     """The payoff, end to end: a file this code has never seen becomes a control surface."""
-    from ganlive.dials import onnx_dials as A
     from ganlive.dials import table as S
+    from ganlive.models import onnx_adopt as A
     from ganlive.models.onnx import dials_of
 
     torch.manual_seed(5)
@@ -274,7 +277,7 @@ def test_a_graph_runs_on_whatever_this_machine_has(tmp_path):
 
 
 def A_adopt(out, tmp_path):
-    from ganlive.dials.onnx_dials import adopt
+    from ganlive.models.onnx_adopt import adopt
 
     return adopt(_export(tmp_path, _Noisy(), 16), out, measure=False)
 

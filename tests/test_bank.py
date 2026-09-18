@@ -744,7 +744,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_spine(tmp_path):
 
     bare = R.layout_for(None, converted)
     # The calibrated shape: dials with measured travel, as `_prepare_stylegan2` builds it.
-    # `curves` are values at even spacing, one tuple per dial -- `onnx_dials.Dial.curve`.
+    # `curves` are values at even spacing, one tuple per dial -- `calibrate.Dial.curve`.
     swept = S.stylegan2(("w_coarse", "noise_32"), (0.5, 0.0),
                         ((0.3, 1.0, 2.0), (0.0, 1.5, 3.0)), (25.0, 25.0))
 

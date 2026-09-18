@@ -130,7 +130,7 @@ def _name_the_settings(path: Path, names: list[str]) -> None:
     """Write the settings' names into the graph, so the file stands on its own."""
     import onnx
 
-    from ganlive.dials.onnx_dials import name_settings
+    from ganlive.models.onnx_adopt import name_settings
 
     model = onnx.load(str(path), load_external_data=False)
     name_settings(model, names)

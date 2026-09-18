@@ -2,7 +2,7 @@
 
 `table.py` is the generic surface -- the spine every model shares, and the builders that turn
 measurements into a layout. This is one architecture's contribution to it, beside
-`onnx_dials.py`, which is another's. It lived in `table.py` as module state while the other two
+the layout an adopted graph declares. It lived in `table.py` as module state while the other two
 families passed theirs in as arguments, which made "the per-model block" mean, literally,
 whatever FastGAN had.
 """
