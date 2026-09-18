@@ -14,6 +14,7 @@ RATES = (48000, 44100, 96000)
 
 from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input  # noqa: E402
 from ganlive.control.features import FeatureConfig  # noqa: E402
+from ganlive.control.machine import profile  # noqa: E402
 from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
 from ganlive.control.tracks import TRACKS  # noqa: E402
 from ganlive.walk import MusicalClock  # noqa: E402
@@ -118,7 +119,7 @@ def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
         rms_acc[:] += (indata.astype(np.float64) ** 2).mean(axis=0)
         blocks += 1
 
-    listener = _MidiListener() if with_midi else None
+    listener = _MidiListener(profile(pattern)) if with_midi else None
     print(f"device {device}: {info['name']}   {nch} ch @ {rate} Hz, blocksize {blocksize}")
     if listener:
         print(listener.describe())
@@ -192,7 +193,10 @@ def _bars(rms) -> str:
 class _MidiListener:
     """Whether MIDI survives an audio driver holding the interface, and what it carries."""
 
-    def __init__(self) -> None:
+    def __init__(self, machine=None) -> None:
+        from ganlive.control.machine import GENERIC
+
+        self.machine = machine or GENERIC
         self.inputs, _rejected, self.error = open_inputs()
         self.clock = 0
         self.transport: list[str] = []
@@ -239,9 +243,9 @@ class _MidiListener:
             bpm = (self.clock - 1) / 24 / span * 60
             print(f"  implied tempo   : {bpm:.2f} BPM over {span:.1f} s")
         elif self.clock == 0:
-            print("  NO CLOCK. Set MIDI CONFIG > SYNC > CLOCK SEND = ON, and check that")
-            print("  PORT CONFIG > OUTPUT sends to USB. Without it the video runs at its")
-            print("  own internal tempo and will look entirely plausible while doing so.")
+            print(f"  NO CLOCK. On {self.machine.name}, {self.machine.says('clock')}, and")
+            print("  make sure it sends over USB. Without it the picture runs at its own")
+            print("  internal tempo and will look entirely plausible while doing so.")
         print(f"transport events  : {self.transport or 'NONE -- set TRANSPORT SEND = ON'}")
         if self.notes:
             print("note-ons per MIDI channel (channel -> note: count):")
@@ -250,8 +254,8 @@ class _MidiListener:
                 label = TRACKS[ch] if ch < len(TRACKS) else "?"
                 print(f"  ch {ch + 1:2} ({label:2}): {items}")
         else:
-            print("note-ons          : NONE. Per-track identity is what MIDI is for here, so")
-            print("                    check MIDI CONFIG > PORT CONFIG > OUT PORT FUNC.")
+            print("note-ons          : NONE. Per-track identity is what MIDI is for here,")
+            print(f"                    so on {self.machine.name}, {self.machine.says('notes')}.")
         if self.controls:
             print("control changes (turn one knob at a time; these are what --cc takes):")
             for ch in sorted(self.controls):

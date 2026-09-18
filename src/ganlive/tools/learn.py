@@ -13,6 +13,7 @@ os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 from ganlive.control.audio import NoAudioDevice, pick_input  # noqa: E402
 from ganlive.control.features import FeatureExtractor  # noqa: E402
+from ganlive.control.machine import profile  # noqa: E402
 from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
 from ganlive.control.tracks import TRACKS  # noqa: E402
 from ganlive.walk import MusicalClock  # noqa: E402
@@ -40,7 +41,7 @@ def open_midi(match: str = ""):
     return opened[0][1]
 
 
-def report(seen, votes, levels, struck, silent, order):
+def report(seen, votes, levels, struck, silent, order, machine):
     """Everything measured, turned into a map plus an honest account of what is shaky."""
     by_note = sorted(seen)
     named = {note: (order[note] if note < len(order) else f"note{note}") for note in by_note}
@@ -179,6 +180,7 @@ def main(argv=None) -> int:
         raise SystemExit(str(exc)) from exc
 
     pygame.midi.init()
+    machine = profile(args.port)
     midi_in = open_midi(args.port)
     clock = MusicalClock(120.0)
 
@@ -261,17 +263,16 @@ def main(argv=None) -> int:
         print(f"No note-ons arrived, so nothing can be mapped. The wire carried: "
               f"{dict(sorted(wire.items())) or 'nothing at all'}")
         if wire:
-            print("  The port is FINE -- those messages came down it. The machine is not "
-                  "sending what you play. On the Rytm: SETTINGS > MIDI CONFIG > PORT CONFIG, "
-                  "set TRIG KEY DEST to INT+EXT so the pads transmit, and ENCODER DEST to "
-                  "INT+EXT so the knobs do. For the SEQUENCER to send notes as well, give "
-                  "each track a channel under MIDI CONFIG > CHANNELS.")
+            print(f"  The port is FINE -- those messages came down it. The machine is not "
+                  f"sending what you play: on {machine.name}, {machine.says('notes')}. For "
+                  f"its sequencer to send notes too, each track usually needs its own MIDI "
+                  f"channel.")
         else:
             print("  Nothing at all arrived, not even clock, so this is the port or the "
                   "cable rather than a setting.")
         return 1
 
-    mapping = report(seen, votes, levels, struck, silent, order)
+    mapping = report(seen, votes, levels, struck, silent, order, machine)
     report_recall(strikes, onsets, mapping, order)
     return 0
 

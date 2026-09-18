@@ -19,6 +19,7 @@ from ganlive.control.features import (  # noqa: E402
     FeatureExtractor,
     NoteFeatures,
 )
+from ganlive.control.machine import profile  # noqa: E402
 from ganlive.control.midi import (  # noqa: E402
     ClockReader,
     EncoderMap,
@@ -275,21 +276,25 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
-def silence_words(use_notes: bool, use_audio: bool) -> tuple[str, str]:
-    """What to call a silence, and what to check, given where the hits were meant to come from."""
-    return (
-        ("both", "Pads reach it as notes and sequencer trigs as sound. No notes means the "
-                 "Overbridge Control Panel is closed, which leaves the machine's engine idle "
-                 "and its pads silent on MIDI; no sound means the channel map or the send "
-                 "levels -- `ganlive doctor --meter` reports those.")
-        if use_notes and use_audio else
-        ("notes", "No note-on named a track: check --notes and --midi-channels against the "
-                  "unresolved-notes line below. On a Rytm, pads send notes only while the "
-                  "Overbridge Control Panel is open and the SEQUENCER sends none unless TRK "
-                  "SEND MIDI is on; --triggers both adds its trigs back through the sound.")
-        if use_notes else
-        ("audio", "Check the channel map and the send levels; "
-                  "`ganlive doctor --meter` reports both."))
+def silence_words(use_notes: bool, use_audio: bool, machine=None) -> tuple[str, str]:
+    """What to call a silence, and what to check, given where the hits were meant to come from.
+
+    `machine` supplies the words for "what to switch on", which is the one part of this that
+    really is per-controller -- see `control.machine`."""
+    from ganlive.control.machine import GENERIC
+
+    m = machine or GENERIC
+    if use_notes and use_audio:
+        return ("both", f"No notes means the pads are not transmitting -- on {m.name}, "
+                        f"{m.says('notes')}. No sound means the channel map or the send "
+                        f"levels; `ganlive doctor --meter` reports those.")
+    if use_notes:
+        return ("notes", f"No note-on named a track: check --notes and --midi-channels "
+                         f"against the unresolved-notes line below, and on {m.name}, "
+                         f"{m.says('notes')}. `--triggers both` adds the sound back as a "
+                         f"second source.")
+    return ("audio", "Check the channel map and the send levels; "
+                     "`ganlive doctor --meter` reports both.")
 
 def report_unheard(extractor, kind: str, fix: str, notes, note_channels, grace_s: float) -> None:
     """Once, a few seconds in: is anything actually arriving, and if not, what is wrong."""
@@ -347,7 +352,7 @@ def report_frames(frames, wall, ms, total, late, by_model, dropped, source, args
               f"push {stat_ms(source.push_ms)['median']:.2f} ms median against "
               f"{args.blocksize / args.samplerate * 1000:.2f}")
 
-def report_clock(clock, reader, args, pressure, encoders, runner) -> None:
+def report_clock(clock, reader, args, pressure, encoders, runner, machine) -> None:
     """Where the beat came from, what was wired to what, and what each dial was worth."""
     src = "MIDI" if clock.source == "midi" else f"internal, {args.bpm:g} BPM"
     print(f"  beat        {src}, {clock.beats:.2f} beats, {clock.bpm:.1f} BPM")
@@ -362,11 +367,12 @@ def report_clock(clock, reader, args, pressure, encoders, runner) -> None:
             print(f"  {trouble}")
         counts = reader.counts or {}
         if not counts.get("clock"):
-            print("  NO MIDI CLOCK ARRIVED. The picture ran at its own tempo. Check "
-                  "MIDI CONFIG > SYNC > CLOCK SEND = ON.")
+            print(f"  NO MIDI CLOCK ARRIVED. The picture ran at its own tempo. On "
+                  f"{machine.name}, {machine.says('clock')}.")
         elif not counts.get("start"):
-            print("  clock but no transport: the tempo was right and the bar position was "
-                  "whatever it happened to be. Check TRANSPORT SEND = ON.")
+            print(f"  clock but no transport: the tempo was right and the bar position was "
+                  f"whatever it happened to be. On {machine.name}, "
+                  f"{machine.says('transport')}.")
         else:
             print(f"  midi        {counts}")
 
@@ -434,6 +440,9 @@ def main(argv=None) -> int:
               "machine is already making the sound.")
         return 1
     tracks, map_note = resolve_map(args.map, args.layout)
+    # What to tell the user to go and switch on, in their own machine's words. Matched on
+    # what they already typed rather than on a flag of its own; see `control.machine`.
+    machine = profile(args.midi_port, args.audio_name or "")
     # Before anything opens the card: the affinity is for this process's own submission thread, and the
     # compile that follows is the first thing to use it.
     if args.cpu == "fast":
@@ -538,12 +547,12 @@ def main(argv=None) -> int:
     clock = MusicalClock(args.bpm)
     reader = encoders = pressure = None
     if args.pressure:
-        pressure = PressureMap(parse_pressure(args.pressure, notes))
+        pressure = PressureMap(parse_pressure(args.pressure, notes), machine=machine)
         print(f"pressure: {len(pressure.controls)} pad(s) wired -> "
               f"{', '.join(sorted(set(pressure.controls.values())))}", flush=True)
     if args.midi:
         controls, cc_note = resolve_controls(args.cc)
-        encoders = EncoderMap(controls, remember=CC_MAP)
+        encoders = EncoderMap(controls, remember=CC_MAP, machine=machine)
         print(cc_note, flush=True)
     positions = Positions(POSITIONS)
     if positions.trouble:
@@ -729,7 +738,7 @@ def main(argv=None) -> int:
           flush=True)
 
     HIT_GRACE_S = 6.0
-    kind, fix = silence_words(use_notes, use_audio)
+    kind, fix = silence_words(use_notes, use_audio, machine)
     hits_checked = False
     t_start = time.perf_counter()
     # **Seconds, not frames-that-would-have-fitted.** `total` is what `--seconds` buys at the
@@ -846,7 +855,7 @@ def main(argv=None) -> int:
         return 1
     report_frames(frames, wall, ms, total, late, by_model, dropped, source,
                   args, period)
-    report_clock(clock, reader, args, pressure, encoders, runner)
+    report_clock(clock, reader, args, pressure, encoders, runner, machine)
     if reactive:
         report_drums(extractor, tracks, kind, fix, hears, heard0, wall)
     peak = dev.peak_memory_gb()

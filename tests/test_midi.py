@@ -433,3 +433,37 @@ def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp
 
     assert knobs.apply(runner, 1, 17, 8191, top=16383) == "se_256"
     assert runner.hands["se_256"] == pytest.approx(0.5, abs=1e-3), "14-bit scales by its own top"
+
+
+def test_a_machine_nobody_named_gets_advice_about_itself():
+    """Four tools used to print one drum machine's menu paths at whoever ran them.
+
+    Telling a Launchkey owner to set `MIDI CONFIG > PORT CONFIG > ENCODER DEST` is worse
+    than saying nothing: it names a menu their hardware does not have."""
+    from ganlive.control.machine import GENERIC, RYTM, profile
+    from ganlive.control.midi import EncoderMap
+
+    assert profile("") is GENERIC and profile("launchkey") is GENERIC
+    assert profile("rytm") is RYTM, "matched on the words the user already typed"
+    assert profile("Elektron Analog Rytm MKII") is RYTM, "anywhere in the port name"
+    assert profile("", "Rytm Overbridge") is RYTM, "an audio device name counts too"
+
+    said = EncoderMap({(0, 16): "noise"}, machine=GENERIC).SILENCE
+    assert "ENCODER DEST" not in said and "MIDI CONFIG" not in said
+    assert "knob/CC output setting" in said, said
+
+    said = EncoderMap({(0, 16): "noise"}, machine=RYTM).SILENCE
+    assert "ENCODER DEST" in said, "the machine it was built against keeps its exact words"
+
+
+def test_every_silence_a_tool_reports_is_in_the_machines_own_words():
+    """The generic profile must never leak a menu path from the one known machine."""
+    from ganlive.control.machine import GENERIC, KNOWN
+    from ganlive.tools.play import silence_words
+
+    menus = [w for m in KNOWN for w in (m.clock, m.transport, m.notes, m.encoders)]
+    for notes in (True, False):
+        for audio in (True, False):
+            _kind, fix = silence_words(notes, audio, GENERIC)
+            for menu in menus:
+                assert menu not in fix, f"a named machine's words reached everyone: {fix}"
