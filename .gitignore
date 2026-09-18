@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# models and takes: never in the repository
+runs/
+*.pt
+*.pth
+*.pkl
+*.onnx
+*.safetensors
+*.mp4
+*.wav
+
+.env
+.DS_Store
+Thumbs.db
