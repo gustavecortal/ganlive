@@ -198,15 +198,20 @@ class EncoderMap:
 
     SOURCE = "encoder"
     PRIORITY = 0
-    FLAG, THING, SETTING = "--cc", "knob", "ENCODER DEST"
+    FLAG, THING = "--cc", "knob"
+    #: Which of `Machine`'s settings switches this kind of control on.
+    SETTING = "encoders"
 
     @property
     def SILENCE(self) -> str:                                               # noqa: N802
         return (f"{self.FLAG} wired {len(self.controls)} {self.THING}(s) and not one reported. "
-                f"{self.SETTING} in MIDI CONFIG > PORT CONFIG must be INT+EXT or EXT.")
+                f"On {self.machine.name}, {self.machine.says(self.SETTING)}.")
 
     def __init__(self, controls: dict[tuple[int, int], str], source: str = "",
-                 remember=None) -> None:
+                 remember=None, machine=None) -> None:
+        from ganlive.control.machine import GENERIC
+
+        self.machine = machine or GENERIC
         self.controls = dict(controls)
         self.source = source or self.SOURCE
         self.held: dict[str, float] = {}
@@ -329,7 +334,7 @@ class PressureMap(EncoderMap):
 
     SOURCE = "pressure"
     PRIORITY = 5
-    FLAG, THING, SETTING = "--pressure", "pad", "PRESSURE DST"
+    FLAG, THING, SETTING = "--pressure", "pad", "notes"
 
     def apply(self, runner, channel: int, number: int, value: int,
               top: int = 127) -> str | None:
