@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
-import subprocess
 import sys
 from typing import Literal
 
@@ -89,45 +89,51 @@ def peak_memory_gb() -> float:
 _HIGH_PRIORITY_CLASS = 0x00000080
 
 
+def _raise_priority() -> str | None:
+    """Put this process above the desktop's other work, in whatever the platform calls it."""
+    if sys.platform == "win32":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.GetCurrentProcess.argtypes = []
+        k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        k32.SetPriorityClass.restype = ctypes.c_int
+        if k32.SetPriorityClass(k32.GetCurrentProcess(), _HIGH_PRIORITY_CLASS):
+            return "HIGH_PRIORITY_CLASS"
+        raise OSError(f"SetPriorityClass failed (GetLastError={ctypes.get_last_error()})")
+    # POSIX: a *lower* nice number is higher priority, and going below 0 needs privileges we
+    # will not have. -5 succeeds under `sudo` or a raised RLIMIT_NICE and is skipped otherwise.
+    os.nice(-5)
+    return f"nice {os.nice(0)}"
+
+
 def prioritise_gpu_feeder(pin_p_cores: bool = True, verbose: bool = True,
                           raise_priority: bool = True) -> dict:
     """Keep this process's GPU-submission thread on a performance core, at high priority."""
-    import ctypes
-    import os
-    import sys
-
     result: dict[str, object] = {"platform": sys.platform, "priority": None,
                                  "affinity_mask": None, "note": None}
-    if sys.platform != "win32":
-        result["note"] = "not Windows; nothing to do"
-        return result
 
     if raise_priority:
         try:
-            k32 = ctypes.windll.kernel32
-            k32.GetCurrentProcess.restype = ctypes.c_void_p
-            k32.GetCurrentProcess.argtypes = []
-            k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-            k32.SetPriorityClass.restype = ctypes.c_int
-            if k32.SetPriorityClass(k32.GetCurrentProcess(), _HIGH_PRIORITY_CLASS):
-                result["priority"] = "HIGH_PRIORITY_CLASS"
-            else:
-                err = ctypes.get_last_error() if hasattr(ctypes, "get_last_error") else 0
-                result["note"] = f"SetPriorityClass failed (GetLastError={err})"
-        except Exception as exc:  # noqa: BLE001 - pragma: no cover, tuning is best-effort
+            result["priority"] = _raise_priority()
+        except Exception as exc:  # noqa: BLE001 - tuning is best-effort everywhere
             result["note"] = f"priority unchanged: {exc}"
 
     if pin_p_cores:
         try:
-            import psutil  # optional: only needed to count *physical* cores
+            import psutil
 
-            # P-cores without asking Windows for a core's kind: with `p` hyperthreaded performance cores and
-            # `e` efficiency cores, `logical = 2p + e` and `physical = p + e`, so `p = logical - physical`,
-            # and Windows enumerates the P-core threads first.
+            # P-cores without asking the OS for a core's kind: with `p` hyperthreaded performance cores
+            # and `e` efficiency cores, `logical = 2p + e` and `physical = p + e`, so `p = logical -
+            # physical`, and both Windows and Linux enumerate the P-core threads first.
             logical, physical = os.cpu_count() or 0, psutil.cpu_count(logical=False) or 0
             p_cores = (logical - physical) if logical > physical else 0
             fast = list(range(2 * p_cores))
-            if 0 < len(fast) < logical:
+            if not hasattr(psutil.Process(), "cpu_affinity"):
+                # macOS has no affinity API at all, hybrid silicon or not.
+                result["note"] = f"no affinity control on {sys.platform}"
+            elif 0 < len(fast) < logical:
                 psutil.Process().cpu_affinity(fast)
                 result["affinity_mask"] = hex((1 << (2 * p_cores)) - 1)
                 result["cores"] = fast
@@ -147,20 +153,19 @@ def prioritise_gpu_feeder(pin_p_cores: bool = True, verbose: bool = True,
 
 
 def other_gpu_pythons() -> list[int]:
-    """PIDs of `python.exe` processes that are not this one or one of its ancestors."""
-    if sys.platform != "win32":
-        return []
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-         "ForEach-Object { \"$($_.ProcessId):$($_.ParentProcessId)\" }"],
-        capture_output=True, text=True).stdout.strip()
-    parents: dict[int, int] = {}
-    for line in out.splitlines():
-        pid, _, ppid = line.strip().partition(":")
-        if pid.isdigit() and ppid.isdigit():
-            parents[int(pid)] = int(ppid)
+    """PIDs of python processes that are not this one or one of its ancestors.
 
+    Another user's processes are invisible here, so this is "none found", not "none running"
+    -- a courtesy, not a lock."""
+    import psutil
+
+    parents = {}
+    for p in psutil.process_iter(["name", "ppid"]):
+        # A process can exit between the listing and the read, and another user's is not ours
+        # to see. Either way it is not a process we would ask about.
+        with contextlib.suppress(psutil.Error):
+            if (p.info["name"] or "").lower().startswith("python"):
+                parents[p.pid] = p.info["ppid"]
     mine, seen = os.getpid(), set()
     while mine and mine not in seen:
         seen.add(mine)

@@ -1,13 +1,24 @@
 """Finding the machine's audio input. One answer to one question."""
 from __future__ import annotations
 
+import sys
+
+#: The lowest-latency host API each platform offers, and the one a multi-channel interface
+#: appears on. PortAudio spells them exactly like this.
+HOSTAPI = {"win32": "ASIO", "darwin": "Core Audio"}.get(sys.platform, "ALSA")
+
+#: `hostapi=DEFAULT` means `HOSTAPI`; `hostapi=None` means any. Distinguishable, which a
+#: plain `None` default is not.
+DEFAULT = "<this platform's>"
+
 
 class NoAudioDevice(RuntimeError):
     """No usable input. Carries the reason, so every caller reports the same one."""
 
 
-def named_inputs(sd, pattern: str, hostapi: str | None = "ASIO") -> list[int]:
+def named_inputs(sd, pattern: str, hostapi: str | None = DEFAULT) -> list[int]:
     """Every input whose name contains `pattern`, on `hostapi` or on any, in device order."""
+    hostapi = HOSTAPI if hostapi == DEFAULT else hostapi
     want = pattern.lower()
     return [i for i, d in enumerate(sd.query_devices())
             if d["max_input_channels"] > 0 and want in d["name"].lower()
@@ -33,13 +44,14 @@ def starts(sd, device: int, channels: int, samplerate: int = 48000) -> str | Non
 
 def pick_input(sd, device: int | None = None, pattern: str = "rytm",
                channels: int | None = None, samplerate: int = 48000,
-               hostapi: str | None = "ASIO") -> tuple[int, dict, int]:
+               hostapi: str | None = DEFAULT) -> tuple[int, dict, int]:
     """`(device index, its info, channel count)` for the input to open.
 
     An explicit `device` is taken as it is, on whatever host API it lives -- a mixer on
     CoreAudio, a loopback on WASAPI -- as long as it starts. Without one, the input is found
-    by name on `hostapi`, or on any when that is None. The defaults find a Rytm on ASIO, the
-    only host API Overbridge exposes its stems through."""
+    by name on `hostapi`: `DEFAULT` is this platform's multi-channel API (`HOSTAPI`), `None`
+    is any of them."""
+    hostapi = HOSTAPI if hostapi == DEFAULT else hostapi
     if device is not None:
         info = sd.query_devices(device)
         nch = channels or info["max_input_channels"]
@@ -50,10 +62,12 @@ def pick_input(sd, device: int | None = None, pattern: str = "rytm",
             raise NoAudioDevice(f"device {device} ({info['name']}) will not start: {why}")
         return device, info, nch
     if hostapi is not None and hostapi not in [ha["name"] for ha in sd.query_hostapis()]:
-        raise NoAudioDevice(f"no {hostapi} host API, so no {pattern} can be found by name -- "
-                            f"on Windows SD_ENABLE_ASIO must be set before sounddevice is "
-                            f"imported; elsewhere, --audio-device with the input to read, or "
-                            f"--audio-name with a name to look for on any host API.")
+        raise NoAudioDevice(
+            f"no {hostapi} host API, so no {pattern} can be found by name."
+            + (" sounddevice ships ASIO behind SD_ENABLE_ASIO, which must be set before it is"
+               " imported." if hostapi == "ASIO" else "")
+            + " Pass --audio-device with the input to read, or --audio-name with a name to"
+              " look for on any host API.")
 
     found = named_inputs(sd, pattern, hostapi)
     if not found:
@@ -71,8 +85,8 @@ def pick_input(sd, device: int | None = None, pattern: str = "rytm",
             return candidate, info, nch
         tried.append(f"  {candidate} {info['name']}: {why}")
     raise NoAudioDevice(
-        f"{len(found)} device(s) are named {pattern} and none of them will start. The "
-        f"Overbridge installer registers a node per product, so these are mostly machines you "
-        f"do not own -- but the real one is failing too. ASIO gives the device to ONE program "
-        f"at a time: close the Overbridge Control Panel window and any DAW. Tried:\n"
-        + "\n".join(tried))
+        f"{len(found)} device(s) are named {pattern} and none of them will start. A driver "
+        f"may register a node per product it knows, so some of these are machines you do not "
+        f"own -- but the real one is failing too, and an exclusive API (ASIO, or WASAPI in "
+        f"exclusive mode) gives the device to ONE program at a time: close any DAW or control "
+        f"panel holding it. Tried:\n" + "\n".join(tried))
