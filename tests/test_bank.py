@@ -10,16 +10,18 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.dials.table import (
+from ganlive.dials.fastgan_dials import (
     DIALS,
+    NOISE_BANDS,
+    SPANS,
+    noise_for,
+)
+from ganlive.dials.table import (
     GRID_STEPS,
     LATENT,
     MASTER,
-    NOISE_BANDS,
-    SPANS,
     SPEED_BEATS,
     SPREAD_TABLE,
-    noise_for,
     spread_for,
 )
 from ganlive.frame import FrameStage
@@ -672,7 +674,7 @@ def test_the_worst_case_setting_turns_on_every_dial_that_costs_anything():
     nobody has measured -- which is what happened once when a stage dial was added and left out of the
     hand-written list."""
 
-    from ganlive.dials.table import DIALS, SPANS
+    from ganlive.dials.fastgan_dials import DIALS, SPANS
     from ganlive.tools import latency
 
     worst = latency.worst_case()

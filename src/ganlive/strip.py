@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 
-from ganlive.dials.table import GROUPS, clamp01, direction_index, readout
+from ganlive.dials.table import clamp01, direction_index, readout
 from ganlive.presets import AMOUNT_MAX
 from ganlive.walk import position
 
@@ -37,8 +37,6 @@ def floor_height(groups) -> int:
 def _dial_count(groups) -> int:
     return sum(len(names) for _title, names in groups)
 
-
-MIN_H = floor_height(GROUPS)
 
 WHEEL_STEP = 0.02
 

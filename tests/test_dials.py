@@ -9,18 +9,21 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.dials.table import (
+from ganlive.dials.fastgan_dials import (
     DIALS,
-    LATENT,
-    MASTER,
     MODEL,
-    MOTION,
     NOISE_BANDS,
     NOISE_FALLBACK_GAIN,
     NOISE_RAMP,
+    fastgan,
+    noise_for,
+)
+from ganlive.dials.table import (
+    LATENT,
+    MASTER,
+    MOTION,
     Surface,
     clamp01,
-    noise_for,
 )
 from ganlive.presets import Preset
 from ganlive.walk import (
@@ -74,7 +77,7 @@ def test_the_documented_spread_table_matches_what_the_walk_does():
 def test_nothing_can_be_driven_off_its_scale():
     """Clamping at the dial is what replaced twenty-two chances to write a value the network
     has never seen. A shove far past the end has to stop at the end."""
-    surface = Surface()
+    surface = Surface(layout=fastgan())
     surface.add("noise", 40.0)
     surface.add("se_256", -12.0)
     assert surface["noise"] == 1.0
@@ -101,9 +104,10 @@ def test_a_dial_reads_out_in_its_own_units():
     assert readout("hold", 0.8) == "80% still"
     assert "breathing" in readout("spread", 0.05)
     assert "new scene" in readout("spread", 1.0)
-    assert readout("se_256", 0.5) == "as trained"
-    assert readout("se_256", 1.0) == "up 100%"
-    assert readout("se_256", 0.25) == "down 50%"
+    gates = fastgan()
+    assert readout("se_256", 0.5, gates) == "as trained"
+    assert readout("se_256", 1.0, gates) == "up 100%"
+    assert readout("se_256", 0.25, gates) == "down 50%"
     assert readout("late", 0.5) == "spread evenly"
     assert readout("late", 0.9).startswith("arrives")
     assert readout("late", 0.1).startswith("leaves")
@@ -127,7 +131,7 @@ def test_the_readout_agrees_with_what_the_dial_actually_writes():
 def test_the_order_between_the_four_kinds_of_writer_is_stated_on_the_surface():
     """Resting value, then a hand (which holds), then anything that `set`s (which a hand beats), then anything
     that `add`s (which lands on top)."""
-    surface = Surface()
+    surface = Surface(layout=fastgan())
     surface.set_held({"noise": 0.4})
     surface.set("noise", 0.9)
     assert surface["noise"] == pytest.approx(0.4), "a set must not move a held dial"
@@ -140,7 +144,7 @@ def test_the_order_between_the_four_kinds_of_writer_is_stated_on_the_surface():
     surface.set("noise", 0.9)
     assert surface["noise"] == pytest.approx(0.9)
 
-    surface = Surface()
+    surface = Surface(layout=fastgan())
     assert surface["noise"] == pytest.approx(DIALS["noise"][0])
     surface.set("noise", 0.9)
     assert surface["noise"] == pytest.approx(0.9)
@@ -163,8 +167,9 @@ def test_the_top_of_the_hold_dial_says_what_the_walk_will_actually_do():
 def test_every_dial_is_accounted_for_on_a_fully_featured_model():
     """**The same defect wearing the other face.**"""
     from ganlive.bank import live_dials
+    from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
     from ganlive.dials.steer import Knobs
-    from ganlive.dials.table import DIRECTIONS, SETTINGS_WRITTEN
+    from ganlive.dials.table import DIRECTIONS
 
     full = Knobs(sorted(SETTINGS_WRITTEN), "cpu", torch.float32)
     live = live_dials(full, directions=range(DIRECTIONS))    # `len()` is all it asks of them
@@ -212,8 +217,9 @@ def test_an_onnx_model_offers_no_settings_it_cannot_write(tmp_path):
     this project keeps paying for. An empty `Knobs` accepts the writes and drops them, and
     `live_dials` reads the same empty index to stop them being drawn."""
     from ganlive.bank import live_dials
+    from ganlive.dials.fastgan_dials import MODEL
     from ganlive.dials.steer import Knobs
-    from ganlive.dials.table import MODEL, MOTION, Surface
+    from ganlive.dials.table import MOTION, Surface
 
     knobs = Knobs([], "cpu", torch.float32)
     live = live_dials(knobs, directions=None)
@@ -222,7 +228,7 @@ def test_an_onnx_model_offers_no_settings_it_cannot_write(tmp_path):
     assert set(MOTION) <= live, "and all of these, on every model"
     assert not any(name.startswith("dir") for name in live), "no basis, no direction dials"
 
-    Surface().apply(knobs, WalkConfig())            # every write accepted and dropped
+    Surface(layout=fastgan()).apply(knobs, WalkConfig())            # every write accepted and dropped
     knobs.commit()
 
 
@@ -235,7 +241,7 @@ def test_a_direction_dial_moves_the_latent_and_by_exactly_the_amount_asked():
     rows = np.eye(4, 16, dtype=np.float32)
     cfg = WalkConfig(directions=rows)
     walk = SlerpWalk(16, "cpu", cfg)
-    surface = Surface()
+    surface = Surface(layout=fastgan())
 
     surface.apply(FakeKnobs(), cfg)
     at_rest = walk.latent(0.5).clone()
@@ -262,7 +268,7 @@ def test_a_w_push_goes_to_the_seam_and_leaves_the_latent_alone():
     seam = torch.zeros(2, 4)
     cfg = WalkConfig(directions=rows, push_into=seam)
     walk = SlerpWalk(16, "cpu", cfg)
-    surface = Surface()
+    surface = Surface(layout=fastgan())
 
     surface.apply(FakeKnobs(), cfg)
     at_rest = walk.latent(0.5).clone()
@@ -297,14 +303,18 @@ def test_a_direction_reads_out_as_a_push_rather_than_as_a_trained_value():
 
 def test_a_two_sided_dial_says_it_is_at_rest_in_its_own_words():
     """Two defects, both found by rendering the strip and looking at it rather than by code."""
-    from ganlive.dials.table import DIALS, POLES, readout
+    from ganlive.dials.fastgan_dials import DIALS, POLES
+    from ganlive.dials.table import POLES as SPINE_POLES
+    from ganlive.dials.table import readout
 
     expected = {"se_64": "as trained", "se_128": "as trained", "se_512": "as trained",
                 "reaction": "as written", "noise": "off"}
+    gates = fastgan()
     for name, word in expected.items():
-        assert readout(name, DIALS[name][0]) == word, name
-    assert set(expected) <= set(POLES), "a dial with poles needs a word for its rest"
-    assert all(len(p) == 3 for p in POLES.values()), POLES
+        assert readout(name, DIALS[name][0], gates) == word, name
+    poles = {**SPINE_POLES, **POLES}
+    assert set(expected) <= set(poles), "a dial with poles needs a word for its rest"
+    assert all(len(p) == 3 for p in poles.values()), poles
 
 
 def test_every_walk_config_field_is_either_written_each_frame_or_in_the_cache_key():
@@ -338,7 +348,7 @@ def test_every_walk_config_field_is_either_written_each_frame_or_in_the_cache_ke
 def test_the_grit_ladder_the_tests_read_is_the_one_the_frame_loop_runs():
     """`apply` inlines the ladder for speed and `noise_for` states it for the tests, so the six noise
     assertions in this file read a function the render loop never calls."""
-    from ganlive.dials.table import NOISE_BANDS, noise_for
+    from ganlive.dials.fastgan_dials import NOISE_BANDS, noise_for
 
     for position in (0.0, 0.1, 0.25, 0.5, 0.72, 0.9, 1.0):
         written, _cfg = _applied(noise=position)
@@ -376,8 +386,8 @@ def test_only_the_settings_something_can_write_are_installed():
     ten of those wrapped a rung in a module that multiplies its whole feature map by a live
     tensor holding a constant 1.0, on every frame. `verify` then reported that all thirteen
     moved the picture, which is a pass that says nothing about whether the instrument works."""
+    from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
     from ganlive.dials.steer import install
-    from ganlive.dials.table import SETTINGS_WRITTEN
 
     net = _stub_net()
     before = net.to_big
@@ -445,7 +455,7 @@ def test_the_calibration_finds_the_gain_that_buys_the_levels_asked_for():
     import torch
 
     from ganlive.dials import steer as K
-    from ganlive.dials.table import NOISE_BANDS
+    from ganlive.dials.fastgan_dials import NOISE_BANDS
 
     class StubKnobs:
         """Just enough of `Knobs`: a name index and a value per setting."""
@@ -532,7 +542,10 @@ def test_use_model_relayouts_at_startup_not_only_on_a_switch():
 
     foreign = S.adopted(("gain_128",), (0.5,), ((0.0, 0.1), (1.0, 2.0)), (30.0,))
     runner = PresetRunner(Preset(name="t", blurb=""), {}, 60.0)
-    assert "se_256" in runner.surface.layout, "the default surface is ours"
+    # The spine, not this project's own table: a runner with no model yet has the dials
+    # every model has, and `adopt` brings the loaded one's.
+    assert "se_256" not in runner.surface.layout
+    assert "reaction" in runner.surface.layout and "dir1" in runner.surface.layout
 
     runner.use_model(_Model(layout=foreign, dials_live=frozenset({"gain_128"})))
 
@@ -684,7 +697,7 @@ def test_the_gate_measures_every_writing_dial_through_the_path_a_hand_takes():
 
     from ganlive import bank as R
     from ganlive.dials import steer as K
-    from ganlive.dials.table import SETTINGS_WRITTEN, fastgan
+    from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN, fastgan
 
     knobs = K.Knobs(sorted(SETTINGS_WRITTEN), "cpu", torch.float32)
 
@@ -709,7 +722,8 @@ def test_the_gate_measures_every_writing_dial_through_the_path_a_hand_takes():
 def test_a_measured_dial_says_so_under_the_hand_whatever_family_it_is():
     from dataclasses import replace
 
-    from ganlive.dials.table import Layout, fastgan
+    from ganlive.dials.fastgan_dials import fastgan
+    from ganlive.dials.table import Layout
 
     layout = Layout(tuple(replace(k, measured=12.4) if k.name == "se_256" else k
                           for k in fastgan().knobs))

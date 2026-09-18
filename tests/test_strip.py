@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 import torch
 
+from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials import table as _surface  # noqa: E402
-from ganlive.dials.table import (
-    DIALS,
-)
+from ganlive.dials.fastgan_dials import DIALS, fastgan
+from ganlive.strip import floor_height
 from ganlive.walk import (
     SlerpWalk,
     WalkConfig,
@@ -24,6 +24,13 @@ from tests.support import (
     _panel,
     _StubModel,
 )
+
+#: The most crowded surface here -- this project's own FastGAN -- as the geometry these
+#: layout tests measure against. It was `strip.GROUPS`, a module constant, while the dial
+#: table was one architecture's; the strip now asks the loaded model's layout instead.
+GROUPS = fastgan().groups
+MIN_H = floor_height(GROUPS)
+
 
 
 def _travelled(walk, beats):
@@ -42,16 +49,17 @@ def test_every_dial_gets_a_row_and_no_row_gets_two():
     """The strip is built from `surface`, never from a second list of names. A dial added
     there has to appear here without anyone remembering to add it -- the alternative is a
     control that exists, does something, and cannot be reached."""
-    from ganlive.strip import GROUPS, rows
+    from ganlive.dials.fastgan_dials import fastgan as _fg
+    from ganlive.strip import rows
 
-    named = [name for _title, names in GROUPS for name in names]
+    named = [name for _title, names in _fg().groups for name in names]
     assert [label for label, _y, _h in rows(900, GROUPS)] == named
 
 
 def test_the_rows_stay_clickable_on_a_short_window_and_stop_sprawling_on_a_tall_one():
     """A row too short to hit is a control that cannot be turned, and one that grows without
     limit is twenty-one sliders spread down a 1440-pixel screen."""
-    from ganlive.strip import GROUPS
+    pass
     from ganlive.strip import rows as dial_rows
 
     for height in (420, 700, 1080, 2160):
@@ -63,7 +71,7 @@ def test_the_rows_stay_clickable_on_a_short_window_and_stop_sprawling_on_a_tall_
 def test_a_click_lands_on_the_dial_it_looks_like_it_lands_on():
     """Hit-testing and drawing read the same track geometry. Two definitions would let the
     pointer disagree with the picture by a few pixels for ever."""
-    from ganlive.strip import GROUPS, hit, layout, track_span
+    from ganlive.strip import hit, layout, track_span
 
     w, h = 372, 900
     left, span = track_span(w)
@@ -85,7 +93,7 @@ def test_the_panel_publishes_a_new_dict_rather_than_editing_the_loops_one():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     panel = DialPanel(runner)
     first = runner.hands
     panel.set("noise", 0.4)
@@ -110,7 +118,7 @@ def test_the_panel_reports_only_what_is_off_its_resting_value():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     panel = DialPanel(runner)
     panel.set("hold", 0.72)
     runner.apply([1e6] * len(INDEX), {}, FakeKnobs())
@@ -124,10 +132,10 @@ def test_a_shared_voice_gets_one_light_and_says_so():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    per_track = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0))
+    per_track = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
     assert [label for _ch, label in per_track.kit] == list(INDEX)
 
-    shared = DialPanel(PresetRunner(FIXTURES["still"], channel_map("voices"), 60.0))
+    shared = DialPanel(PresetRunner(FIXTURES["still"], channel_map("voices"), 60.0, layout=fastgan()))
     labels = [label for _ch, label in shared.kit]
     assert len(labels) == 8, labels
     assert "CH/OH" in labels and "MT/HT" in labels
@@ -159,7 +167,7 @@ def test_what_p_prints_is_what_you_set_not_what_the_patch_already_rested_at():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0, layout=fastgan())
     panel = DialPanel(runner)
     runner.apply([1e6] * len(INDEX), {"density": 5.0}, FakeKnobs())
     assert panel.settings() == {}, "a preset's own resting values are not discoveries"
@@ -182,7 +190,7 @@ def test_dragging_a_slider_does_not_repaint_the_strip():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0))
+    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
     panel.set("spread", 0.2)                               # a grab: the held text changes
     assert panel._dirty
     panel._dirty = False
@@ -198,12 +206,12 @@ def test_a_dial_the_model_does_not_have_is_drawn_dark_and_cannot_be_grabbed():
 
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
-    from ganlive.strip import GROUPS, DialPanel
+    from ganlive.strip import DialPanel
     from ganlive.strip import rows as console_rows
 
     live = frozenset({"reaction", "speed", "spread", "hold", "late", "grid",
                       "dir1", "dir2"})
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0),
+    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
                       bank=types.SimpleNamespace(current=_StubModel(dials_live=live),
                                                 models=[1], index=0, name="stub"))
     panel._size = (400, 900)
@@ -254,14 +262,14 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
     from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
-    fastgan = _surface.fastgan()
+    ours = _fastgan.fastgan()
     names = ("w_coarse", "w_mid", "w_fine", "noise_4", "noise_512")
     other = _surface.stylegan2(names, (0.5,) * 5, ((0.1, 1.0, 2.0),) * 5, (25.0,) * 5, ())
-    assert len(fastgan.knobs) == len(other.knobs), (
+    assert len(ours.knobs) == len(other.knobs), (
         "this test needs two layouts the window cannot tell apart by height")
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
-    current = _StubModel(layout=fastgan, dials_live=frozenset(fastgan))
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    current = _StubModel(layout=ours, dials_live=frozenset(ours))
     holder = types.SimpleNamespace(current=current, models=[1], index=0, name="stub")
     runner.use_model(current)
 
@@ -284,7 +292,7 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
             renderer.present()
 
         frame()
-        assert {n for n, _t, _h in panel._rows} == set(fastgan), "the model it opened on"
+        assert {n for n, _t, _h in panel._rows} == set(ours), "the model it opened on"
 
         # `play.switch_model`'s two statements, in its order.
         holder.current = _StubModel(layout=other, dials_live=frozenset(other))
@@ -315,7 +323,7 @@ def test_a_direction_says_what_it_measured_on_this_model():
     from ganlive.strip import DialPanel
 
     dirs = types.SimpleNamespace(levels=(88.0, 41.0))
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0),
+    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
                       bank=types.SimpleNamespace(
                           current=_StubModel(dials_live=frozenset(DIALS), directions=dirs),
                           models=[1], index=0, name="stub"))
@@ -333,7 +341,7 @@ def test_with_no_rig_every_dial_is_live():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0))
+    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
     assert panel.live_dials() is None, "nothing has said, so nothing is dark"
 
 
@@ -409,22 +417,22 @@ def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
     def wires(entry):
         return [(imp.track, ch, imp.amount) for imp, ch in entry[0]]
 
-    got = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0))
+    got = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0, layout=fastgan()))
     assert wires(got["se_128"]) == [("BD", INDEX["BD"], 0.34)]
     assert wires(got["se_512"]) == [("CP", INDEX["CP"], 0.32), ("SD", INDEX["SD"], 0.24)]
     assert "reaction" not in got, "nothing drives the master in this preset"
 
-    slow = driven_by(PresetRunner(FIXTURES["breathe"], INDEX, 60.0))
+    slow = driven_by(PresetRunner(FIXTURES["breathe"], INDEX, 60.0, layout=fastgan()))
     assert slow["spread"] == ([], ["density"]), "a slow rule is not a hit"
 
-    both = driven_by(PresetRunner(FIXTURES["full"], INDEX, 60.0))
+    both = driven_by(PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan()))
     assert wires(both["hold"]) == [("BD", INDEX["BD"], -0.34)], "a pull keeps its sign"
     assert both["hold"][1] == ["density"]
 
-    kit = driven_by(PresetRunner(FIXTURES["pulse"], INDEX, 60.0))
+    kit = driven_by(PresetRunner(FIXTURES["pulse"], INDEX, 60.0, layout=fastgan()))
     assert wires(kit["dir1"]) == [("*", -1, 0.22)], kit
 
-    narrow = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=8))
+    narrow = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=8, layout=fastgan()))
     assert all(ch < 8 for wired, _slow in narrow.values() for _imp, ch in wired), narrow
     assert "noise" not in narrow, narrow
     assert "se_128" in narrow, "the kick is still inside the channel range"
@@ -473,7 +481,7 @@ def test_every_routing_column_label_fits_the_column_it_names():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
-        panel = DialPanel(PresetRunner(DEFAULT, channel_map("voices"), 60.0))
+        panel = DialPanel(PresetRunner(DEFAULT, channel_map("voices"), 60.0, layout=fastgan()))
         panel.attach(Renderer(Window("fit", size=(WIDTH, 900)), vsync=False))
         columns = grid_columns(WIDTH, len(panel.kit))
         too_wide = [(label, panel._micro.size(label)[0], cw)
@@ -516,7 +524,7 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
     names = ("w_coarse", "w_mid", "w_fine")
     stub = _StubModel(layout=S.stylegan2(names, (0.5,) * 3, ((),) * 3, (25.0,) * 3),
                       dials_live=frozenset({"w_coarse"}))
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     foreign = set(stub.layout.rests) - set(runner.surface.values)
     assert foreign, "this test needs the two layouts to actually disagree"
 
@@ -585,7 +593,7 @@ def test_the_window_opens_no_shorter_than_the_strip_needs():
     resizable, so a floor applied once at construction is not one."""
 
     from ganlive import window
-    from ganlive.strip import MIN_H, WIDTH
+    from ganlive.strip import WIDTH
 
     panel = _panel(DIALS)
     tall_screen = window.window_size(3072, 2048, 2560, 1440, panel)
@@ -599,7 +607,7 @@ def test_the_window_opens_no_shorter_than_the_strip_needs():
 def test_every_block_along_the_bottom_fits_without_overlapping_the_rows():
     """Four blocks are stacked over twenty-one rows, and a window short enough to squeeze them is
     the case where a control silently stops being clickable."""
-    from ganlive.strip import GROUPS, MIN_H, PAD, blocks, layout, rows
+    from ganlive.strip import PAD, blocks, layout, rows
 
     for height in (600, MIN_H - 1, MIN_H, 700, 900, 1200, 1440):
         found = blocks(height, GROUPS)
@@ -626,7 +634,7 @@ def test_the_help_line_only_names_keys_the_strip_itself_handles():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0),
+    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
                       actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object(), encoders=EncoderMap({}))
     panel._pg = pygame
@@ -659,7 +667,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    bare = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0))
+    bare = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
     bare._pg = pygame
     pygame.font.init()
     bare._small = pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13)
@@ -678,7 +686,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     import pytest
 
     with pytest.raises(KeyError, match="recrd"):
-        DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0), actions={"recrd": lambda: None})
+        DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()), actions={"recrd": lambda: None})
 
 
 def test_the_window_conversion_is_the_same_picture_in_the_texture_s_own_order():
@@ -729,7 +737,7 @@ def test_the_description_is_wrapped_by_measuring_it_rather_than_counting_charact
 def test_the_routing_grid_maps_a_click_to_one_drum_and_one_dial():
     """Fifteen rows by however many channels the kit has. One column per CHANNEL, not per
     track, for the same reason the lights are: a shared voice cannot be told apart."""
-    from ganlive.strip import GROUPS, PAD, WIDTH, grid_cell, grid_columns, rows
+    from ganlive.strip import PAD, WIDTH, grid_cell, grid_columns, rows
 
     height, count = 900, 12
     columns = grid_columns(WIDTH, count)
@@ -763,7 +771,7 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
-        panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0))
+        panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
         panel.attach(Renderer(Window("text", size=(WIDTH, 400)), vsync=False))
 
         once = panel._say(panel._small, "se_256", (1, 2, 3))
@@ -794,7 +802,7 @@ def test_a_hand_on_the_strip_outranks_an_encoder_parked_on_the_same_dial():
     from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold("encoder", {"noise": 0.2})
     runner.hold(SOURCE, {"noise": 0.8}, PRIORITY)
     assert runner.hands["noise"] == pytest.approx(0.8), runner.hands
@@ -811,7 +819,7 @@ def test_a_hand_on_the_strip_beats_a_knob_parked_on_the_same_dial():
     from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     knobs = EncoderMap(parse_controls("16=noise"))
     knobs.apply(runner, 0, 16, 127)
     runner.hold(SOURCE, {"noise": 0.25}, PRIORITY)
@@ -863,7 +871,7 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
     from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold(console.SOURCE, {"dir1": 0.5}, console.PRIORITY)
     EncoderMap({(-1, 35): "noise"}).apply(runner, 13, 35, 90)
     PressureMap(parse_pressure("BD=se_256")).apply(runner, 13, INDEX["BD"], 110)
@@ -892,7 +900,7 @@ def test_no_dial_description_is_cut_off_by_the_block_that_shows_it():
     was visible only by rendering the strip."""
     import pygame
 
-    from ganlive.dials.table import DIALS
+    from ganlive.dials.fastgan_dials import DIALS
     from ganlive.strip import DESC_H, PAD, WIDTH, wrap
 
     pygame.font.init()
@@ -930,7 +938,8 @@ def test_a_model_s_own_dials_come_back_where_the_hand_left_them(tmp_path):
     """The spine is shared and stays under the hand; the MODEL block and the directions mean
     something different on every model, so they go with it and come back with it."""
     from ganlive.control.tracks import INDEX
-    from ganlive.dials.table import fastgan, per_model
+    from ganlive.dials.fastgan_dials import fastgan
+    from ganlive.dials.table import per_model
     from ganlive.presets import Positions, PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
@@ -938,7 +947,7 @@ def test_a_model_s_own_dials_come_back_where_the_hand_left_them(tmp_path):
     assert {"se_256", "noise", "dir1", "dir8"} <= set(names)
     assert {"speed", "grid", "reaction"}.isdisjoint(names)
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold(SOURCE, {"se_256": 0.9, "dir1": 0.1, "speed": 0.7}, PRIORITY)
     store = Positions(tmp_path / "positions.json")
     assert store.stash("a-1", runner, SOURCE, names) == {"se_256": 0.9, "dir1": 0.1}
@@ -974,7 +983,7 @@ def test_the_drum_lights_sit_under_the_loaded_model_s_rows_not_the_default_ones(
 
 
 def test_a_tall_window_gives_its_spare_height_to_the_description():
-    from ganlive.strip import DESC_H, GROUPS, MIN_H, blocks
+    from ganlive.strip import DESC_H, blocks
 
     at_floor = blocks(MIN_H, GROUPS)["desc"][1]
     assert at_floor == DESC_H

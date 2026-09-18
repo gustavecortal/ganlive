@@ -36,16 +36,18 @@ from pygame._sdl2.video import Renderer, Window  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from ganlive.control.tracks import INDEX  # noqa: E402
+from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials import table as S  # noqa: E402
+from ganlive.dials.fastgan_dials import fastgan  # noqa: E402
 from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
-from ganlive.strip import MIN_H, WIDTH, DialPanel  # noqa: E402
+from ganlive.strip import WIDTH, DialPanel, floor_height  # noqa: E402
 
 #: The layouts a bank can hold at once, including the awkward ones: a single direction, and a
 #: family whose MODEL block shares no dial name with this one.
 LAYOUTS = {
-    "fastgan 8 dirs": S.fastgan(),
-    "fastgan 4 dirs": S.fastgan(directions=4),
-    "fastgan 1 dir": S.fastgan(directions=1),
+    "fastgan 8 dirs": _fastgan.fastgan(),
+    "fastgan 4 dirs": _fastgan.fastgan(directions=4),
+    "fastgan 1 dir": _fastgan.fastgan(directions=1),
     "stylegan2": S.stylegan2(),
 }
 #: What a model reports as live. `none` is the model whose every dial measured under the floor;
@@ -60,6 +62,9 @@ LIVE = {
 #: Every key the strip claims, plus three it does not, plus tab and return.
 KEYS = "gmlspvtr123 \t\r"
 #: Including one below the floor the window is supposed to enforce, because it is resizable.
+#: The shortest window FastGAN's own surface is whole in -- the most crowded layout
+#: here -- and one shorter than that, which is the case the floor exists to catch.
+MIN_H = floor_height(fastgan().groups)
 HEIGHTS = (MIN_H - 120, MIN_H, 900, 1440)
 
 
@@ -137,7 +142,7 @@ def switch(bank, runner, layout, live, between=None):
 
 def build(layout, live, shelf):
     """A strip with a stub model behind it, wired the way `ganlive play` wires the real one."""
-    runner = PresetRunner(DEFAULT, INDEX, 60.0)
+    runner = PresetRunner(DEFAULT, INDEX, 60.0, layout=fastgan())
     bank = types.SimpleNamespace(current=None, models=[1, 2], index=0, name="stub",
                                 index_of=lambda path: 0)
     switch(bank, runner, layout, live)

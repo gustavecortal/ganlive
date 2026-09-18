@@ -7,6 +7,7 @@ import time
 import pytest
 
 from ganlive.dials import table as _surface  # noqa: E402
+from ganlive.dials.fastgan_dials import fastgan
 from ganlive.presets import Preset
 from ganlive.walk import (
     MusicalClock,
@@ -202,7 +203,7 @@ def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     knobs = EncoderMap(parse_controls("16=noise, 2:17=se_256"))
 
     assert knobs.apply(runner, 5, 16, 0) == "noise"
@@ -248,7 +249,7 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     # The whole round trip a learn takes: bound on the strip, written down, read back.
     knobs = EncoderMap({})
     knobs.learning = "w_fine"
-    knobs.apply(PresetRunner(FIXTURES["still"], INDEX, 60.0), 0, 16, 64)
+    knobs.apply(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()), 0, 16, 64)
     assert parse_controls(format_controls(knobs.controls)) == knobs.controls
 
     # And the check that used to live here, moved to where the model is known.
@@ -326,7 +327,7 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(Preset(name="t", blurb="", dials={"noise": 0.1, "se_256": 0.1}), INDEX,
-                         60.0)
+                         60.0, layout=fastgan())
     pads = PressureMap(parse_pressure("BD=noise,SD=se_256"))
     assert pads.controls == {(-1, INDEX["BD"]): "noise", (-1, INDEX["SD"]): "se_256"}
 
@@ -409,7 +410,7 @@ def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     saved = tmp_path / "cc.txt"
     knobs = EncoderMap({(-1, 16): "noise"}, remember=saved)
 

@@ -7,7 +7,7 @@ import pathlib
 import time
 import types
 
-from ganlive.dials import table as _surface  # noqa: E402
+from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials.table import (
     Surface,
 )
@@ -112,7 +112,7 @@ class FakeKnobs:
     """Enough of `Knobs` to record what a dial writes, with no card and no checkpoint."""
 
     def __init__(self, names=None):
-        from ganlive.dials.table import SETTINGS_WRITTEN
+        from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
 
         self.index = {n: i for i, n in enumerate(SETTINGS_WRITTEN if names is None else names)}
         self.written = {}
@@ -131,7 +131,7 @@ class FakeKnobs:
 
 def _applied(**dials):
     """One set of dial values, applied to both of the surface's destinations."""
-    surface = Surface(dials)
+    surface = Surface(dials, layout=_fastgan.fastgan())
     knobs, walk = FakeKnobs(), WalkConfig()
     surface.apply(knobs, walk)
     return (dict(knobs.written), walk)
@@ -158,7 +158,7 @@ class _StubModel:
     knobs: object = None
     graphs: int = 0
     compile_s: float = 0.0
-    layout: object = dataclasses.field(default_factory=lambda: _surface.fastgan())
+    layout: object = dataclasses.field(default_factory=lambda: _fastgan.fastgan())
     #: `None` is what `bank.Model` defaults it to, and it is what every family except a converted StyleGAN2
     #: carries.
     push: object = None
@@ -177,7 +177,7 @@ def _panel(dials_live=None, levels=None):
     bank = None if dials_live is None else types.SimpleNamespace(
         current=_StubModel(dials_live=frozenset(dials_live), directions=dirs),
         models=[1], index=0, name="stub")
-    return DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0), bank=bank)
+    return DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=_fastgan.fastgan()), bank=bank)
 
 
 

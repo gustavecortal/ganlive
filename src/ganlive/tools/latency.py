@@ -12,7 +12,7 @@ from ganlive import bank
 from ganlive import device as dev
 from ganlive.control.features import FeatureExtractor
 from ganlive.control.tracks import INDEX, MachineSim, StemFeeder
-from ganlive.dials.table import DIALS
+from ganlive.dials.fastgan_dials import fastgan
 from ganlive.presets import Impulse, Preset, PresetRunner
 from ganlive.timing import drift_ms, stat_ms, write_metrics
 
@@ -31,17 +31,17 @@ def _far(rest: float) -> float:
 def worst_case(layout=None) -> Preset:
     """Every dial off its rest and every drum wired. A frame budget, not a setting.
 
-    Built from the loaded model's own layout, because `DIALS` is this project's FastGAN
-    table: naming its `se_*` gates at a converted StyleGAN2 or an adopted graph got them
-    dropped by `use_model`, and the budget then moved the spine and nothing else.
+    Built from the loaded model's own layout when there is one: naming FastGAN's `se_*`
+    gates at a converted StyleGAN2 or an adopted graph got them dropped by `use_model`, and
+    the budget then moved the spine and nothing else. Without a layout it falls back to this
+    project's own surface, which is the most crowded one here and so the honest worst case.
 
     Every dial cycling the kit, rather than `zip(INDEX, dials)` -- which stopped at the
     twelfth name and wired no MODEL dial at all, leaving the settings vector untouched for
     the whole run and the host-to-device copy outside the budget it is meant to bound. And
     pushed back toward the middle, because a dial parked at the end of its travel clamps,
     and a rule that clamps writes the same number it wrote last frame."""
-    rests = ({k.name: k.rest for k in layout.knobs} if layout is not None
-             else {name: rest for name, (rest, _) in DIALS.items()})
+    rests = {k.name: k.rest for k in (layout or fastgan()).knobs}
     return Preset(
         name="worst-case",
         blurb="Every dial away from rest and every track wired. A frame budget, not a setting.",
