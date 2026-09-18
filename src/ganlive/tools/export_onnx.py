@@ -144,7 +144,7 @@ def _name_the_settings(path: Path, names: list[str]) -> None:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="ganlive export-onnx", description=__doc__.split("\n")[0])
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=None,
                     help="Destination .onnx. Defaults to runs/onnx/<run>-<step>.onnx")

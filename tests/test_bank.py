@@ -756,6 +756,7 @@ def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
     from ganlive import bank as R
     from ganlive.models.fastgan import Generator
 
+    torch.manual_seed(0)          # the dial gate measures the picture; random weights vary
     cfg = dict(nz=16, ngf=8, im_size=256, im_width=None)
     net = Generator(**cfg)
     path = tmp_path / "tiny.pt"
@@ -767,7 +768,9 @@ def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
     assert model.knobs.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and
-    # drawn dark rather than installed.
+    # drawn dark rather than installed. Which of the rest survive is a measurement -- these
+    # weights are random -- so the claim here is structural, not a list.
     assert "sle.se_512" not in model.knobs.index
-    assert "se_512" not in model.dials_live and "se_256" in model.dials_live
-    assert model.dials_live, "nothing reached the model"
+    assert "se_512" not in model.dials_live
+    assert {"se_64", "se_128", "se_256"} & model.dials_live, "no gate reached the model"
+    assert {"reaction", "speed", "spread"} <= model.dials_live, "the spine is always live"

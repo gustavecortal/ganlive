@@ -159,8 +159,9 @@ def open_audio(args, extractor, device, info, channels):
     return stream, dropped
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+def _parser() -> argparse.ArgumentParser:
+    """Every option, in the groups `--help` prints them in."""
+    ap = argparse.ArgumentParser(prog="ganlive play", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
 
     what = ap.add_argument_group("what to play")
@@ -271,8 +272,11 @@ def main(argv=None) -> int:
     out.add_argument("--no-guide", dest="guide", action="store_false",
                      help="no guide track or sidecar beside a take. They exist to line the "
                           "video up against a DAW multitrack afterwards")
+    return ap
 
-    args = ap.parse_args(argv)
+
+def main(argv=None) -> int:
+    args = _parser().parse_args(argv)
 
     if args.console and args.headless:
         print("--console needs a window; drop --headless")

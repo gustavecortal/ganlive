@@ -274,7 +274,7 @@ class _MidiListener:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(prog="ganlive doctor", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true",
                     help="enumerate devices and sample rates; the default with no other mode")

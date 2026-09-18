@@ -155,7 +155,7 @@ def main(argv=None) -> int:
     import pygame.midi
     import sounddevice as sd
 
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(prog="ganlive learn", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=75.0)
     ap.add_argument("--device", type=int, default=None)

@@ -65,7 +65,7 @@ def shoot(panel, renderer, tall: int, out: Path, name: str) -> Path:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(prog="ganlive shoot-strip", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", nargs="+", type=Path,
                     help="a checkpoint, a run directory, or an exported graph. Several loads a "
