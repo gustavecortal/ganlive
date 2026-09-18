@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from ganlive.models.common import Ladder
+from ganlive.settings import Knobs
 
 
 @dataclass(frozen=True)
@@ -150,8 +151,6 @@ class OnnxGenerator:
         # The generator owns its settings, so `net(z)` stays a one-argument call and nothing
         # above here learns there are two backends. On the host in f32, because that is what
         # the graph takes and where the values already live.
-        from ganlive.dials.steer import Knobs
-
         self.knobs = Knobs(self.settings if self.steerable else [], "cpu", torch.float32)
 
     def __call__(self, z) -> list[torch.Tensor]:

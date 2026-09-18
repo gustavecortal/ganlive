@@ -8,18 +8,20 @@ from pathlib import Path
 
 import numpy as np
 
+from ganlive.models.onnx import dials_of as onnx_dials
+
+#: The floor a derived dial has to clear, in mean 8-bit levels. Imported rather than
+#: restated: it is the one the latent directions use, for the same reason, and two copies of
+#: one threshold drift. It sat below these constants behind a `noqa: E402` while it came from
+#: `dials.derive`, which is a peer -- it lives beside `levels` now, which is a layer down.
+from ganlive.pixels import FLOOR_LEVELS
+
 #: The ops that make a graph give a different answer to the same question.
 RANDOM = ("RandomNormal", "RandomNormalLike", "RandomUniform", "RandomUniformLike")
 
 #: The ops a generator ends in. A gain into one of these is the dial that washes the picture
 #: out below 1 and hard-clips it above.
 SQUASH = ("Tanh", "Sigmoid")
-
-#: A derived dial moving less than this many mean 8-bit levels at full travel is not a
-#: control. Imported rather than restated: it is the floor the latent directions already use,
-#: for the same reason, and two copies of one threshold drift.
-from ganlive.dials.derive import FLOOR_LEVELS  # noqa: E402
-from ganlive.models.onnx import dials_of as onnx_dials  # noqa: E402
 
 #: What a calibrated dial should buy at full travel, in mean 8-bit levels. Chosen so that
 #: every dial on every model feels like the same amount of change under the hand, which is

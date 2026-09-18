@@ -36,7 +36,8 @@ from ganlive.control.tracks import (
     parse_track_channels,
 )
 from ganlive.dials.table import per_model
-from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner, remember
+from ganlive.files import next_path, remember
+from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 from ganlive.record import video
 from ganlive.record.sync import Guide
 from ganlive.strip import PRIORITY as HAND_PRIORITY
@@ -690,7 +691,7 @@ def main(argv=None) -> int:
                 print(f"  sync: {guide.describe(guide.stop(report))}", flush=True)
             rec = None
         else:
-            path = video.next_path(TAKES, "take", ".mp4")
+            path = next_path(TAKES, "take", ".mp4")
             rec = video.Recorder(path, r.width, r.height, args.fps, args.codec,
                                  realtime=True, depth=TAKE_DEPTH).start()
             print(f"recording {r.width}x{r.height} to {path} with {args.codec}", flush=True)
@@ -793,7 +794,7 @@ def main(argv=None) -> int:
                     rec.offer(taped)
                 if asked["still"]:
                     asked["still"] = False
-                    shot = video.next_path(STILLS, model.name.replace(" ", "-"), ".png")
+                    shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
                     stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
                     print(f"still: {shot}", flush=True)
                 took = (time.perf_counter() - t0) * 1000

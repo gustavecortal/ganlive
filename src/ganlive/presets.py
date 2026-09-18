@@ -8,7 +8,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 
 from ganlive.dials.table import MOTION, Surface, clamp01
-from ganlive.record.video import next_path
+from ganlive.files import next_path, remember
 from ganlive.walk import WalkConfig
 
 AMOUNT_MAX = 1.0
@@ -449,16 +449,6 @@ class Library:
             self.presets.append(preset)
             self.index = len(self.presets) - 1
         return path
-
-
-def remember(path: Path, text: str) -> str:
-    """Write a settings file, creating its folder. Returns what went wrong, or ""."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    except OSError as exc:                                                  # noqa: BLE001
-        return f"{path}: {exc}"
-    return ""
 
 
 class Positions:

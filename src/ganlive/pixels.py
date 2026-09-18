@@ -23,6 +23,19 @@ _KG = 1 - _KR - _KB
 #: reassociates something, tight enough that a still picture -- 77 levels -- cannot pass.
 EXACT_LEVELS = 0.5
 
+#: A dial or a direction moving less than this many 8-bit levels at full travel is not a
+#: control. Here, beside the unit it is quoted in, rather than in the module that first
+#: needed it: `models.capture` and `dials.onnx_dials` both had to reach into `dials.derive`
+#: for it, which put a model-layer module behind a dials-layer one for a single float.
+FLOOR_LEVELS = 1.0
+
+#: Times what a random unit direction of the same length moves -- on the same latents, in the
+#: pipeline that plays -- for a direction to be a control rather than a walk. **Relative, and
+#: deliberately so**: one FastGAN moves 70 levels along its best direction against another
+#: model's 44 for its worst kept one, and still keeps fewer, because everything on that
+#: checkpoint moves the picture that hard. 2.5 was tried first and kept too little.
+RANDOM_FLOOR = 2.0
+
 
 def levels(a: torch.Tensor, b: torch.Tensor) -> float:
     """Mean difference between two frames in [-1, 1], in the 8-bit levels this repo judges by.

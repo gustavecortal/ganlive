@@ -5,6 +5,8 @@ import torch
 from torch import nn
 
 from ganlive.models.fold import FoldedNoise
+from ganlive.models.steerable import SteerableNoise, SteerableSLE
+from ganlive.models.surgery import rewrite_sequential
 
 
 class GatedPair(nn.Module):
@@ -48,34 +50,21 @@ def _slice_conv(conv: nn.Conv2d, lo: int, hi: int) -> nn.Conv2d:
     return out
 
 
+def _gated_rule(a, b, c):
+    """`conv -> GLU`, with a folded noise between them or without, as one `GatedPair`."""
+    if not isinstance(a, nn.Conv2d):
+        return None
+    if isinstance(b, nn.GLU) and b.dim == 1:
+        return [GatedPair(a)], 2, "split"
+    if (isinstance(b, (FoldedNoise, ExportedNoise))
+            and isinstance(c, nn.GLU) and c.dim == 1):
+        return [GatedPair(a, b)], 3, "split"
+    return None
+
+
 def split_gated_convs(net: nn.Module) -> int:
     """Replace every `conv [-> folded noise] -> GLU` run with a `GatedPair`. Returns the count."""
-    replaced = 0
-    for parent in net.modules():
-        if not isinstance(parent, nn.Sequential):
-            continue
-        items, out, i = list(parent), [], 0
-        while i < len(items):
-            a = items[i]
-            b = items[i + 1] if i + 1 < len(items) else None
-            c = items[i + 2] if i + 2 < len(items) else None
-            if isinstance(a, nn.Conv2d) and isinstance(b, nn.GLU) and b.dim == 1:
-                out.append(GatedPair(a))
-                replaced += 1
-                i += 2
-            elif (isinstance(a, nn.Conv2d) and isinstance(b, (FoldedNoise, ExportedNoise))
-                  and isinstance(c, nn.GLU) and c.dim == 1):
-                out.append(GatedPair(a, b))
-                replaced += 1
-                i += 3
-            else:
-                out.append(a)
-                i += 1
-        if len(out) != len(items):
-            parent._modules.clear()
-            for j, module in enumerate(out):
-                parent._modules[str(j)] = module
-    return replaced
+    return rewrite_sequential(net, _gated_rule)["split"]
 
 
 def equivalent(before: nn.Module, after: nn.Module, nz: int, device="cpu",
@@ -153,8 +142,6 @@ class Steerable(nn.Module):
 
 def bank_the_knobs(net: nn.Module, knobs) -> Steerable:
     """Rewrite an installed net so its settings come from a second forward argument."""
-    from ganlive.dials.steer import SteerableNoise, SteerableSLE
-
     bank, reached, sites = SettingsVector(), set(), 0
     for parent in list(net.modules()):
         for child_name, child in list(parent.named_children()):

@@ -124,7 +124,7 @@ def test_a_still_is_written_by_the_time_its_thread_is_joined(tmp_path):
 
 
 def test_serial_names_do_not_collide_and_sort_in_the_order_they_were_made(tmp_path):
-    from ganlive.record.video import next_path
+    from ganlive.files import next_path
 
     made = []
     for _ in range(3):
