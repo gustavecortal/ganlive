@@ -28,22 +28,28 @@ def _far(rest: float) -> float:
     return 1.0 if rest <= 0.5 else 0.0
 
 
-#: The frame-budget worst case, here rather than in the library because it is not something to
-#: perform with: every dial off its rest and every drum wired. Built from `DIALS`, so a new dial
-#: joins it by existing.
-WORST = Preset(
-    name="worst-case",
-    blurb="Every dial away from rest and every track wired. A frame budget, not a setting.",
-    dials={name: _far(rest) for name, (rest, _) in DIALS.items()},
-    # Every dial, cycling the kit, rather than `zip(INDEX, DIALS)` -- which stopped at the
-    # twelfth name and so wired no MODEL dial at all, leaving the settings vector untouched for
-    # the whole run and the host-to-device copy out of the budget it is supposed to bound. And
-    # pushed back toward the middle, because a dial parked at the end of its travel clamps:
-    # a rule that clamps writes the same number it wrote last frame.
-    impulses=[Impulse(track, dial, decay=0.2,
-                      amount=-0.3 if _far(DIALS[dial][0]) > 0.5 else 0.3)
-              for dial, track in zip(DIALS, itertools.cycle(INDEX), strict=False)],
-)
+def worst_case(layout=None) -> Preset:
+    """Every dial off its rest and every drum wired. A frame budget, not a setting.
+
+    Built from the loaded model's own layout, because `DIALS` is this project's FastGAN
+    table: naming its `se_*` gates at a converted StyleGAN2 or an adopted graph got them
+    dropped by `use_model`, and the budget then moved the spine and nothing else.
+
+    Every dial cycling the kit, rather than `zip(INDEX, dials)` -- which stopped at the
+    twelfth name and wired no MODEL dial at all, leaving the settings vector untouched for
+    the whole run and the host-to-device copy outside the budget it is meant to bound. And
+    pushed back toward the middle, because a dial parked at the end of its travel clamps,
+    and a rule that clamps writes the same number it wrote last frame."""
+    rests = ({k.name: k.rest for k in layout.knobs} if layout is not None
+             else {name: rest for name, (rest, _) in DIALS.items()})
+    return Preset(
+        name="worst-case",
+        blurb="Every dial away from rest and every track wired. A frame budget, not a setting.",
+        dials={name: _far(rest) for name, rest in rests.items()},
+        impulses=[Impulse(track, dial, decay=0.2,
+                          amount=-0.3 if _far(rests[dial]) > 0.5 else 0.3)
+                  for dial, track in zip(rests, itertools.cycle(INDEX), strict=False)],
+    )
 
 
 def latent_for(model, r):
@@ -174,7 +180,7 @@ def main(argv=None) -> int:
     period_ms = 1000.0 / args.fps
     results: dict = {"fps": args.fps, "height": r.height, "width": r.width,
                      "channels": pcm.shape[0], "blocksize": args.blocksize,
-                     "preset": WORST.name, "native": [r.cfg.ladder.width, r.cfg.ladder.height],
+                     "preset": "worst-case", "native": [r.cfg.ladder.width, r.cfg.ladder.height],
                      "bank": [m.name for m in r.models], "capture": args.capture}
 
     model = r.current
@@ -183,11 +189,9 @@ def main(argv=None) -> int:
     dev.synchronize()
 
     ex = FeatureExtractor(pcm.shape[0], take.samplerate)
-    runner = PresetRunner(WORST, INDEX, float(args.fps), channels=pcm.shape[0])
-    # The call the live loop makes at startup, and this harness did not. `PresetRunner` is built
-    # holding the FastGAN layout, so without it the control layer spends every frame writing
-    # dial names a converted StyleGAN2 does not have -- a worst-case budget measured against
-    # writes that land nowhere, and a strip drawing one model's dials from another's values.
+    runner = PresetRunner(worst_case(model.layout), INDEX, float(args.fps),
+                          channels=pcm.shape[0])
+    # The call the live loop makes at startup, and this harness did not.
     runner.use_model(model)
     walk = r.walk(runner.walk_cfg)
 

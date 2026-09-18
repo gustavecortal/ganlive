@@ -265,10 +265,18 @@ class NoteFeatures:
         return int((self.since < NEVER * 0.1).sum())
 
     def channel_of(self) -> dict[str, int]:
-        """`track -> index into `since``. One per track, which is the whole point."""
-        from ganlive.control.tracks import INDEX
+        """`track -> index into `since``, for the tracks this kit can actually reach.
 
-        return dict(INDEX)
+        Derived from the wiring, not from the twelve names: a General MIDI kit wired with
+        `--notes 36=BD,38=SD,42=CH,46=OH` reaches four. Returning all twelve gave the strip
+        eight drum lights that could never fire and the end-of-run report eight silent
+        tracks to complain about -- a fault that cannot exist."""
+        from ganlive.control.tracks import TRACKS
+
+        reached = set(self.notes.values())
+        if self.channels is not None:
+            reached |= set(self.channels.values())
+        return {TRACKS[i]: i for i in sorted(reached) if i < len(TRACKS)}
 
     def features(self) -> dict[str, float]:
         """The whole-kit measurements a slow rule can be driven from."""
