@@ -86,3 +86,113 @@ def test_nothing_points_at_a_file_or_tool_this_repository_does_not_have():
             found += [f"{path.name}:{number}: {line.strip()[:90]}"
                       for stale in gone if stale in line]
     assert not found, "\n".join(found)
+
+
+def _ganlive_names(tree, module_name: str) -> dict[str, str]:
+    """What each bare name in this file refers to, for the names that come from `ganlive`.
+
+    `from ganlive import bank` and `from ganlive.strip import DialPanel` both land here, as
+    `bank -> ganlive.bank` and `DialPanel -> ganlive.strip.DialPanel`. Relative imports are
+    resolved against the file's own package."""
+    out: dict[str, str] = {}
+    package = module_name.rpartition(".")[0]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("ganlive"):
+                    out[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:                        # `from ..models import x`
+                parts = package.split(".")
+                base = ".".join(parts[:len(parts) - node.level + 1] + ([base] if base else []))
+            if not base.startswith("ganlive"):
+                continue
+            for alias in node.names:
+                out[alias.asname or alias.name] = f"{base}.{alias.name}"
+    return out
+
+
+def _resolve(node, names: dict[str, str]) -> str | None:
+    """The dotted `ganlive` path a call target or attribute names, if it names one."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name) or node.id not in names:
+        return None
+    return ".".join([names[node.id], *reversed(parts)])
+
+
+def _lookup(dotted: str):
+    """The object a dotted path names, or None if nothing of that name exists."""
+    try:
+        return importlib.import_module(dotted)
+    except ImportError:
+        pass
+    module, _dot, attr = dotted.rpartition(".")
+    try:
+        return getattr(importlib.import_module(module), attr)
+    except (ImportError, AttributeError):
+        return None
+
+
+def _calls_and_attributes():
+    """Every call and every attribute reference in `src/` that names something in `ganlive`."""
+    for path in sorted(SRC.rglob("*.py")):
+        rel = path.relative_to(SRC.parent)
+        module_name = ".".join(rel.with_suffix("").parts)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        names = _ganlive_names(tree, module_name)
+        if not names:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                yield path, node, _resolve(node.func, names), True
+            elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Store):
+                yield path, node, _resolve(node, names), False
+
+
+def test_every_keyword_argument_names_a_parameter_that_exists():
+    """A renamed parameter whose callers were not renamed with it.
+
+    `DialPanel`'s `rig` became `bank` and `build`'s `load` became `options`, and four
+    subcommands raised `TypeError` on their first line with the whole suite green -- because
+    a test that only runs `--help` never reaches the body that makes the call."""
+    import inspect
+
+    wrong = []
+    for path, node, dotted, is_call in _calls_and_attributes():
+        if not is_call or dotted is None or not node.keywords:
+            continue
+        target = _lookup(dotted)
+        if target is None or not callable(target):
+            continue
+        try:
+            params = inspect.signature(target).parameters
+        except (TypeError, ValueError):
+            continue
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg is not None and keyword.arg not in params:
+                wrong.append(f"{path.relative_to(SRC)}:{node.lineno} "
+                             f"{dotted}({keyword.arg}=...) -- it takes "
+                             f"{', '.join(params)}")
+    assert not wrong, "keyword arguments that name no parameter:\n  " + "\n  ".join(wrong)
+
+
+def test_every_attribute_reached_through_a_module_exists():
+    """`dev.host_ram_free_gb()` outlived the function, and only `adopt` would have said so."""
+    missing = []
+    for path, node, dotted, is_call in _calls_and_attributes():
+        if is_call or dotted is None:
+            continue
+        module, _dot, attr = dotted.rpartition(".")
+        try:
+            owner = importlib.import_module(module)
+        except ImportError:
+            continue                    # not a module path; the import test covers those
+        if not hasattr(owner, attr):
+            missing.append(f"{path.relative_to(SRC)}:{node.lineno} {dotted}")
+    assert not missing, "attributes that do not exist:\n  " + "\n  ".join(sorted(set(missing)))
