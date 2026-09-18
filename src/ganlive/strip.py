@@ -148,7 +148,7 @@ def wrap(text: str, font, width: int, max_lines: int) -> list[str]:
 
 
 def _row_height(height: int, groups) -> int:
-    """How tall one dial row is: share out what there is, between a floor that stays"""
+    """How tall one dial row is: the height on offer shared out, between a floor and a ceiling."""
     avail = height - 2 * PAD - STATUS_H - len(groups) * HEAD_H
     return max(ROW_MIN, min(ROW_MAX, avail // max(1, _dial_count(groups))))
 
@@ -173,7 +173,7 @@ def rows(height: int, groups) -> list[tuple[str, int, int]]:
 
 
 def blocks(height: int, groups) -> dict[str, tuple[int, int]]:
-    """`(top, height)` of each block below the dials. One definition, so drawing the scope"""
+    """`(top, height)` of each block below the dials, so drawing and hit-testing cannot disagree."""
     rows_end = (PAD + len(groups) * HEAD_H
                 + _dial_count(groups) * _row_height(height, groups))
     top = max(rows_end, min(height - STATUS_H, rows_end + PAD))
@@ -222,7 +222,7 @@ def grid_cell(x: int, y: int, width: int, height: int, count: int,
 
 
 def track_span(width: int) -> tuple[int, int]:
-    """`(left, width)` of the bar inside a row. One definition, used by drawing and hit-testing"""
+    """`(left, width)` of the bar inside a row, used by drawing and hit-testing alike."""
     return TRACK_LEFT, max(24, width - TRACK_LEFT - VALUE_W - PAD)
 
 
@@ -427,7 +427,7 @@ class DialPanel:
         self.runner.free(SOURCE, name)
 
     def live(self) -> dict[str, float]:
-        """Where every dial actually is this frame -- after the preset, the slow rules and the"""
+        """Where every dial actually is this frame, once the preset and the rules have moved it."""
         values = self.runner.surface.values
         return {name: values[name] for name in self.dials if name in values}
 
@@ -546,7 +546,7 @@ class DialPanel:
             self._dirty = True
 
     def _draw_lights(self, ren, x0, y0, since):
-        """Which drum just played. Same argument as the bars: it changes every frame, so it is"""
+        """Which drum just played. Drawn every frame rather than painted into the texture."""
         rect = self._pg.Rect
         for (channel, _label), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
             glow = lit(since, channel)
@@ -618,7 +618,7 @@ class DialPanel:
                 round(DOT_DARK[2] + (b - DOT_DARK[2]) * glow), 255)
 
     def _draw_scope(self, ren, x0, y0):
-        """The dot travelling the curve. The curve itself is in the texture, repainted with the"""
+        """The dot travelling the curve. The curve itself is in the texture behind it."""
         top, tall = self._blocks["scope"]
         x_lo, x_hi, base, inner = scope_box(self._size[0], top, tall)
         _k, u, t = position(self.runner.walk_cfg, self.beats)
@@ -645,7 +645,7 @@ class DialPanel:
         self._dirty = True
 
     def _paint(self, live: dict[str, float]) -> None:
-        """Everything that is not moving: names, numbers, empty tracks, resting ticks, the"""
+        """Everything that is not moving: names, numbers, empty tracks, resting ticks."""
         pg, surf = self._pg, self._surf
         w, h = self._size
         surf.fill(PANEL)
@@ -715,7 +715,7 @@ class DialPanel:
             surf.blit(self._say(self._small, line, FAINT), (PAD, top + 4 + i * LINE_PITCH))
 
     def _floor(self) -> int:
-        """Where the picker's list stops: the drum lights, because the scope and the"""
+        """Where the picker's list stops: the top of the drum lights."""
         return self._blocks["lights"][0] - PAD
 
     def _paint_models(self, surf, w: int) -> None:
@@ -866,7 +866,7 @@ class DialPanel:
         return f" Measured on this model: {level:.0f} 8-bit levels at full travel{rank}."
 
     def _status_lines(self) -> list[str]:
-        """Short lines rather than long ones. The model name pushed the first line off the"""
+        """Short lines rather than long ones, so a long model name cannot push the rest off the panel."""
         model = "no model"
         if self.bank is not None:
             model = self.bank.name

@@ -566,7 +566,7 @@ class Bank:
             walk.retarget(model.cfg.nz)
 
     def index_of(self, path) -> int | None:
-        """Where a checkpoint sits in this bank, or None. One spelling of a lookup that had"""
+        """Where a checkpoint sits in this bank, or None."""
         return index_of(self.models, path)
 
     def add(self, target) -> Model:
@@ -651,7 +651,7 @@ class Shelf:
         return self._listing
 
     def _scan(self) -> list[Shelved]:
-        """Every model on disk, and **the only thing that now disqualifies one is being unreadable.**"""
+        """Every model on disk. Only a file that cannot be read is disqualified."""
         here = {m.path for m in self.bank.models}
         out = []
         for path in self._models():
