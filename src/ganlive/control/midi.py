@@ -314,9 +314,9 @@ class EncoderMap:
 def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple[int, int], str]:
     """`"BD=noise,SD=dir1"` to `{(channel, pad note): dial}`, for `PressureMap`.
 
-    The pad is named as a track -- `BD`, or its index -- and `notes` (`simulate.parse_notes`)
+    The pad is named as a track -- `BD`, or its index -- and `notes` (`kit.parse_notes`)
     says which note that track's pad presses on; a Rytm's press on 0 to 11."""
-    from ganlive.control.tracks import track_index
+    from ganlive.control.kit import track_index
 
     note_of = {} if notes is None else {track: note for note, track in notes.items()}
     out: dict[tuple[int, int], str] = {}

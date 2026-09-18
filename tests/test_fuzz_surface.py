@@ -35,7 +35,7 @@ from pygame._sdl2.video import Renderer, Window  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from ganlive.control.tracks import INDEX  # noqa: E402
+from ganlive.control.kit import INDEX  # noqa: E402
 from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials import table as S  # noqa: E402
 from ganlive.dials.fastgan_dials import fastgan  # noqa: E402

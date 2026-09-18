@@ -9,9 +9,9 @@ from collections import defaultdict
 
 from ganlive.control.audio import HOSTAPI, NoAudioDevice, named_inputs, pick_input
 from ganlive.control.features import FeatureConfig
+from ganlive.control.kit import TRACKS
 from ganlive.control.machine import profile
 from ganlive.control.midi import dispatch, open_inputs
-from ganlive.control.tracks import TRACKS
 from ganlive.walk import MusicalClock
 
 RATES = (48000, 44100, 96000)

@@ -10,9 +10,9 @@ import numpy as np
 
 from ganlive.control.audio import NoAudioDevice, pick_input
 from ganlive.control.features import FeatureExtractor
+from ganlive.control.kit import TRACKS
 from ganlive.control.machine import profile
 from ganlive.control.midi import dispatch, open_inputs
-from ganlive.control.tracks import TRACKS
 from ganlive.walk import MusicalClock
 
 WINDOW_S = 0.050

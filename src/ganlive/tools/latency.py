@@ -11,7 +11,8 @@ import torch
 from ganlive import bank
 from ganlive import device as dev
 from ganlive.control.features import FeatureExtractor
-from ganlive.control.tracks import INDEX, MachineSim, StemFeeder
+from ganlive.control.kit import INDEX
+from ganlive.control.simulate import MachineSim, StemFeeder
 from ganlive.dials.fastgan_dials import fastgan
 from ganlive.presets import Impulse, Preset, PresetRunner
 from ganlive.timing import drift_ms, stat_ms, write_metrics

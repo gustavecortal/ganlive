@@ -1,8 +1,12 @@
-"""The twelve-track drum vocabulary, and a stand-in machine that speaks it.
+"""A drum machine that is not there: twelve synthesised voices, an arrangement, a feeder.
 
-Track names are the usual abbreviations -- bass drum, snare, rim shot, clap, four toms,
-two hats, cymbal, cowbell -- and an Analog Rytm's twelve pads are exactly this order.
-Any machine is wired to it by `parse_notes` or `parse_track_channels`."""
+`ganlive play --simulate` plays this into the same path a real machine drives, so the whole
+instrument can be worked on -- and judged -- with no hardware plugged in at all. The
+amplitudes are rough; the envelopes and the spectra are the point, because what has to be
+right is which drum an onset detector hears and when.
+
+The vocabulary it speaks is `control/kit.py`.
+"""
 from __future__ import annotations
 
 import threading
@@ -12,124 +16,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-TRACKS = ("BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB")
-INDEX = {t: i for i, t in enumerate(TRACKS)}
-
-VOICE_GROUPS = (("BD",), ("SD",), ("RS", "CP"), ("BT",), ("LT",), ("MT", "HT"),
-                ("CH", "OH"), ("CY", "CB"))
+from ganlive.control.kit import INDEX, TRACKS, VOICE_GROUPS
 
 STEPS_PER_BAR = 16
+
 
 LONGEST_VOICE_S = 2.0
 
 
 def _LONGEST_VOICE_SAMPLES(sr: int) -> int:
     return int(LONGEST_VOICE_S * sr)
-
-
-def channel_map(layout: str = "tracks") -> dict[str, int]:
-    """Which audio channel each drum arrives on."""
-    if layout == "tracks":
-        return dict(INDEX)
-    if layout == "voices":
-        return {track: i for i, group in enumerate(VOICE_GROUPS) for track in group}
-    raise ValueError(f"unknown layout {layout!r}; have tracks, voices")
-
-
-def track_index(name: str) -> int:
-    """A track to its index, or raise. Its name, or the index itself for a
-    machine whose pads are not called BD and SD -- `0` to `11`, the order the twelve tracks
-    are wired in. Every parser here validates the same way."""
-    name = name.strip().upper()
-    if name.isdigit():
-        index = int(name)
-        if not 0 <= index < len(TRACKS):
-            raise ValueError(f"track {name} is out of range; have 0 to {len(TRACKS) - 1}")
-        return index
-    if name not in INDEX:
-        raise ValueError(f"unknown track {name!r}; have {', '.join(TRACKS)}, or 0 to "
-                         f"{len(TRACKS) - 1}")
-    return INDEX[name]
-
-
-def parse_channel_map(text: str) -> dict[str, int]:
-    """"BD=0,CH=4" to a map. Track names must be real ones, or a typo is a silent no-op."""
-    out = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        name, _, channel = part.partition("=")
-        track_index(name)               # validated, but this map is by NAME
-        out[name.strip().upper()] = int(channel)
-    return out
-
-
-def parse_notes(text: str) -> dict[int, int]:
-    """Which note is which track, for a kit that shares one channel: `{note: track index}`.
-
-    `"0"` -- a first note, for a kit whose pads send consecutive notes from there; a Rytm's
-    send 0 to 11. Or `"36=BD,38=SD,42=CH,46=OH"` for one whose do not, which is every General
-    MIDI kit: kick 36, snare 38, closed hat 42, open hat 46, and nothing consecutive about it.
-    Same grammar as `parse_track_channels`, with a note where the channel was."""
-    text = text.strip()
-    if text.isdigit():
-        return {int(text) + i: i for i in range(len(TRACKS))}
-    out: dict[int, int] = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        note, _, name = part.partition("=")
-        number = int(note)
-        if number in out:
-            raise ValueError(f"note {number} is already {TRACKS[out[number]]}; two tracks on "
-                             f"one note cannot be told apart")
-        out[number] = track_index(name)
-    if not out:
-        raise ValueError("--notes needs a first note, as '0', or a map, as '36=BD,38=SD'")
-    return out
-
-
-def output_mode(seen: dict[int, set[int] | list[int] | dict[int, int]],
-                known=range(len(TRACKS))) -> str | None:
-    """`"auto"`, `"track"`, `"mixed"`, or None if the traffic cannot say. channel -> notes.
-
-    `known` is the notes that name a track on this kit -- 0 to 11 unless told."""
-    known = set(known)
-    low = {ch for ch, notes in seen.items() if any(n in known for n in notes)}
-    high = {ch for ch, notes in seen.items() if any(n not in known for n in notes)}
-    high -= low                                   # a channel is classified by its lowest note
-    if low and len(high) > 1:
-        return "mixed"
-    if low:
-        return "auto"
-    return "track" if len(high) > 1 else None
-
-
-def parse_track_channels(text: str) -> dict[int, int]:
-    """`"1-12"` or `"1=BD,2=SD"` to `{MIDI channel: track index}`."""
-    out: dict[int, int] = {}
-    text = text.strip()
-    if "=" not in text:
-        low, _, high = text.partition("-")
-        first, span = int(low), int(high) - int(low) + 1
-        if span != len(TRACKS):
-            raise ValueError(f"{text!r} is {span} channels for {len(TRACKS)} tracks; "
-                             f"the whole kit or an explicit map")
-        return {first - 1 + i: i for i in range(len(TRACKS))}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        channel, _, name = part.partition("=")
-        index = track_index(name)
-        number = int(channel) - 1
-        if number in out:
-            raise ValueError(f"MIDI channel {number + 1} is already {TRACKS[out[number]]}; two "
-                             f"tracks on one channel cannot be told apart")
-        out[number] = index
-    return out
 
 
 def _env(n: int, decay: float, sr: int, hold: float = 0.0) -> np.ndarray:
@@ -177,77 +73,114 @@ def _swept_sine(n: int, f0: float, f1: float, sweep: float, sr: int) -> np.ndarr
     return np.sin(2 * np.pi * np.cumsum(f) / sr).astype(np.float32)
 
 
+def _kick(v, sr, rng):
+    n = int(0.45 * sr)
+    body = _swept_sine(n, 190.0, 47.0, 0.022, sr) * _env(n, 0.16, sr, hold=0.01)
+    click = _hp(_noise(n, rng), 1200, sr) * _env(n, 0.0016, sr) * 0.5
+    return (body * 0.95 + click) * v
+
+
+def _snare(v, sr, rng):
+    n = int(0.30 * sr)
+    tone = (np.sin(2 * np.pi * 186 * np.arange(n) / sr)
+            + 0.7 * np.sin(2 * np.pi * 331 * np.arange(n) / sr)).astype(np.float32)
+    tone *= _env(n, 0.075, sr)
+    snap = _bp(_noise(n, rng), 900, 9000, sr) * _env(n, 0.085, sr)
+    return (0.55 * tone + 0.75 * snap) * v
+
+
+def _rim(v, sr, rng):
+    n = int(0.08 * sr)
+    return (_bp(_noise(n, rng), 1400, 3200, sr) * _env(n, 0.012, sr)
+            + 0.4 * np.sin(2 * np.pi * 1720 * np.arange(n) / sr).astype(np.float32)
+            * _env(n, 0.010, sr)) * v
+
+
+def _clap(v, sr, rng):
+    """Three flams into one tail, which is what makes a clap sound like hands."""
+    n = int(0.42 * sr)
+    out = np.zeros(n, dtype=np.float32)
+    src = _bp(_noise(n, rng), 700, 5200, sr)
+    for k, off in enumerate((0.0, 0.0095, 0.019)):
+        i = int(off * sr)
+        seg = src[: n - i] * _env(n - i, 0.0055, sr) * (1.0 - 0.18 * k)
+        out[i:] += seg
+    out += src * _env(n, 0.115, sr) * 0.42
+    return out * 0.8 * v
+
+
+#: `(start Hz, end Hz, decay)` per tom. The four differ only in these three numbers, which is
+#: why they are one recipe and not four.
+TOMS = {"BT": (150, 62, 0.28), "LT": (196, 84, 0.24),
+        "MT": (262, 116, 0.20), "HT": (344, 158, 0.17)}
+
+
+def _tom(v, sr, rng, track):
+    f0, f1, dec = TOMS[track]
+    n = int((dec * 4) * sr)
+    body = _swept_sine(n, f0, f1, 0.055, sr) * _env(n, dec, sr)
+    skin = _hp(_noise(n, rng), 2000, sr) * _env(n, 0.006, sr) * 0.22
+    return (body + skin) * v
+
+
+def _metal(n: int, sr: int, partials) -> np.ndarray:
+    """Square partials summed and normalised -- the cheap additive model of a struck cymbal.
+
+    Shared by the hats and the cymbal, which differ in their partials, their band and their
+    decay and in nothing else."""
+    t = np.arange(n) / sr
+    out = np.zeros(n, dtype=np.float32)
+    for f in partials:
+        out += np.sign(np.sin(2 * np.pi * f * t)).astype(np.float32)
+    return out / len(partials)
+
+
+HAT_PARTIALS = (2380.0, 3140.0, 4270.0, 5630.0, 7180.0, 8890.0)
+CYMBAL_PARTIALS = (1180.0, 1670.0, 2410.0, 3320.0, 4710.0, 6180.0, 8330.0)
+
+
+def _hat(v, sr, rng, track):
+    dec = 0.032 if track == "CH" else 0.34
+    n = int(max(0.12, dec * 4.5) * sr)
+    metal = _bp(_metal(n, sr, HAT_PARTIALS), 5800, 13000, sr)
+    return metal * _env(n, dec, sr) * 0.85 * v
+
+
+def _cymbal(v, sr, rng):
+    n = int(1.5 * sr)
+    body = _bp(_metal(n, sr, CYMBAL_PARTIALS), 2600, 12000, sr) * _env(n, 0.62, sr)
+    wash = _hp(_noise(n, rng), 4000, sr) * _env(n, 0.34, sr) * 0.35
+    return (body + wash) * 0.7 * v
+
+
+def _cowbell(v, sr, rng):
+    n = int(0.34 * sr)
+    t = np.arange(n) / sr
+    tone = (np.sign(np.sin(2 * np.pi * 541 * t))
+            + 0.8 * np.sign(np.sin(2 * np.pi * 812 * t))).astype(np.float32)
+    return _bp(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8 * v
+
+
+#: One recipe per track. The four toms share one and the two hats share another, and they are
+#: the two that take the track name, because that is the only thing they read it for.
+VOICES = {
+    "BD": _kick, "SD": _snare, "RS": _rim, "CP": _clap,
+    **dict.fromkeys(TOMS, _tom),
+    "CH": _hat, "OH": _hat,
+    "CY": _cymbal, "CB": _cowbell,
+}
+
+#: The recipes that need to know which of the tracks they serve they are being asked for.
+BY_NAME = (_tom, _hat)
+
+
 def _voice(track: str, vel: float, sr: int, rng: np.random.Generator) -> np.ndarray:
     """One hit, as a mono float32 array. Amplitudes are rough but the shapes are the point."""
+    make = VOICES.get(track)
+    if make is None:
+        raise ValueError(f"unknown track {track!r}; have {', '.join(VOICES)}")
     v = 0.2 + 0.8 * vel
-
-    if track == "BD":
-        n = int(0.45 * sr)
-        body = _swept_sine(n, 190.0, 47.0, 0.022, sr) * _env(n, 0.16, sr, hold=0.01)
-        click = _hp(_noise(n, rng), 1200, sr) * _env(n, 0.0016, sr) * 0.5
-        return (body * 0.95 + click) * v
-
-    if track == "SD":
-        n = int(0.30 * sr)
-        tone = (np.sin(2 * np.pi * 186 * np.arange(n) / sr)
-                + 0.7 * np.sin(2 * np.pi * 331 * np.arange(n) / sr)).astype(np.float32)
-        tone *= _env(n, 0.075, sr)
-        snap = _bp(_noise(n, rng), 900, 9000, sr) * _env(n, 0.085, sr)
-        return (0.55 * tone + 0.75 * snap) * v
-
-    if track == "RS":
-        n = int(0.08 * sr)
-        return (_bp(_noise(n, rng), 1400, 3200, sr) * _env(n, 0.012, sr)
-                + 0.4 * np.sin(2 * np.pi * 1720 * np.arange(n) / sr).astype(np.float32)
-                * _env(n, 0.010, sr)) * v
-
-    if track == "CP":
-        n = int(0.42 * sr)
-        out = np.zeros(n, dtype=np.float32)
-        src = _bp(_noise(n, rng), 700, 5200, sr)
-        for k, off in enumerate((0.0, 0.0095, 0.019)):
-            i = int(off * sr)
-            seg = src[: n - i] * _env(n - i, 0.0055, sr) * (1.0 - 0.18 * k)
-            out[i:] += seg
-        out += src * _env(n, 0.115, sr) * 0.42
-        return out * 0.8 * v
-
-    if track in ("BT", "LT", "MT", "HT"):
-        f0, f1, dec = {"BT": (150, 62, 0.28), "LT": (196, 84, 0.24),
-                       "MT": (262, 116, 0.20), "HT": (344, 158, 0.17)}[track]
-        n = int((dec * 4) * sr)
-        body = _swept_sine(n, f0, f1, 0.055, sr) * _env(n, dec, sr)
-        skin = _hp(_noise(n, rng), 2000, sr) * _env(n, 0.006, sr) * 0.22
-        return (body + skin) * v
-
-    if track in ("CH", "OH"):
-        dec = 0.032 if track == "CH" else 0.34
-        n = int(max(0.12, dec * 4.5) * sr)
-        t = np.arange(n) / sr
-        metal = np.zeros(n, dtype=np.float32)
-        for f in (2380.0, 3140.0, 4270.0, 5630.0, 7180.0, 8890.0):
-            metal += np.sign(np.sin(2 * np.pi * f * t)).astype(np.float32)
-        metal = _bp(metal / 6.0, 5800, 13000, sr)
-        return metal * _env(n, dec, sr) * 0.85 * v
-
-    if track == "CY":
-        n = int(1.5 * sr)
-        t = np.arange(n) / sr
-        metal = np.zeros(n, dtype=np.float32)
-        for f in (1180.0, 1670.0, 2410.0, 3320.0, 4710.0, 6180.0, 8330.0):
-            metal += np.sign(np.sin(2 * np.pi * f * t)).astype(np.float32)
-        body = _bp(metal / 7.0, 2600, 12000, sr) * _env(n, 0.62, sr)
-        wash = _hp(_noise(n, rng), 4000, sr) * _env(n, 0.34, sr) * 0.35
-        return (body + wash) * 0.7 * v
-
-    if track == "CB":
-        n = int(0.34 * sr)
-        t = np.arange(n) / sr
-        tone = (np.sign(np.sin(2 * np.pi * 541 * t))
-                + 0.8 * np.sign(np.sin(2 * np.pi * 812 * t))).astype(np.float32)
-        return _bp(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8 * v
-
-    raise ValueError(f"unknown track {track!r}")
+    return make(v, sr, rng, track) if make in BY_NAME else make(v, sr, rng)
 
 
 @dataclass

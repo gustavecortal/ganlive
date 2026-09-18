@@ -10,8 +10,8 @@ import pytest
 
 from ganlive.control.audio import NoAudioDevice, pick_input
 from ganlive.control.features import NoteFeatures
+from ganlive.control.kit import INDEX, output_mode, parse_notes, parse_track_channels
 from ganlive.control.midi import parse_pressure
-from ganlive.control.tracks import INDEX, output_mode, parse_notes, parse_track_channels
 
 #: A General MIDI kit, which is what "another machine" usually means, and nothing about it
 #: is consecutive: kick 36, snare 38, closed hat 42, open hat 46, crash 49.

@@ -199,8 +199,8 @@ def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
     """The last piece of "the Rytm controls the knobs": no hole is cut in the frame loop for
     the hardware, and everything the strip already shows about a held dial shows an encoder's
     holds for free."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -234,8 +234,8 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     one. `l` on `w_fine` binds and `flush` writes `1:16=w_fine` in the flag's own words; the
     next launch read it back, raised here, and `play.remembered` swallowed it. The learn
     was undone and the only trace was one line about a file that "does not parse"."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, format_controls, parse_controls
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
     assert parse_controls("") == {}
@@ -322,8 +322,8 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
     """**The one real difference from a knob**, and why this is a subclass rather than a flag:
     a knob parked at zero means zero, a pad nobody is touching means nothing. Everything else
     is `EncoderMap`'s code and is not copied."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(Preset(name="t", blurb="", dials={"noise": 0.1, "se_256": 0.1}), INDEX,
@@ -356,8 +356,8 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
 def test_a_pressure_wiring_refuses_a_name_that_is_not_a_track():
     """A track typo is a pad that can never fire, and no model can make it one. A dial typo is
     reported against the loaded model instead -- see the knob mapping's own test for why."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import parse_pressure
-    from ganlive.control.tracks import INDEX
 
     assert parse_pressure("BD=w_fine") == {(-1, INDEX["BD"]): "w_fine"}
     with pytest.raises(ValueError, match="unknown track"):
@@ -406,8 +406,8 @@ def test_the_knob_map_reads_nrpns_and_writes_itself_back_in_the_same_words():
 
 def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp_path):
     """Click a dial, turn a knob: the pair is the map now, on disk, in `--cc`'s own words."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())

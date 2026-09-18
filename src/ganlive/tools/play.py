@@ -16,6 +16,14 @@ from ganlive.control.features import (
     FeatureExtractor,
     NoteFeatures,
 )
+from ganlive.control.kit import (
+    TRACKS,
+    channel_map,
+    output_mode,
+    parse_channel_map,
+    parse_notes,
+    parse_track_channels,
+)
 from ganlive.control.machine import profile
 from ganlive.control.midi import (
     ClockReader,
@@ -24,17 +32,7 @@ from ganlive.control.midi import (
     parse_controls,
     parse_pressure,
 )
-from ganlive.control.tracks import (
-    TRACKS,
-    MachineSim,
-    MonitorFeeder,
-    StemFeeder,
-    channel_map,
-    output_mode,
-    parse_channel_map,
-    parse_notes,
-    parse_track_channels,
-)
+from ganlive.control.simulate import MachineSim, MonitorFeeder, StemFeeder
 from ganlive.dials.table import per_model
 from ganlive.files import next_path, remember
 from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner

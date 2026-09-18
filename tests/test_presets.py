@@ -15,7 +15,7 @@ from tests.support import FIXTURES, FakeKnobs
 def test_a_hit_cannot_push_a_dial_off_its_scale():
     """The clamp is at the dial, once, instead of at every parameter -- so an impulse with a
     wildly wrong amount is a setting that does nothing extra, not a broken picture."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.5},
@@ -31,7 +31,7 @@ def test_the_runner_counts_which_dials_were_played():
     """Whether a dial earns its place on the strip is a count, printed at the end of a run:
     frames it moved, time a hand held it, how far it got from rest. A dial nothing touched
     is named as such rather than left off the list."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
@@ -55,7 +55,7 @@ def test_the_runner_counts_which_dials_were_played():
 
 def test_a_hit_on_any_track_reaches_a_star_rule():
     """One rule for the whole kit is the commonest thing to want and should not need twelve."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
@@ -75,7 +75,7 @@ def test_a_whole_kit_rule_decays_on_audio_time_like_every_other_rule():
     extractor's array. The two came apart exactly when frames ran late -- and at the documented 21.31 ms
     against a 16.7 ms period that is 1.3x fast, on `pulse`, which is the one preset built entirely from `*`
     rules."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
@@ -98,7 +98,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
     """`hands` is the seam a physical encoder writes to, and it is applied with the resting
     values rather than over the top of the rules -- so turning an encoder moves where the
     reaction happens instead of cancelling it."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.1},
@@ -117,7 +117,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
 
 def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
     """The one control to reach for when a performance is too much or too little."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(
@@ -142,7 +142,7 @@ def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
 def test_at_zero_reaction_any_setting_behaves_like_the_structural_one():
     """A useful property that falls out rather than being built: turn it off and the drumming
     stops reaching the picture, leaving only the arrangement."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     since = [0.0] * len(INDEX)
@@ -160,7 +160,7 @@ def test_at_zero_reaction_any_setting_behaves_like_the_structural_one():
 def test_a_hand_beats_the_slow_rule_for_that_dial_and_only_that_dial():
     """A slow rule SETS, so without this a slider on any dial a macro drives would be overwritten a
     microsecond later and the control would look broken."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
@@ -186,7 +186,7 @@ def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
     """The filter keeps running under a hand. Freezing it instead would make releasing a
     slider glide the dial from wherever the rule was when the hand arrived, which is a move
     nothing asked for and would read as the slider being sticky."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
@@ -206,7 +206,7 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
     """The console changes setting while the loop runs. The loop holds the runner and the walk
     holds `walk_cfg`, so rebuilding either would leave something driving an object nothing
     reads -- silently, which is the failure this project keeps paying for."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -223,7 +223,7 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
 
 def test_a_setting_naming_a_dial_that_no_longer_exists_says_so():
     """**Silence here cost the player both of his saved takes.**"""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     old = Preset(name="from-before-the-rename", blurb="",
@@ -245,7 +245,7 @@ def test_two_sources_can_hold_different_dials_without_dropping_each_other():
     would need the merge moved inside. Two writers already existed: the console read-merged-wrote
     at the call site and the sweep renderer replaced the whole dict, which would have dropped
     every console-held dial the moment they met."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -265,7 +265,7 @@ def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
     """The render loop iterates `hands` while the window thread writes it. Inserting into a
     dict that is being iterated is a `RuntimeError` that could only ever fire mid-performance,
     so every writer has to rebind -- one level up as well, or the merge itself is the race."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -279,7 +279,7 @@ def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
 def test_a_rule_wired_past_the_end_of_the_kit_is_reported_not_silently_skipped():
     """`--layout tracks` against an eight-input machine puts CY and CB past the end, which used
     to be a `continue` inside the frame loop sixty times a second with nothing said."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     full = PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=12, layout=fastgan())
@@ -296,7 +296,7 @@ def test_a_rule_wired_past_the_end_of_the_kit_is_reported_not_silently_skipped()
 def test_a_drum_can_be_wired_to_a_dial_while_it_runs():
     """The thing this whole layer was heading toward: which drum drives which dial was data on
     the preset already, and what was missing was a way to change it without editing a file."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -317,7 +317,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     """Control a dial from a drum, but *not too much*. The amount was on the
     rule already and only the interface could not reach it -- so the failure this guards is a
     grid that can only wire at one fixed strength."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import AMOUNT_MAX, PresetRunner
 
     bd = INDEX["BD"]
@@ -355,7 +355,7 @@ def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire
     """A routing cell is a CHANNEL, and under the voices layout two drums share one. Reading
     the loudest rule on the channel while writing to whichever track a display listed first
     let the bar sit still while the wheel moved something else -- a control that looks dead."""
-    from ganlive.control.tracks import channel_map
+    from ganlive.control.kit import channel_map
     from ganlive.presets import PresetRunner
 
     voices = channel_map("voices")
@@ -379,7 +379,7 @@ def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it
     only the first of the two. A cell lit by CP could not be cleared by clicking it: the click
     added an RS rule beside it, and clicking again took that one away and left the light on.
     Four of the twelve tracks could not be wired from the grid at all."""
-    from ganlive.control.tracks import channel_map
+    from ganlive.control.kit import channel_map
     from ganlive.presets import PresetRunner
 
     voices = channel_map("voices")
@@ -402,7 +402,7 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
     smoothed values. A wheel drag is dozens of notches, and reloading on each one restarted
     every slow rule's glide -- a move nobody asked for, from the event thread, while the render
     thread was inside `apply`."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
@@ -426,7 +426,7 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
 def test_a_strength_set_by_hand_survives_being_saved_and_read_back():
     """A setting is saved as JSON and picked up next time. A strength that did not round-trip
     would silently revert to the default push, which looks like the interface forgetting."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner, from_dict, to_dict
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -442,7 +442,7 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
     """A `Preset` outlives the runner holding it -- the library keeps every one it loaded.
     Editing it in place would mean tabbing away and back did not undo a hand-made rule, with
     nothing to say why."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     before = list(FIXTURES["voices"].impulses)
@@ -458,7 +458,7 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
 def test_the_default_push_points_away_from_where_the_dial_is_parked():
     """A dial parked near the top of its travel has nowhere to go upward, so a rule that pushes
     it up does nothing visible from where it already is."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["release"], INDEX, 60.0, layout=fastgan())
@@ -479,7 +479,7 @@ def test_writes_from_two_threads_do_not_lose_a_source():
     the mouse moves, so a dropped dial would have been dropped for good."""
     import threading
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
@@ -512,7 +512,7 @@ def test_every_shipped_setting_survives_being_written_down_and_read_back():
 def test_a_saved_setting_is_in_the_rotation_the_next_time_it_starts(tmp_path):
     from dataclasses import replace
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import Library, PresetRunner
 
     runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
@@ -570,7 +570,7 @@ def test_the_hand_positions_are_not_read_as_a_setting(tmp_path):
     """`Positions` writes into the folder `Library` scans by extension, so every launch
     reported the hand positions as a setting that would not load -- one line of known noise
     in the one place a genuinely broken setting announces itself."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())

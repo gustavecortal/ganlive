@@ -8,6 +8,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ganlive.control.kit import TRACKS, output_mode
 from ganlive.control.midi import (
     AFTERTOUCH_POLY,
     CLOCK,
@@ -19,7 +20,6 @@ from ganlive.control.midi import (
     STOP,
     find_ports,
 )
-from ganlive.control.tracks import TRACKS, output_mode
 from ganlive.walk import MusicalClock
 
 VOICE = {0x80: "note_off", NOTE_ON: "note_on", AFTERTOUCH_POLY: "aftertouch_poly",

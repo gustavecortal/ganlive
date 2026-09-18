@@ -89,7 +89,7 @@ def test_a_click_lands_on_the_dial_it_looks_like_it_lands_on():
 
 def test_the_panel_publishes_a_new_dict_rather_than_editing_the_loops_one():
     """The seam between the mouse and the render loop, and the reason it needs no lock."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -114,7 +114,7 @@ def test_the_panel_publishes_a_new_dict_rather_than_editing_the_loops_one():
 def test_the_panel_reports_only_what_is_off_its_resting_value():
     """`p` prints something to paste into a preset, and a preset that restated all fifteen
     resting values would say nothing about what was actually found."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -128,7 +128,7 @@ def test_the_panel_reports_only_what_is_off_its_resting_value():
 def test_a_shared_voice_gets_one_light_and_says_so():
     """Under the shared-voice layout four pairs of drums arrive on one channel and genuinely
     cannot be told apart. Twelve lights would show a separation the hardware does not have."""
-    from ganlive.control.tracks import INDEX, channel_map
+    from ganlive.control.kit import INDEX, channel_map
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -163,7 +163,7 @@ def test_what_p_prints_is_what_you_set_not_what_the_patch_already_rested_at():
     """`p` exists to write down a discovery. Comparing against the module's resting values
     printed `release`'s own four dials straight back as if they had been found, and sampling
     the live values baked a decaying hit into the number."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -186,7 +186,7 @@ def test_dragging_a_slider_does_not_repaint_the_strip():
     eighteen text runs and re-uploaded 1.79 MB at 60 Hz for the length of every drag -- 1.38 ms
     against 0.14 on the display thread, during the one activity the panel exists for. What a
     drag has to show is the bar and the marker, and both are rectangles drawn every frame."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -204,7 +204,7 @@ def test_dragging_a_slider_does_not_repaint_the_strip():
 def test_a_dial_the_model_does_not_have_is_drawn_dark_and_cannot_be_grabbed():
     """**The failure this project keeps paying for, in the one place it is still visible.**"""
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
     from ganlive.strip import rows as console_rows
@@ -258,7 +258,7 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
 
     import pygame
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
@@ -318,7 +318,7 @@ def test_a_direction_says_what_it_measured_on_this_model():
     leading direction from a tail one at the controls, so it belongs where the player is
     already looking: the description under the dial they just grabbed."""
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -337,7 +337,7 @@ def test_a_direction_says_what_it_measured_on_this_model():
 
 def test_with_no_rig_every_dial_is_live():
     """Every offline tool builds a panel without one, and a strip of dark dials would be a"""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -410,7 +410,7 @@ def test_the_standstill_and_where_it_sits_are_both_visible_on_the_scope():
 def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
     """Watching a dial move says nothing about who moved it, and the two together are the whole
     point. Read off the preset so it cannot go stale when a rule changes."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import driven_by
 
@@ -471,7 +471,7 @@ def test_every_routing_column_label_fits_the_column_it_names():
 
     import pygame
 
-    from ganlive.control.tracks import channel_map
+    from ganlive.control.kit import channel_map
     from ganlive.presets import DEFAULT, PresetRunner
     from ganlive.strip import WIDTH, DialPanel, grid_columns
 
@@ -514,7 +514,7 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
 
     import pygame
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.dials import table as S
     from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
@@ -629,8 +629,8 @@ def test_the_help_line_only_names_keys_the_strip_itself_handles():
     import pygame
 
     from ganlive import strip as console
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -663,7 +663,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     import pygame
 
     from ganlive import strip as console
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
@@ -761,7 +761,7 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
 
     import pygame
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import TEXT_CACHE, WIDTH, DialPanel, wrap
 
@@ -798,7 +798,7 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
 def test_a_hand_on_the_strip_outranks_an_encoder_parked_on_the_same_dial():
     """Which writer wins used to be dict insertion order -- whoever touched any dial first this
     session, an arbitrary fact about the past rather than a decision."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
@@ -814,8 +814,8 @@ def test_a_hand_on_the_strip_outranks_an_encoder_parked_on_the_same_dial():
 def test_a_hand_on_the_strip_beats_a_knob_parked_on_the_same_dial():
     """Reaching for a control on screen means to override whatever the hardware is parked on,
     and that is a decision rather than a consequence of who moved first."""
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
@@ -866,8 +866,8 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
     import pygame
 
     from ganlive import strip as console
+    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
-    from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
@@ -937,7 +937,7 @@ def test_the_strip_offers_l_only_when_there_are_knobs_to_learn():
 def test_a_model_s_own_dials_come_back_where_the_hand_left_them(tmp_path):
     """The spine is shared and stays under the hand; the MODEL block and the directions mean
     something different on every model, so they go with it and come back with it."""
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.dials.fastgan_dials import fastgan
     from ganlive.dials.table import per_model
     from ganlive.presets import Positions, PresetRunner
