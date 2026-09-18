@@ -165,8 +165,9 @@ def main(argv=None) -> int:
         return 2
     out = args.out
     if out is None:
-        run = args.checkpoint.parent.parent.name
-        out = Path("runs/onnx") / f"{run}-{args.checkpoint.stem}.onnx"
+        from ganlive.bank import slug_for
+
+        out = Path("runs/onnx") / f"{slug_for(args.checkpoint)}.onnx"
 
     print(f"exporting {args.checkpoint} -> {out}", flush=True)
     report = export(args.checkpoint, out, args.opset, args.noise_seed,

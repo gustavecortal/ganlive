@@ -14,7 +14,6 @@ from ganlive.dials import table as _surface  # noqa: E402
 from ganlive.dials.table import (
     DIALS,
 )
-from ganlive.presets import Impulse, Macro, Preset
 from ganlive.walk import (
     SlerpWalk,
     WalkConfig,
@@ -674,7 +673,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
         for key in spelling:
             ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.key.key_code(key), mod=0)
             assert bare.handle(ev, strip) is False, action
-    assert "r free" in offered and "g route" in offered and "p print" in offered
+    assert "r free" in offered and "g route" in offered
 
     import pytest
 
@@ -820,41 +819,6 @@ def test_a_hand_on_the_strip_beats_a_knob_parked_on_the_same_dial():
 
     runner.free(SOURCE, "noise")
     assert runner.hands["noise"] == pytest.approx(1.0)
-
-
-def test_what_p_prints_can_be_pasted_back_and_gives_the_same_setting():
-    """A discovery that cannot be written down ends when the window closes. `p` used to print
-    the held dials alone, which was right while a session could only find values -- the grid can
-    change which drum drives which dial now, so it prints the rules too, from the runner's own
-    copy, which is what was playing rather than what the file said."""
-    from ganlive.control.tracks import INDEX
-    from ganlive.presets import PresetRunner
-    from ganlive.strip import DialPanel
-
-    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0)
-    panel = DialPanel(runner)
-    panel.set("noise", 0.42)
-    runner.route("CH", "se_64")
-
-    text = panel.as_patch()
-    scope = {"Preset": Preset, "Impulse": Impulse, "Macro": Macro}
-    exec(text, scope)                                       # noqa: S102 - that is the test
-    back = scope["RELEASE"]
-
-    assert back.dials["noise"] == pytest.approx(0.42), "a discovery survives the round trip"
-    assert back.dials["hold"] == pytest.approx(FIXTURES["release"].dials["hold"])
-    wired = {(i.track, i.dial) for i in back.impulses}
-    assert ("CH", "se_64") in wired, "and so does a rule made on the grid"
-    assert ("BD", "hold") in wired, "without losing the ones that were already there"
-    assert len(back.macros) == len(FIXTURES["release"].macros)
-
-    again = PresetRunner(back, INDEX, 60.0)
-    since = np.full(len(INDEX), 1e6, dtype=np.float32)
-    a, b = FakeKnobs(), FakeKnobs()
-    runner.apply(since, {"density": 5.0}, a)
-    again.apply(since, {"density": 5.0}, b)
-    assert a.written == pytest.approx(b.written)
-    assert runner.surface.values == pytest.approx(again.surface.values)
 
 
 def test_the_channel_map_is_remembered_so_it_stops_living_in_a_document(tmp_path, monkeypatch):

@@ -373,7 +373,6 @@ class PinnedRing:
         self._key = None
         self._n = 0
         self.pinned = False
-        self.odd = 0
 
     def _alloc(self, src) -> None:
         if self._mode == "pinned":
@@ -390,7 +389,6 @@ class PinnedRing:
         if self._key is None:
             self._alloc(src)
         if (tuple(src.shape), src.dtype) != self._key:
-            self.odd += 1
             return src.cpu().numpy()            # odd shape, e.g. a short final batch
         dst = self._buf[self._n % len(self._buf)]
         self._n += 1

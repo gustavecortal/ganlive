@@ -1,11 +1,62 @@
-"""Reading the Rytm's clock and transport, and driving a `MusicalClock` from them."""
+"""Reading a machine's clock, transport and controls, and driving a `MusicalClock` from them."""
 from __future__ import annotations
 
 import threading
 import time
+from typing import NamedTuple
 
 from ganlive.presets import remember
 from ganlive.walk import MusicalClock
+
+
+class Ports(NamedTuple):
+    """What this machine offers MIDI-wise, as `(index, name)` pairs."""
+
+    inputs: list
+    outputs: list
+    #: Ports whose name did not contain the filter. What to print when nothing matched.
+    rejected: list
+
+
+def find_ports(match: str = "") -> Ports:
+    """Every MIDI port whose name contains `match`, case-insensitively; all of them if empty.
+
+    The one enumeration. `play`'s clock reader, `wire`, `learn` and `doctor` each had their
+    own, and two of them compared the name as bytes while two compared it as text."""
+    import pygame.midi
+
+    pygame.midi.init()
+    want = match.lower()
+    found = Ports([], [], [])
+    for i in range(pygame.midi.get_count()):
+        _interf, raw, is_input, _is_output, _open = pygame.midi.get_device_info(i)
+        label = raw.decode(errors="replace")
+        if want and want not in label.lower():
+            found.rejected.append(label)
+            continue
+        (found.inputs if is_input else found.outputs).append((i, label))
+    return found
+
+
+def open_inputs(match: str = "") -> tuple[list, list, str | None]:
+    """`(opened, rejected, error)` for every matching input, as `(name, Input)` pairs.
+
+    `error` is why there is no MIDI at all, or the last port that refused to open -- never a
+    raise, because three of the four callers are reporting on the machine rather than using it."""
+    try:
+        import pygame.midi
+
+        found = find_ports(match)
+    except ImportError as exc:
+        return [], [], f"no MIDI library: {exc}"
+    out, error = [], None
+    for i, label in found.inputs:
+        try:
+            out.append((label, pygame.midi.Input(i)))
+        except Exception as exc:                                  # noqa: BLE001
+            error = f"{label}: {exc}"
+    return out, found.rejected, error
+
 
 CLOCK = 0xF8
 START = 0xFA
@@ -318,26 +369,7 @@ class ClockReader(threading.Thread):
 
     def open_ports(self):
         """Every matching input port, or every port if no filter was given."""
-        try:
-            import pygame.midi
-        except ImportError as exc:                                # noqa: BLE001
-            self.error = f"no MIDI library: {exc}"
-            return []
-        pygame.midi.init()
-        out = []
-        self.rejected = []
-        for i in range(pygame.midi.get_count()):
-            _interf, name, is_input, _is_output, _open = pygame.midi.get_device_info(i)
-            label = name.decode(errors="replace")
-            if not is_input:
-                continue
-            if self.port_match and self.port_match not in label.lower():
-                self.rejected.append(label)
-                continue
-            try:
-                out.append((label, pygame.midi.Input(i)))
-            except Exception as exc:                              # noqa: BLE001
-                self.error = f"{label}: {exc}"
+        out, self.rejected, self.error = open_inputs(self.port_match)
         self.ports = [label for label, _ in out]
         return out
 

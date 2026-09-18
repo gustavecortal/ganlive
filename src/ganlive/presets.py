@@ -103,45 +103,6 @@ def to_dict(preset: Preset) -> dict:
     return out
 
 
-POSITIONAL = {"impulses": 2, "macros": 6}
-
-
-def _py(value) -> str:
-    """One value as the Python that would produce it. Floats shortest-form."""
-    if isinstance(value, str):
-        return f'"{value}"'
-    if isinstance(value, float):
-        return f"{value:g}"
-    return repr(value)
-
-
-def _call(name: str, values: dict, positional: int) -> str:
-    """`Impulse("BD", "se_128", amount=0.34)` from the fields that are not defaults."""
-    items = list(values.items())
-    parts = [_py(v) for _k, v in items[:positional]]
-    parts += [f"{k}={_py(v)}" for k, v in items[positional:]]
-    return f"{name}({', '.join(parts)})"
-
-
-def to_source(preset: Preset) -> str:
-    """The preset as Python to paste into this file: dials, hit rules, slow rules."""
-    data = to_dict(preset)
-    lines = [f"{data['name'].upper().replace('-', '_')} = Preset("]
-    for key, value in data.items():
-        cls = RULE_KINDS.get(key)
-        if cls is not None:
-            lines.append(f"    {key}=[")
-            lines += [f"        {_call(cls.__name__, one, POSITIONAL[key])}," for one in value]
-            lines.append("    ],")
-        elif key == "dials":
-            inner = ", ".join(f"{_py(k)}: {_py(v)}" for k, v in sorted(value.items()))
-            lines.append(f"    dials={{{inner}}},")
-        else:
-            lines.append(f"    {key}={_py(value)},")
-    lines.append(")")
-    return "\n".join(lines)
-
-
 def from_dict(data: dict) -> Preset:
     """The other direction. Anything unrecognised is refused rather than dropped."""
     kwargs: dict = {}

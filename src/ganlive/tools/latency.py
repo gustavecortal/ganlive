@@ -173,7 +173,8 @@ def main(argv=None) -> int:
     # The screen only matters to `--height auto`, and passing it always means the two tools
     # resolve a height the same way rather than nearly the same way.
     r = bank.build(args.checkpoint, args.device, height=args.height,
-                  screen=bank.screen_size(), capture=args.capture)
+                  screen=bank.screen_size(),
+                  options=bank.LoadOptions(capture=args.capture))
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)

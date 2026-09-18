@@ -14,9 +14,7 @@ RATES = (48000, 44100, 96000)
 
 from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input  # noqa: E402
 from ganlive.control.features import FeatureConfig  # noqa: E402
-from ganlive.control.midi import (  # noqa: E402
-    dispatch,
-)
+from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
 from ganlive.control.tracks import TRACKS  # noqa: E402
 from ganlive.walk import MusicalClock  # noqa: E402
 
@@ -195,19 +193,7 @@ class _MidiListener:
     """Whether MIDI survives an audio driver holding the interface, and what it carries."""
 
     def __init__(self) -> None:
-        import pygame.midi
-
-        self.pm = pygame.midi
-        self.pm.init()
-        self.inputs = []
-        for i in range(self.pm.get_count()):
-            interf, name, is_in, _is_out, _open = self.pm.get_device_info(i)
-            if is_in:
-                try:
-                    self.inputs.append((i, name.decode(errors="replace"),
-                                        self.pm.Input(i)))
-                except Exception:                                 # noqa: BLE001
-                    pass
+        self.inputs, _rejected, self.error = open_inputs()
         self.clock = 0
         self.transport: list[str] = []
         self.notes: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
@@ -220,12 +206,12 @@ class _MidiListener:
         if not self.inputs:
             return ("MIDI: NO INPUT PORTS. If a machine is in a mode that claims its USB "
                     "for audio, that is the finding -- the clock needs another source.")
-        return "MIDI inputs: " + ", ".join(f"[{i}] {n}" for i, n, _ in self.inputs)
+        return "MIDI inputs: " + ", ".join(name for name, _port in self.inputs)
 
     def poll(self) -> None:
         """Every message goes through `midi.dispatch`, the same call the live tool makes."""
         now = time.perf_counter()
-        for _i, _name, port in self.inputs:
+        for _name, port in self.inputs:
             while port.poll():
                 for event, _ts in port.read(64):
                     status = event[0]

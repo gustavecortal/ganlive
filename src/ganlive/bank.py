@@ -704,7 +704,7 @@ class Shelf:
 
 
 def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=None,
-          screen=None, options: LoadOptions | None = None, **settings) -> Bank:
+          screen=None, options: LoadOptions | None = None) -> Bank:
     """Load, prepare, install the dials' settings, compile -- in that order, for each model.
 
     `device` and `dtype` default to whichever accelerator this machine has and the precision
@@ -715,9 +715,7 @@ def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=N
 
     device = device or detect_backend()
     dtype = dtype or playback_dtype(device)
-    # `**settings` so a caller can pass one field without building a `LoadOptions`; both spellings
-    # end up as the same object, and the object is what travels.
-    options = replace(options or LoadOptions(), **settings) if settings else options or LoadOptions()
+    options = options or LoadOptions()
     targets = [checkpoint] if isinstance(checkpoint, (str, Path)) else list(checkpoint)
     paths = [checkpoint_for(Path(t)) for t in targets]
 

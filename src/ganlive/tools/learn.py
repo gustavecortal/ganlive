@@ -13,7 +13,7 @@ os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 from ganlive.control.audio import NoAudioDevice, pick_input  # noqa: E402
 from ganlive.control.features import FeatureExtractor  # noqa: E402
-from ganlive.control.midi import dispatch  # noqa: E402
+from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
 from ganlive.control.tracks import TRACKS  # noqa: E402
 from ganlive.walk import MusicalClock  # noqa: E402
 
@@ -30,17 +30,14 @@ DETECT_S = 0.075
 BUS = 0.75
 
 
-def open_midi(pygame_midi, match: str = ""):
+def open_midi(match: str = ""):
     """The first input port whose name contains `match`; any input port if it is empty."""
-    want = match.lower().encode()
-    port = next((i for i in range(pygame_midi.get_count())
-                 if pygame_midi.get_device_info(i)[2] == 1
-                 and want in pygame_midi.get_device_info(i)[1].lower()), None)
-    if port is None:
-        raise SystemExit(f"no MIDI input matching {match!r}. This tool needs MIDI: the notes "
-                         f"are what identify the pads, and nothing else can. `ganlive doctor "
-                         f"--midi` lists the ports.")
-    return pygame_midi.Input(port)
+    opened, _rejected, error = open_inputs(match)
+    if not opened:
+        raise SystemExit(f"no MIDI input matching {match!r}{f' ({error})' if error else ''}. "
+                         f"This tool needs MIDI: the notes are what identify the pads, and "
+                         f"nothing else can. `ganlive doctor --midi` lists the ports.")
+    return opened[0][1]
 
 
 def report(seen, votes, levels, struck, silent, order):
@@ -182,7 +179,7 @@ def main(argv=None) -> int:
         raise SystemExit(str(exc)) from exc
 
     pygame.midi.init()
-    midi_in = open_midi(pygame.midi, args.port)
+    midi_in = open_midi(args.port)
     clock = MusicalClock(120.0)
 
     votes: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))

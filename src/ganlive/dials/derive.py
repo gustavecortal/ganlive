@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from ganlive.models.fastgan import first_image
+from ganlive.models.graph import _levels
 
 #: The layer types that can be the first thing a latent meets.
 CONSUMERS = (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)
@@ -740,11 +741,11 @@ def _measure(net: nn.Module, dirs: Directions, device, dtype=torch.float16,
     with torch.no_grad():
         for k in range(seeds):
             z = _latent(dirs.nz, seed + k, device, dtype)
-            base = pushed(net, z, None, into, dirs.push_shape).float()
+            base = pushed(net, z, None, into, dirs.push_shape)
             for s, sign in enumerate(signs):
                 for i, row in enumerate(basis):
                     moved = pushed(net, z, (sign * amount) * row, into, dirs.push_shape)
-                    totals[s][i] += float((moved.float() - base).abs().mean() * 127.5)
+                    totals[s][i] += _levels(moved, base)
         if into is not None:
             into.zero_()
     return [[t / seeds for t in got] for got in totals]
