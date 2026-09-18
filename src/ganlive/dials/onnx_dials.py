@@ -496,7 +496,7 @@ class TorchProbe(_Probe):
         latent = torch.from_numpy(z).to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
             out = first_image(self.net(latent))
-        return np.asarray(out.float().cpu().numpy(), np.float32)
+        return out.cpu().float().numpy()
 
 
 def measured(probe, names, size=(0, 0), **kw) -> Adopted:

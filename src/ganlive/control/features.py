@@ -249,7 +249,7 @@ class NoteFeatures:
         if self._last is not None:
             elapsed = max(0.0, now - self._last)
             if elapsed:
-                self.since = self.since + np.float32(elapsed)
+                self.since += np.float32(elapsed)
         self._last = self._now = now
 
         window = self.cfg.energy_window

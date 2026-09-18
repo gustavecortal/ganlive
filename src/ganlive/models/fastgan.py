@@ -321,7 +321,7 @@ def load(checkpoint: str | Path, device=None) -> tuple[Generator, Config]:
     from ganlive.device import detect_backend
 
     target = torch.device(device) if device is not None else torch.device(detect_backend())
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
     cfg = _config_from(ckpt.get("config", {}))
     net = Generator(**cfg.generator_kwargs).to(target)
     net.load_state_dict(_strip_compile_prefix(ckpt["g_ema"]))

@@ -644,6 +644,10 @@ class Shelf:
             self._cfgs[path] = config_of(path)
         return self._cfgs[path]
 
+    def count(self) -> int:
+        """How many models are on disk, without opening any of them."""
+        return len(self._models())
+
     def entries(self) -> list[Shelved]:
         """Every run under `root` that has a checkpoint. Scanned once; see the class note."""
         if self._listing is None:

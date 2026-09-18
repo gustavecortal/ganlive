@@ -275,6 +275,154 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
+def silence_words(use_notes: bool, use_audio: bool) -> tuple[str, str]:
+    """What to call a silence, and what to check, given where the hits were meant to come from."""
+    return (
+        ("both", "Pads reach it as notes and sequencer trigs as sound. No notes means the "
+                 "Overbridge Control Panel is closed, which leaves the machine's engine idle "
+                 "and its pads silent on MIDI; no sound means the channel map or the send "
+                 "levels -- `ganlive doctor --meter` reports those.")
+        if use_notes and use_audio else
+        ("notes", "No note-on named a track: check --notes and --midi-channels against the "
+                  "unresolved-notes line below. On a Rytm, pads send notes only while the "
+                  "Overbridge Control Panel is open and the SEQUENCER sends none unless TRK "
+                  "SEND MIDI is on; --triggers both adds its trigs back through the sound.")
+        if use_notes else
+        ("audio", "Check the channel map and the send levels; "
+                  "`ganlive doctor --meter` reports both."))
+
+def report_unheard(extractor, kind: str, fix: str, notes, note_channels, grace_s: float) -> None:
+    """Once, a few seconds in: is anything actually arriving, and if not, what is wrong."""
+    if not extractor.played():
+        print(f"  NO HITS YET after {grace_s:g}s over {kind}. The picture "
+              f"is running on the clock and ignoring the drums. {fix}",
+              flush=True)
+    unresolved = getattr(extractor, "unresolved", 0)
+    if unresolved:
+        seen = getattr(extractor, "unclaimed", {})
+        by_channel = {}
+        for ch, note in seen:
+            by_channel.setdefault(ch, set()).add(note)
+        mode = output_mode(by_channel, notes)
+        if mode:
+            hint = (f" -- that traffic is {mode.upper()} CH; "
+                    + ("drop --midi-channels" if mode == "auto"
+                       else "pass --midi-channels 1-12"))
+        else:
+            hint = f" on channels {sorted(c + 1 for c in by_channel)}"
+        # Or not a Rytm at all: a kit whose notes are not the ones read.
+        unknown = sorted(n for ns in by_channel.values() for n in ns
+                         if n not in notes)
+        if unknown and not note_channels:
+            hint += (f"; notes {unknown} name no track -- --notes {unknown[0]} "
+                     f"reads a kit that is consecutive from there, or a map "
+                     f"like --notes 36=BD,38=SD names each")
+        print(f"  {unresolved} NOTE-ONS NAMED NO TRACK{hint}", flush=True)
+
+def report_frames(frames, wall, ms, total, late, by_model, dropped, source, args, period) -> None:
+    """Frame time against the budget, and the drift a median hides."""
+    stats = stat_ms(ms, period * 1000)
+    print(f"\n{frames} frames in {wall:.1f}s = {frames / wall:.1f} fps"
+          + (f"   (timings over the last {len(ms)} frames)" if len(ms) < frames else ""))
+    # More than one, because the last frame of a healthy run and the deadline land together and
+    # a single hiccup anywhere in the run decides which of the two goes first.
+    if total and total - frames > 1:
+        print(f"  short       {total - frames} of {total} frames never happened: the run ended "
+              f"on its {args.seconds:g}s, and {frames / wall:.1f} fps is what this model held")
+    print(f"  frame       {stats['median']:6.2f} ms median   {stats['p95']:6.2f} p95   "
+          f"{stats['max']:6.2f} worst")
+    print(f"  budget      {period * 1000:6.2f} ms at {args.fps} fps -> "
+          f"{period * 1000 / stats['median']:.2f}x headroom on the median")
+    print(f"  over budget {stats['over_budget']} of {frames} "
+          f"({stats['over_budget'] / frames * 100:.1f}%) took longer than one frame")
+    print(f"  behind      {late} of {frames} ({late / frames * 100:.1f}%) arrived after "
+          f"their slot on an absolute schedule -- drift, not slow frames, and once the "
+          f"loop is behind it stays there")
+    for line in per_model_lines(by_model, period * 1000):
+        print(line)
+    if dropped[0]:
+        print(f"  SOUND DROPOUTS: {dropped[0]}. Raise --blocksize.")
+    if getattr(source, "late", 0):
+        print(f"  monitor    {source.late} underrun(s) of {source.calls} blocks; "
+              f"push {stat_ms(source.push_ms)['median']:.2f} ms median against "
+              f"{args.blocksize / args.samplerate * 1000:.2f}")
+
+def report_clock(clock, reader, args, pressure, encoders, runner) -> None:
+    """Where the beat came from, what was wired to what, and what each dial was worth."""
+    src = "MIDI" if clock.source == "midi" else f"internal, {args.bpm:g} BPM"
+    print(f"  beat        {src}, {clock.beats:.2f} beats, {clock.bpm:.1f} BPM")
+    for wired in (pressure, encoders):
+        for line in ([] if wired is None else wired.report()):
+            print(f"  {line}", flush=True)
+    for line in runner.usage_report():
+        print(f"  {line}", flush=True)
+    if reader is not None:
+        trouble = reader.trouble()
+        if trouble:
+            print(f"  {trouble}")
+        counts = reader.counts or {}
+        if not counts.get("clock"):
+            print("  NO MIDI CLOCK ARRIVED. The picture ran at its own tempo. Check "
+                  "MIDI CONFIG > SYNC > CLOCK SEND = ON.")
+        elif not counts.get("start"):
+            print("  clock but no transport: the tempo was right and the bar position was "
+                  "whatever it happened to be. Check TRANSPORT SEND = ON.")
+        else:
+            print(f"  midi        {counts}")
+
+def report_drums(extractor, tracks, kind: str, fix: str, hears, heard0, wall) -> None:
+    """Which drums reached the picture, which were silent, and which arrived unclaimed."""
+    names: dict[int, list[str]] = {}
+    for name, index in (extractor.channel_of() or tracks).items():
+        names.setdefault(index, []).append(name)
+    played = extractor.played()
+    if not played:
+        print(f"  NO HITS ARRIVED over {kind}. The tempo was right and no drum moved the "
+              f"picture. {fix}")
+    else:
+        # Against the kit, not the width of the stream: twelve tracks share eight channels
+        # here and the stream carries ten, so "8 of 10" read as two silent drums every run.
+        f = extractor.features()
+        print(f"  {kind:<11} {played} of {len(names)} kit channel(s) carried drums; "
+              f"density {f['density']:.2f}/s, energy {f['energy']:.2f}")
+    # Only channels a track maps to. The stream is wider than the kit -- the map here starts
+    # at 2, leaving the machine's main outs unclaimed -- and listing those as silent named a
+    # fault that cannot exist, because a rule names a track and no track points at them.
+    counts = [(int(n), "/".join(sorted(names[i])))
+              for i, n in enumerate(extractor.hits) if i in names]
+    heard_from = " ".join(f"{label} {n}" for n, label in counts if n)
+    quiet = " ".join(label for n, label in counts if not n)
+    print(f"  reached      {heard_from or 'nothing'}")
+    if quiet:
+        print(f"  silent       {quiet}  -- any rule wired to these can never fire")
+    # The other half of the same question, and the one that says the map is wrong: a channel
+    # carrying drums that no track claims.
+    stray = [f"ch{i}" for i, n in enumerate(extractor.hits) if i not in names and n]
+    if stray:
+        print(f"  unclaimed    {' '.join(stray)}  -- drums arrived on these and no track is "
+              f"mapped to them, so the map is missing a row and those hits reach nothing")
+    loudest = getattr(extractor, "loudest", None)
+    if quiet and loudest is not None:
+        levels, floor = loudest(), extractor.floor
+        for label in quiet.split():
+            channel = tracks.get(label.split("/")[0])
+            if channel is None or channel >= len(levels):
+                continue
+            peak = levels[channel]
+            why = ("NOTHING reached this channel -- send level, --map, or the machine"
+                   if peak < floor else
+                   "loud enough, so the DETECTOR rejected it -- floor or onset_ratio")
+            print(f"    {label:<9} ch{channel} peak {peak:.4f} vs floor {floor:.4f}"
+                  f"  -- {why}")
+    if hears is not None:
+        heard = hears() - heard0
+        print(f"  delivered   {heard:.1f}s of audio over a {wall:.1f}s run "
+              f"({heard / wall * 100:.0f}%)"
+              + ("" if heard > 0.9 * wall else
+                 "  <- THE CARD STOPPED DELIVERING. The picture went on running in "
+                 "perfect tempo while nothing reached it."))
+
+
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
 
@@ -415,7 +563,7 @@ def main(argv=None) -> int:
 
     shelf = None if args.no_shelf else bank.Shelf(r, args.runs)
     if shelf is not None:
-        print(f"models: {len(shelf.entries())} on disk under {args.runs}", flush=True)
+        print(f"models: {shelf.count()} on disk under {args.runs}", flush=True)
 
     runner = PresetRunner(preset, extractor.channel_of() or tracks, float(args.fps),
                          channels=extractor.n)
@@ -581,19 +729,7 @@ def main(argv=None) -> int:
           flush=True)
 
     HIT_GRACE_S = 6.0
-    kind, fix = (
-        ("both", "Pads reach it as notes and sequencer trigs as sound. No notes means the "
-                 "Overbridge Control Panel is closed, which leaves the machine's engine idle "
-                 "and its pads silent on MIDI; no sound means the channel map or the send "
-                 "levels -- `ganlive doctor --meter` reports those.")
-        if use_notes and use_audio else
-        ("notes", "No note-on named a track: check --notes and --midi-channels against the "
-                  "unresolved-notes line below. On a Rytm, pads send notes only while the "
-                  "Overbridge Control Panel is open and the SEQUENCER sends none unless TRK "
-                  "SEND MIDI is on; --triggers both adds its trigs back through the sound.")
-        if use_notes else
-        ("audio", "Check the channel map and the send levels; "
-                  "`ganlive doctor --meter` reports both."))
+    kind, fix = silence_words(use_notes, use_audio)
     hits_checked = False
     t_start = time.perf_counter()
     # **Seconds, not frames-that-would-have-fitted.** `total` is what `--seconds` buys at the
@@ -629,31 +765,7 @@ def main(argv=None) -> int:
                     ticks(t0)
                 if not hits_checked and reactive and t0 - t_start > HIT_GRACE_S:
                     hits_checked = True
-                    if not extractor.played():
-                        print(f"  NO HITS YET after {HIT_GRACE_S:g}s over {kind}. The picture "
-                              f"is running on the clock and ignoring the drums. {fix}",
-                              flush=True)
-                    unresolved = getattr(extractor, "unresolved", 0)
-                    if unresolved:
-                        seen = getattr(extractor, "unclaimed", {})
-                        by_channel = {}
-                        for ch, note in seen:
-                            by_channel.setdefault(ch, set()).add(note)
-                        mode = output_mode(by_channel, notes)
-                        if mode:
-                            hint = (f" -- that traffic is {mode.upper()} CH; "
-                                    + ("drop --midi-channels" if mode == "auto"
-                                       else "pass --midi-channels 1-12"))
-                        else:
-                            hint = f" on channels {sorted(c + 1 for c in by_channel)}"
-                        # Or not a Rytm at all: a kit whose notes are not the ones read.
-                        unknown = sorted(n for ns in by_channel.values() for n in ns
-                                         if n not in notes)
-                        if unknown and not note_channels:
-                            hint += (f"; notes {unknown} name no track -- --notes {unknown[0]} "
-                                     f"reads a kit that is consecutive from there, or a map "
-                                     f"like --notes 36=BD,38=SD names each")
-                        print(f"  {unresolved} NOTE-ONS NAMED NO TRACK{hint}", flush=True)
+                    report_unheard(extractor, kind, fix, notes, note_channels, HIT_GRACE_S)
                 runner.observe(extractor.drain())
                 runner.apply(extractor.since, extractor.features(), model.knobs)
                 clock.advance(period)
@@ -684,7 +796,9 @@ def main(argv=None) -> int:
                 took = (time.perf_counter() - t0) * 1000
                 ms.append(took)
                 recent.append(took)
-                by_model.setdefault(model.name, deque(maxlen=SAMPLE_CAP)).append(took)
+                if model.name not in by_model:
+                    by_model[model.name] = deque(maxlen=SAMPLE_CAP)
+                by_model[model.name].append(took)
                 frames += 1
                 if panel is not None:
                     panel.beats = clock.beats
@@ -730,101 +844,11 @@ def main(argv=None) -> int:
     if not ms:
         print("no frames")
         return 1
-    stats = stat_ms(ms, period * 1000)
-    print(f"\n{frames} frames in {wall:.1f}s = {frames / wall:.1f} fps"
-          + (f"   (timings over the last {len(ms)} frames)" if len(ms) < frames else ""))
-    # More than one, because the last frame of a healthy run and the deadline land together and
-    # a single hiccup anywhere in the run decides which of the two goes first.
-    if total and total - frames > 1:
-        print(f"  short       {total - frames} of {total} frames never happened: the run ended "
-              f"on its {args.seconds:g}s, and {frames / wall:.1f} fps is what this model held")
-    print(f"  frame       {stats['median']:6.2f} ms median   {stats['p95']:6.2f} p95   "
-          f"{stats['max']:6.2f} worst")
-    print(f"  budget      {period * 1000:6.2f} ms at {args.fps} fps -> "
-          f"{period * 1000 / stats['median']:.2f}x headroom on the median")
-    print(f"  over budget {stats['over_budget']} of {frames} "
-          f"({stats['over_budget'] / frames * 100:.1f}%) took longer than one frame")
-    print(f"  behind      {late} of {frames} ({late / frames * 100:.1f}%) arrived after "
-          f"their slot on an absolute schedule -- drift, not slow frames, and once the "
-          f"loop is behind it stays there")
-    for line in per_model_lines(by_model, period * 1000):
-        print(line)
-    if dropped[0]:
-        print(f"  SOUND DROPOUTS: {dropped[0]}. Raise --blocksize.")
-    if getattr(source, "late", 0):
-        print(f"  monitor    {source.late} underrun(s) of {source.calls} blocks; "
-              f"push {stat_ms(source.push_ms)['median']:.2f} ms median against "
-              f"{args.blocksize / args.samplerate * 1000:.2f}")
-    src = "MIDI" if clock.source == "midi" else f"internal, {args.bpm:g} BPM"
-    print(f"  beat        {src}, {clock.beats:.2f} beats, {clock.bpm:.1f} BPM")
-    for wired in (pressure, encoders):
-        for line in ([] if wired is None else wired.report()):
-            print(f"  {line}", flush=True)
-    for line in runner.usage_report():
-        print(f"  {line}", flush=True)
-    if reader is not None:
-        trouble = reader.trouble()
-        if trouble:
-            print(f"  {trouble}")
-        counts = reader.counts or {}
-        if not counts.get("clock"):
-            print("  NO MIDI CLOCK ARRIVED. The picture ran at its own tempo. Check "
-                  "MIDI CONFIG > SYNC > CLOCK SEND = ON.")
-        elif not counts.get("start"):
-            print("  clock but no transport: the tempo was right and the bar position was "
-                  "whatever it happened to be. Check TRANSPORT SEND = ON.")
-        else:
-            print(f"  midi        {counts}")
+    report_frames(frames, wall, ms, total, late, by_model, dropped, source,
+                  args, period)
+    report_clock(clock, reader, args, pressure, encoders, runner)
     if reactive:
-        names: dict[int, list[str]] = {}
-        for name, index in (extractor.channel_of() or tracks).items():
-            names.setdefault(index, []).append(name)
-        played = extractor.played()
-        if not played:
-            print(f"  NO HITS ARRIVED over {kind}. The tempo was right and no drum moved the "
-                  f"picture. {fix}")
-        else:
-            # Against the kit, not the width of the stream: twelve tracks share eight channels
-            # here and the stream carries ten, so "8 of 10" read as two silent drums every run.
-            f = extractor.features()
-            print(f"  {kind:<11} {played} of {len(names)} kit channel(s) carried drums; "
-                  f"density {f['density']:.2f}/s, energy {f['energy']:.2f}")
-        # Only channels a track maps to. The stream is wider than the kit -- the map here starts
-        # at 2, leaving the machine's main outs unclaimed -- and listing those as silent named a
-        # fault that cannot exist, because a rule names a track and no track points at them.
-        counts = [(int(n), "/".join(sorted(names[i])))
-                  for i, n in enumerate(extractor.hits) if i in names]
-        heard_from = " ".join(f"{label} {n}" for n, label in counts if n)
-        quiet = " ".join(label for n, label in counts if not n)
-        print(f"  reached      {heard_from or 'nothing'}")
-        if quiet:
-            print(f"  silent       {quiet}  -- any rule wired to these can never fire")
-        # The other half of the same question, and the one that says the map is wrong: a channel
-        # carrying drums that no track claims.
-        stray = [f"ch{i}" for i, n in enumerate(extractor.hits) if i not in names and n]
-        if stray:
-            print(f"  unclaimed    {' '.join(stray)}  -- drums arrived on these and no track is "
-                  f"mapped to them, so the map is missing a row and those hits reach nothing")
-        loudest = getattr(extractor, "loudest", None)
-        if quiet and loudest is not None:
-            levels, floor = loudest(), extractor.floor
-            for label in quiet.split():
-                channel = tracks.get(label.split("/")[0])
-                if channel is None or channel >= len(levels):
-                    continue
-                peak = levels[channel]
-                why = ("NOTHING reached this channel -- send level, --map, or the machine"
-                       if peak < floor else
-                       "loud enough, so the DETECTOR rejected it -- floor or onset_ratio")
-                print(f"    {label:<9} ch{channel} peak {peak:.4f} vs floor {floor:.4f}"
-                      f"  -- {why}")
-        if hears is not None:
-            heard = hears() - heard0
-            print(f"  delivered   {heard:.1f}s of audio over a {wall:.1f}s run "
-                  f"({heard / wall * 100:.0f}%)"
-                  + ("" if heard > 0.9 * wall else
-                     "  <- THE CARD STOPPED DELIVERING. The picture went on running in "
-                     "perfect tempo while nothing reached it."))
+        report_drums(extractor, tracks, kind, fix, hears, heard0, wall)
     peak = dev.peak_memory_gb()
     if peak:
         print(f"  memory      {peak:.2f} GB peak")
