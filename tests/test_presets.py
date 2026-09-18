@@ -7,9 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from ganlive.dials.table import (
-    DIALS,
-)
+from ganlive.dials.fastgan_dials import DIALS, fastgan
 from ganlive.presets import Impulse, Macro, Preset
 from tests.support import FIXTURES, FakeKnobs
 
@@ -22,7 +20,7 @@ def test_a_hit_cannot_push_a_dial_off_its_scale():
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.5},
                   impulses=[Impulse("BD", "noise", amount=9.0, decay=0.5, velocity=0.0)])
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     since = [1e6] * len(INDEX)
     since[INDEX["BD"]] = 0.0
     runner.apply(since, {}, FakeKnobs())
@@ -38,7 +36,7 @@ def test_the_runner_counts_which_dials_were_played():
 
     preset = Preset(name="t", blurb="",
                   impulses=[Impulse("BD", "noise", amount=0.5, decay=0.5, velocity=0.0)])
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     knobs, quiet = FakeKnobs(), [1e6] * len(INDEX)
     hit = list(quiet)
     hit[INDEX["BD"]] = 0.0
@@ -62,7 +60,7 @@ def test_a_hit_on_any_track_reaches_a_star_rule():
 
     preset = Preset(name="t", blurb="",
                   impulses=[Impulse("*", "noise", amount=0.5, decay=0.5, velocity=0.0)])
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     knobs, since = FakeKnobs(), [1e6] * len(INDEX)
     runner.apply(since, {}, knobs)
     assert runner.surface["noise"] == pytest.approx(0.0)
@@ -84,7 +82,7 @@ def test_a_whole_kit_rule_decays_on_audio_time_like_every_other_rule():
                   impulses=[Impulse("*", "noise", amount=0.5, decay=0.2, velocity=0.0)])
     seen = {}
     for real_dt in (1 / 60, 1 / 30):                       # on time, then every frame late
-        runner = PresetRunner(preset, INDEX, 60.0)
+        runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
         since = [1e6] * len(INDEX)
         since[INDEX["BD"]] = 0.0
         runner.observe([(INDEX["BD"], 0.5, 0.0)])
@@ -105,7 +103,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.1},
                   impulses=[Impulse("BD", "noise", amount=0.2, decay=0.5, velocity=0.0)])
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     knobs = FakeKnobs()
     since = [1e6] * len(INDEX)
     since[INDEX["BD"]] = 0.0
@@ -130,7 +128,7 @@ def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
     since[INDEX["BD"]] = 0.0
     seen = {}
     for reaction in (0.0, 0.5, 1.0):
-        runner = PresetRunner(preset, INDEX, 60.0)
+        runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
         runner.hold("test", {**runner.held_by("test"), "reaction": reaction})
         runner.apply(since, {"density": 10.0}, FakeKnobs())
         seen[reaction] = (runner.surface["noise"], runner.surface["dir1"])
@@ -150,7 +148,7 @@ def test_at_zero_reaction_any_setting_behaves_like_the_structural_one():
     since = [0.0] * len(INDEX)
     out = {}
     for name in ("full", "voices"):
-        runner = PresetRunner(FIXTURES[name], INDEX, 60.0)
+        runner = PresetRunner(FIXTURES[name], INDEX, 60.0, layout=fastgan())
         runner.hold("test", {**runner.held_by("test"), "reaction": 0.0})
         runner.apply(since, {"density": 6.0}, FakeKnobs())
         out[name] = dict(runner.surface.values)
@@ -170,7 +168,7 @@ def test_a_hand_beats_the_slow_rule_for_that_dial_and_only_that_dial():
                           Macro("density", "dir1", 0.0, 10.0, 0.1, 0.9, glide=0.0)],
                   impulses=[Impulse("BD", "spread", amount=0.2, decay=0.5, velocity=0.0)])
     since = [1e6] * len(INDEX)
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     runner.apply(since, {"density": 10.0}, FakeKnobs())
     assert runner.surface["spread"] == pytest.approx(0.9), "the rule drives it when free"
 
@@ -194,7 +192,7 @@ def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
     preset = Preset(name="t", blurb="",
                   macros=[Macro("density", "dir1", 0.0, 10.0, 0.0, 1.0, glide=0.2)])
     since = [1e6] * len(INDEX)
-    runner = PresetRunner(preset, INDEX, 60.0)
+    runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     runner.hold("test", {"dir1": 0.1})
     for _ in range(120):                                  # two seconds under a hand
         runner.apply(since, {"density": 10.0}, FakeKnobs())
@@ -211,7 +209,7 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     cfg = runner.walk_cfg
     runner.hold("test", {"noise": 0.5})
     runner.load(FIXTURES["release"])
@@ -233,7 +231,7 @@ def test_a_setting_naming_a_dial_that_no_longer_exists_says_so():
                 impulses=[Impulse("BD", "grit", amount=0.3, decay=0.2),
                           Impulse("SD", "noise", amount=0.2, decay=0.2)],
                 macros=[Macro("density", "tint", 2.5, 9.5, 0.1, 0.6, glide=1.0)])
-    runner = PresetRunner(old, INDEX, 60.0)
+    runner = PresetRunner(old, INDEX, 60.0, layout=fastgan())
 
     assert "warmth (no such dial)" in runner.dropped
     assert "BD->grit (no such dial)" in runner.dropped
@@ -250,7 +248,7 @@ def test_two_sources_can_hold_different_dials_without_dropping_each_other():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold("console", {"noise": 0.6})
     runner.hold("encoder", {"se_256": 0.2})
     assert runner.hands == {"noise": 0.6, "se_256": 0.2}
@@ -270,7 +268,7 @@ def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold("a", {"noise": 0.5})
     before = runner.hands
     runner.hold("b", {"se_256": 0.5})
@@ -284,10 +282,10 @@ def test_a_rule_wired_past_the_end_of_the_kit_is_reported_not_silently_skipped()
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    full = PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=12)
+    full = PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=12, layout=fastgan())
     assert not full.dropped
 
-    narrow = PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=8)
+    narrow = PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=8, layout=fastgan())
     assert narrow.dropped, "CY sits on channel 10 and this kit has eight"
     assert any("CY" in line for line in narrow.dropped), narrow.dropped
     assert all("CY" not in imp.track for imp, _ch in narrow._impulses)
@@ -301,7 +299,7 @@ def test_a_drum_can_be_wired_to_a_dial_while_it_runs():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     assert runner.routing() == {}
 
     assert runner.route("BD", "noise") is True
@@ -323,7 +321,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     from ganlive.presets import AMOUNT_MAX, PresetRunner
 
     bd = INDEX["BD"]
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     assert runner.amount_on("noise", bd) is None, "nothing is wired yet"
     assert runner.set_amount_on("noise", bd, 0.5) is None, "an unwired cell is not created"
 
@@ -334,7 +332,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     assert [(i.track, i.amount) for i, _ch in runner.routing()["noise"]] == [("BD", 0.08)]
 
     def push(dial, amount):
-        r = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+        r = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
         r.route("BD", dial)
         r.set_amount_on(dial, INDEX["BD"], amount)
         since = np.full(len(INDEX), 1e6, dtype=np.float32)
@@ -365,7 +363,7 @@ def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire
     channel = voices["RS"]
 
     preset = Preset(**{**FIXTURES["still"].__dict__, "impulses": []})
-    runner = PresetRunner(preset, voices, 60.0)
+    runner = PresetRunner(preset, voices, 60.0, layout=fastgan())
     runner.route("RS", "se_512")
     runner.route("CP", "se_512")
     runner.set_amount_on("se_512", channel, 0.12)
@@ -388,7 +386,7 @@ def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it
     channel = voices["RS"]
     assert voices["CP"] == channel, "this test needs two drums on one channel"
 
-    runner = PresetRunner(Preset(**{**FIXTURES["still"].__dict__, "impulses": []}), voices, 60.0)
+    runner = PresetRunner(Preset(**{**FIXTURES["still"].__dict__, "impulses": []}), voices, 60.0, layout=fastgan())
     runner.route("CP", "se_512", amount=0.5)          # a saved setting wired the second of them
 
     assert runner.wire(["RS", "CP"], "se_512") is False, "the cell is lit, so a click clears it"
@@ -407,7 +405,7 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
     since = np.full(len(INDEX), 1e6, dtype=np.float32)
     runner.apply(since, {"density": 0.8, "energy": 0.5, "active": 0.4},
                  FakeKnobs())
@@ -431,7 +429,7 @@ def test_a_strength_set_by_hand_survives_being_saved_and_read_back():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner, from_dict, to_dict
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.route("BD", "noise")
     runner.set_amount_on("noise", INDEX["BD"], -0.11)
 
@@ -448,7 +446,7 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
     from ganlive.presets import PresetRunner
 
     before = list(FIXTURES["voices"].impulses)
-    runner = PresetRunner(FIXTURES["voices"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["voices"], INDEX, 60.0, layout=fastgan())
     runner.route("BD", "se_64")
     assert FIXTURES["voices"].impulses == before, "the loaded setting must be untouched"
     assert runner.preset.impulses != before
@@ -463,7 +461,7 @@ def test_the_default_push_points_away_from_where_the_dial_is_parked():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0, layout=fastgan())
     assert runner._base["hold"] > 0.6, "the fixture needs a dial parked high"
     runner.route("CP", "hold")
     pushed = [i for i in runner.preset.impulses if i.track == "CP" and i.dial == "hold"]
@@ -484,7 +482,7 @@ def test_writes_from_two_threads_do_not_lose_a_source():
     from ganlive.control.tracks import INDEX
     from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     done = threading.Barrier(3)
 
     def writer(source, dial):
@@ -517,7 +515,7 @@ def test_a_saved_setting_is_in_the_rotation_the_next_time_it_starts(tmp_path):
     from ganlive.control.tracks import INDEX
     from ganlive.presets import Library, PresetRunner
 
-    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
     runner.hold("console", {"noise": 0.62, "hold": 0.81})
     runner.route("BD", "se_256")
 
@@ -575,7 +573,7 @@ def test_the_hand_positions_are_not_read_as_a_setting(tmp_path):
     from ganlive.control.tracks import INDEX
     from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
+    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
     runner.hold("hand", {"noise": 0.6})
     positions = Positions(tmp_path / POSITIONS_NAME)
     positions.stash("gv-2048-ft-72000", runner, "hand", ["noise"])

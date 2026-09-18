@@ -51,6 +51,8 @@ DIRECTION_POINTS = _direction_points()
 DIRECTION_TAIL = ("Rests in the middle and travels both ways. What it does is measured on the "
                   "model you have loaded, and is for you to name.")
 
+#: The spine: what every model offers, whatever it is. One architecture's own
+#: dials live with that architecture -- see `fastgan_dials`, `onnx_dials`.
 DIALS: dict[str, tuple[float, str]] = {
     "reaction": (0.50, "how hard the picture answers individual hits. 0.5 is as written, 0 "
                        "ignores every hit so only the arrangement moves the picture, 1 is "
@@ -78,62 +80,9 @@ DIALS: dict[str, tuple[float, str]] = {
         f"principal latent direction {i + 1}, from the SVD of the first weight that consumes "
         f"z. {DIRECTION_TAIL}")
        for i in range(DIRECTIONS)},
-
-    "se_64": (0.00, "the gate from the 4-tall base onto the 64-tall stage. One-sided: below "
-                    "its trained value the same gate smears rather than breaks up, and that "
-                    "half is not reachable from here."),
-    "se_128": (0.50, "the gate from the 8-tall stage onto the 128-tall one."),
-    "se_256": (0.50, "the gate from the 16-tall stage onto the 256-tall one."),
-    "se_512": (0.50, "the gate from the 32-tall stage onto the 512-tall one."),
-    "noise": (0.00, "the network's frozen noise patterns, brought in one band at a time as "
-                    "it rises, finest mark first. The per-output-pixel band is left out: its "
-                    "trained weight is 0.0001, so it needs a thousandfold gain to show."),
 }
 
 
-@dataclass(frozen=True)
-class Span:
-    """One dial writing one model setting over a measured range."""
-
-    dial: str
-    target: str
-    lo: float
-    mid: float
-    hi: float
-
-    @property
-    def points(self) -> tuple[tuple[float, float], ...]:
-        """The same three numbers as a curve, so nothing has to retype them as one."""
-        return evenly((self.lo, self.mid, self.hi))
-
-
-#: The player-facing text for each of these lives in `DIALS`, which is what the strip reads.
-#: `Span` used to carry a second copy as `note`; nobody read it, and it drifted.
-SPANS: tuple[Span, ...] = (
-    Span("se_256", "sle.se_256", 0.08, 1.0, 2.0),
-    Span("se_512", "sle.se_512", 0.08, 1.0, 2.6),
-    Span("se_128", "sle.se_128", 0.10, 1.0, 2.7),
-    # No `pre_tanh`. A gain into the output squash is a contrast curve on the finished picture,
-    # the same class as the deleted `zoom` and `chroma`: it explores nothing. Measured on the
-    # shipping checkpoint over four latents it was also the weakest gate, 24 and 40 8-bit
-    # levels at its two ends against 59 to 93 for `se_512`, and its two ends were one change
-    # with the sign flipped (|cos| 0.91 between their difference images).
-    Span("se_64", "sle.se_64", 1.0, 1.85, 2.7),
-    # No `z_scale`, and with it the `where` field and the walk-writing branch it was the only
-    # user of. Its up end moves 1.30x what a random direction moves on a fine-tuned FastGAN
-    # and 1.53x on another -- under the bar every direction dial has to clear -- and its
-    # down end is the flat wash its own description used to advertise, measuring |cos| 0.95
-    # against `dir5`. On a StyleGAN2 the mapping network's pixel norm cancelled it outright.
-)
-
-NOISE_BANDS = (("noise.feat_512", 22.0, 0.00), ("noise.feat_128", 41.4, 0.25),
-              ("noise.feat_32", 60.2, 0.50), ("noise.feat_8", 52.7, 0.72))
-
-NOISE_FALLBACK_GAIN = {"noise.feat_512": 30.0, "noise.feat_128": 9.0,
-                      "noise.feat_32": 8.0, "noise.feat_8": 60.0}
-NOISE_RAMP = 0.45
-
-SETTINGS_WRITTEN = tuple(s.target for s in SPANS) + tuple(n for n, _, _ in NOISE_BANDS)
 
 
 MASTER = ("reaction",)
@@ -143,12 +92,6 @@ DIRECTION_DIALS = tuple(f"dir{i + 1}" for i in range(DIRECTIONS))
 #: The LATENT block, which since `z_scale` went is exactly those. Two names because one is what
 #: the dials are and the other is where they are drawn, and the block could take another dial.
 LATENT = DIRECTION_DIALS
-#: Settings inside this architecture. The only per-model block, and the one that changes
-#: when another generator is loaded.
-MODEL = tuple(name for name in DIALS if name not in MASTER + MOTION + LATENT)
-
-GROUPS = (("MASTER", MASTER), ("MOTION", MOTION), ("LATENT", LATENT), ("MODEL", MODEL))
-
 SPEED_BEATS = (8.0, 4.0, 2.0, 1.0, 0.5)
 
 GRID_STEPS = (0, 4, 8, 16, 32)
@@ -190,10 +133,7 @@ HOLD_MAX = 0.95
 #: `(below, above, at rest)` for the readout. A bare 0.62 cannot say which way a dial is
 #: heading. The resting word is per dial: `reaction` never touches the weights, so there is
 #: nothing trained about where it sits, and `noise` rests at off.
-POLES = {"reaction": ("calmer", "harder", "as written"),
-         "noise": ("off", "on", "off"),
-         **{gate: ("down", "up", "as trained")
-            for gate in ("se_64", "se_128", "se_256", "se_512")}}
+POLES = {"reaction": ("calmer", "harder", "as written")}
 
 
 def hold_for(x: float) -> float:
@@ -227,8 +167,8 @@ def readout(name: str, value: float, layout=None) -> str:
         return "centred" if abs(push) < 0.02 else f"{push:+.2f}"
     poles = (knob.poles if knob is not None else None) or POLES.get(name)
     if poles is not None:
-        # Measured from this dial's own rest, not from the middle: `se_64` rests at 0 and is
-        # one-sided, so a fixed 0.5 pivot had it reading "down 100%" while sitting where it starts.
+        # Measured from this dial's own rest, not from the middle: a one-sided gate rests at 0,
+        # so a fixed 0.5 pivot had it reading "down 100%" while sitting where it starts.
         rest = knob.rest if knob is not None else DIALS[name][0]
         span = max(rest, 1.0 - rest)
         away = (v - rest) / span if span else 0.0
@@ -237,20 +177,13 @@ def readout(name: str, value: float, layout=None) -> str:
     return f"{v:.2f}"
 
 
-def noise_for(x: float, gains: dict[str, float] | None = None) -> list[tuple[str, float]]:
-    """`noise` dial to a gain for each noise band."""
-    x = clamp01(x)
-    gains = gains or {}          # per-key fallback below already covers None and {}
-    return [(name, 1.0 + (gains.get(name, NOISE_FALLBACK_GAIN[name]) - 1.0)
-             * clamp01((x - start) / NOISE_RAMP))
-            for name, _target, start in NOISE_BANDS]
-
-
 class Surface:
     """The dial values, and the one method that turns them into everything downstream."""
 
     def __init__(self, values: dict[str, float] | None = None, layout=None) -> None:
-        self.layout = layout if layout is not None else fastgan()
+        # The spine, not one architecture's table: a surface with no model yet has the
+        # dials every model has. `PresetRunner.adopt` relayouts the moment one loads.
+        self.layout = layout if layout is not None else Layout(tuple(spine()))
         self.values = dict(self.layout.rests)
         self.held: frozenset[str] = frozenset()
         for name, value in (values or {}).items():
@@ -389,7 +322,7 @@ class Layout:
         return self._groups
 
 
-def _spine(directions: int = DIRECTIONS) -> list[Knob]:
+def spine(directions: int = DIRECTIONS) -> list[Knob]:
     """MASTER, MOTION and LATENT: host arithmetic, identical on every model ever loaded."""
     out = [Knob("reaction", *DIALS["reaction"], group="MASTER", poles=POLES["reaction"])]
     out += [Knob(name, *DIALS[name], group="MOTION") for name in MOTION]
@@ -424,25 +357,6 @@ def w_direction_notes(ranges) -> tuple[str, ...]:
     return tuple(out)
 
 
-def fastgan(noise_gains=None, directions: int = DIRECTIONS) -> Layout:
-    """The layout this instrument was built around, from the tables above."""
-    knobs = _spine(directions)
-    for span in SPANS:
-        knobs.append(Knob(span.dial, *DIALS[span.dial], group="MODEL",
-                          poles=POLES.get(span.dial),
-                          writes=(Write(span.target, span.points),)))
-    writes = []
-    for name, _target, start in NOISE_BANDS:
-        # The knee is read off `noise_for` rather than derived beside it, so the two spellings of a
-        # hold-then-ramp cannot drift and the tests assert the function the played path runs.
-        at_x = {x: dict(noise_for(x, noise_gains))[name]
-                for x in (0.0, start, min(1.0, start + NOISE_RAMP), 1.0)}
-        writes.append(Write(name, tuple(sorted(at_x.items()))))
-    knobs.append(Knob("noise", *DIALS["noise"], group="MODEL",
-                      poles=POLES["noise"], writes=tuple(writes)))
-    return Layout(tuple(knobs))
-
-
 #: What a derived dial's description says. The mechanism is known -- a gain on one band, or on
 #: the network's own noise at one scale -- and what it looks like is a property of the model.
 DERIVED_BLURB = {
@@ -460,13 +374,13 @@ DERIVED_BLURB = {
          "more typical of what the model was trained on and less extreme; above it, less "
          "typical. Derived from the graph and measured on it.",
     # No `pre_tanh` entry: `adopt` no longer puts a dial on the squash's input, for the reason
-    # written beside `SPANS` above -- a gain there is a contrast curve, not a way through.
+    # written beside `fastgan_dials.SPANS` -- a gain there is a contrast curve, not a way through.
 }
 
 
 def adopted(names, rests, curves, levels, directions: int = DIRECTIONS) -> Layout:
     """The layout of a graph nobody here wrote, read out of the graph."""
-    knobs = _spine(directions)
+    knobs = spine(directions)
     for i, name in enumerate(names):
         family = name.split("_")[0] if name.startswith(("noise_", "gain_", "w_")) else name
         height = name.partition("_")[2]

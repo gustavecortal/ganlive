@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.dials import table as _surface  # noqa: E402
+from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials.steer import Knobs
 from ganlive.dials.table import (
     DIALS,
@@ -55,7 +55,7 @@ def test_the_described_dial_survives_a_model_that_does_not_have_it():
     assert panel.focus == "dir5", "a dial the model has is left alone"
 
     panel.bank.current = dataclasses.replace(panel.bank.current,
-                                            layout=_surface.fastgan(directions=4))
+                                            layout=_fastgan.fastgan(directions=4))
     assert "dir5" not in panel.dials, "this test needs the switch to retire the focused dial"
 
     assert panel.focus in panel.dials

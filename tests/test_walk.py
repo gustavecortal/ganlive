@@ -6,12 +6,11 @@ import numpy as np
 import pytest
 import torch
 
+from ganlive.dials.fastgan_dials import DIALS, SPANS
 from ganlive.dials.table import (
-    DIALS,
     LATENT,
     MASTER,
     MOTION,
-    SPANS,
 )
 from ganlive.walk import (
     BEATS_PER_BAR,

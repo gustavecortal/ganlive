@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+from ganlive.dials import fastgan_dials as F
 from ganlive.dials import steer as K
 from ganlive.dials import table as S
 from ganlive.dials.derive import FLOOR_LEVELS, RANDOM_FLOOR
@@ -332,7 +333,7 @@ def _stylegan2_layout(_knobs, _path):
 
 
 def _fastgan_layout(knobs, _path):
-    return S.fastgan(noise_gains=getattr(knobs, "noise_gains", None))
+    return F.fastgan(noise_gains=getattr(knobs, "noise_gains", None))
 
 
 #: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
@@ -351,7 +352,7 @@ def family_of(path) -> Family:
 
 def live_dials(knobs, directions, layout=None) -> frozenset:
     """Which dials actually reach this model. Derived, never listed."""
-    layout = layout if layout is not None else S.fastgan()
+    layout = layout if layout is not None else F.fastgan()
     have = set(getattr(knobs, "index", ()) or ())
     count = 0 if directions is None else len(directions)
     live = set()

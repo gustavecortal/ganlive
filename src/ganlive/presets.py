@@ -130,11 +130,13 @@ class PresetRunner:
     """Turns one frame of audio measurements into dial values, then applies them."""
 
     def __init__(self, preset: Preset, channel_of: dict[str, int], fps: float,
-                 channels: int = 0) -> None:
+                 channels: int = 0, layout=None) -> None:
         self.channel_of = channel_of
         self.fps = fps
         self.channels = int(channels) or max(channel_of.values(), default=-1) + 1
-        self.surface = Surface()
+        #: `None` is the spine -- the dials every model has. `adopt` replaces it with the
+        #: loaded model's the moment one arrives, which is before any frame is drawn.
+        self.surface = Surface(layout=layout)
         self.walk_cfg = WalkConfig()
 
         self._sources: dict[str, dict[str, float]] = {}

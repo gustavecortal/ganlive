@@ -139,7 +139,7 @@ def available(net: nn.Module) -> set[str]:
 
 def install(net: nn.Module, device, dtype=torch.float16, wanted=None) -> Knobs:
     """Swap the steerable modules in and hand back the vector that drives them."""
-    from ganlive.dials.table import SETTINGS_WRITTEN
+    from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
     from ganlive.models.fastgan import SkipLayerExcitation
     from ganlive.models.graph import FoldedNoise
 
@@ -229,7 +229,7 @@ def _levels(frame: torch.Tensor, base: torch.Tensor) -> float:
 def calibrate_noise(net: nn.Module, knobs: Knobs, nz: int, device,
                    dtype=torch.float16, seed: int = 0, probes: int = 7) -> dict[str, float]:
     """Find, for this model, the gain each grain band needs to buy the levels it should."""
-    from ganlive.dials.table import NOISE_BANDS
+    from ganlive.dials.fastgan_dials import NOISE_BANDS
 
     z = _latent(nz, seed, device, dtype)
     knobs.reset()
