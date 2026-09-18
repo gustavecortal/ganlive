@@ -412,7 +412,7 @@ def test_the_compiled_window_conversion_agrees_with_the_eager_one():
     every test in this file exercises the fallback and the card runs the other. Two paths to one answer is
     the drift this whole file was extracted to prevent."""
     from ganlive.models.common import denormalise
-    from ganlive.models.graph import to_rgb
+    from ganlive.pixels import to_rgb
 
     x = torch.linspace(-1.2, 1.2, 3 * 8 * 12).reshape(1, 3, 8, 12)
     was = (denormalise(x.float()) * 255).round().clamp_(0, 255).to(torch.uint8)

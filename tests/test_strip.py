@@ -694,7 +694,7 @@ def test_the_window_conversion_is_the_same_picture_in_the_texture_s_own_order():
     SDL convert every pixel on the display thread. That is only a speed change if the bytes are
     the same picture, so this pins the channel order rather than trusting the name -- a swapped
     red and blue is the one bug here that still looks like a working picture."""
-    from ganlive.models.graph import to_bgra, to_rgb
+    from ganlive.pixels import to_bgra, to_rgb
 
     out = torch.linspace(-1, 1, 3 * 8 * 6).reshape(1, 3, 8, 6)
     rgb = to_rgb(out).numpy()

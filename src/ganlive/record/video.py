@@ -139,7 +139,7 @@ class Recorder:
         import av
         import numpy as np
 
-        from ganlive.models.graph import nv12_plane_views
+        from ganlive.pixels import nv12_plane_views
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         container = av.open(str(self.path), "w")

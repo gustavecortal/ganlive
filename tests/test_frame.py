@@ -84,7 +84,7 @@ def test_the_stage_does_no_work_at_all_when_the_model_is_already_the_right_size(
 def test_a_stage_reports_which_conversions_are_compiled_rather_than_implying_it():
     """All three fall back to an eager chain that still produces the right picture several
     times slower. A silent fallback to a slow path is how this project loses arms."""
-    from ganlive.models.graph import to_bgra
+    from ganlive.pixels import to_bgra
 
     bare = FrameStage(8, 12)
     assert bare.compiled == {"yuv": False, "rgb": False, "bgra": False}

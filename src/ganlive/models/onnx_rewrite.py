@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ganlive.models.graph import FoldedNoise
+from ganlive.models.fold import FoldedNoise
 
 
 class GatedPair(nn.Module):

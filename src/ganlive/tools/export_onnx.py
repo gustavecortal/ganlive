@@ -28,8 +28,8 @@ import torch  # noqa: E402
 
 from ganlive.dials import steer as K  # noqa: E402
 from ganlive.models.fastgan import freeze_noise, load  # noqa: E402
-from ganlive.models.graph import prepare_for_inference  # noqa: E402
-from ganlive.models.rewrite import (  # noqa: E402
+from ganlive.models.fold import prepare_for_inference  # noqa: E402
+from ganlive.models.onnx_rewrite import (  # noqa: E402
     bank_the_knobs,
     equivalent,
     split_gated_convs,

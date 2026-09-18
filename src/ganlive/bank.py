@@ -107,7 +107,7 @@ def frame_size(cfg, want: int | None, screen=None) -> tuple[int, int]:
 
 def _conversions():
     """The three host conversions, compiled. They are functions of a frame, not of a net."""
-    from ganlive.models.graph import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb
+    from ganlive.pixels import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb
 
     return compiled_to_nv12(), compiled_to_rgb(), compiled_to_bgra()
 
@@ -166,7 +166,7 @@ def _compiled(net, nz: int, device, dtype, options: LoadOptions):
     """The net compiled if this load asks for it, and what that cost. Shared by the families
     that own an `nn.Module`, because the three lines had been written out in both and `LoadOptions`'s
     own docstring names `exact` as a setting that reached one path and not the other."""
-    from ganlive.models.graph import compile_and_count
+    from ganlive.models.capture import compile_and_count
 
     if not options.compile_net:
         return net, 0, 0.0
@@ -210,7 +210,7 @@ def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
 def _prepare_fastgan(path, device, dtype, conversions, options: LoadOptions):
     """This project's own generator made ready to play."""
     from ganlive.models.fastgan import freeze_noise, load
-    from ganlive.models.graph import prepare_for_inference
+    from ganlive.models.fold import prepare_for_inference
 
     net, cfg = load(path, device)
     freeze_noise(net, seed=options.noise_seed)
@@ -269,7 +269,7 @@ def _prepare(path, device, dtype, conversions, options: LoadOptions | None = Non
     # asked -- its graph runs under its own runtime, so a recording of the torch stream would
     # hold none of its work.
     if options.capture and family.capturable:
-        from ganlive.models.graph import Replay, capture
+        from ganlive.models.capture import Replay, capture
 
         # Both torch families build a `K.Knobs`; the push is the StyleGAN2 family's alone.
         knobs, push = found["knobs"], found.get("push")

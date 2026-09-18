@@ -55,10 +55,10 @@ class Knobs:
     def __init__(self, names, device, dtype) -> None:
         self.names = list(names)
         self.index = {n: i for i, n in enumerate(self.names)}
-        from ganlive.models.graph import _pinned
+        from ganlive.pixels import pinned
 
         self.vec = torch.ones(len(self.names), device=device, dtype=dtype)
-        self.host = [_pinned((len(self.names),), dtype).fill_(1.0) for _ in range(self.STAGING)]
+        self.host = [pinned((len(self.names),), dtype).fill_(1.0) for _ in range(self.STAGING)]
         self._writes = [buf.numpy() for buf in self.host]
         self.pinned = all(buf.is_pinned() for buf in self.host)
         self._slot = 0
@@ -141,7 +141,7 @@ def install(net: nn.Module, device, dtype=torch.float16, wanted=None) -> Knobs:
     """Swap the steerable modules in and hand back the vector that drives them."""
     from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
     from ganlive.models.fastgan import SkipLayerExcitation
-    from ganlive.models.graph import FoldedNoise
+    from ganlive.models.fold import FoldedNoise
 
     have = available(net)
     if wanted is None:
@@ -220,7 +220,7 @@ def _render(net: nn.Module, z: torch.Tensor, scale: float = 1.0) -> torch.Tensor
     return denormalise(first_image(net(z * scale)).float())
 
 
-def _levels(frame: torch.Tensor, base: torch.Tensor) -> float:
+def levels(frame: torch.Tensor, base: torch.Tensor) -> float:
     """Mean absolute change in 8-bit levels -- the unit this module's whole table is in."""
     return float((frame - base).abs().mean() * 255)
 
@@ -245,7 +245,7 @@ def calibrate_noise(net: nn.Module, knobs: Knobs, nz: int, device,
             knobs.reset()
             knobs.set(name, math.exp(mid))
             knobs.commit()
-            if _levels(_render(net, z), base) < target:
+            if levels(_render(net, z), base) < target:
                 lo = mid
             else:
                 hi = mid
@@ -281,7 +281,7 @@ def verify(net: nn.Module, knobs: Knobs, layout, nz: int, device, dtype=torch.fl
         if not knob.writes or knob.measured is not None:
             out.append(knob)
             continue
-        moved = max((_levels(frame(z, **{knob.name: x}), base)
+        moved = max((levels(frame(z, **{knob.name: x}), base)
                      for x in (0.0, 1.0) if abs(x - knob.rest) > 1e-6), default=0.0)
         out.append(replace(knob, measured=round(moved, 3)))
     knobs.reset()

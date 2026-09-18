@@ -20,8 +20,8 @@ import torch
 from torch import nn
 
 from ganlive.models.fastgan import Generator, freeze_noise
-from ganlive.models.graph import prepare_for_inference
-from ganlive.models.rewrite import GatedPair, equivalent, split_gated_convs
+from ganlive.models.fold import prepare_for_inference
+from ganlive.models.onnx_rewrite import GatedPair, equivalent, split_gated_convs
 
 #: Worst tolerable difference, in 8-bit levels. See the module note.
 IDENTICAL = 1e-3
@@ -115,8 +115,8 @@ def _steerable(tmp_path, split=True):
 
     from ganlive.dials import steer as K
     from ganlive.models.fastgan import Generator, freeze_noise
-    from ganlive.models.graph import prepare_for_inference
-    from ganlive.models.rewrite import bank_the_knobs, split_gated_convs
+    from ganlive.models.fold import prepare_for_inference
+    from ganlive.models.onnx_rewrite import bank_the_knobs, split_gated_convs
 
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()
@@ -223,8 +223,8 @@ def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
     have said yes to a graph with a frozen dial in it."""
     from ganlive.dials import steer as K
     from ganlive.models.fastgan import Generator, freeze_noise
-    from ganlive.models.graph import prepare_for_inference
-    from ganlive.models.rewrite import bank_the_knobs
+    from ganlive.models.fold import prepare_for_inference
+    from ganlive.models.onnx_rewrite import bank_the_knobs
 
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()
@@ -268,7 +268,7 @@ def _backend(monkeypatch, replay) -> list[torch.Tensor]:
     feed -- so a stub replay can do what a recorded one does: upload, then run."""
     import contextlib
 
-    from ganlive.models import graph as speedups
+    from ganlive.models import capture as speedups
 
     hosts: list[torch.Tensor] = []
 
@@ -286,7 +286,7 @@ def _backend(monkeypatch, replay) -> list[torch.Tensor]:
 
     monkeypatch.setattr(torch.cpu, "XPUGraph", Graph, raising=False)
     monkeypatch.setattr(torch.cpu, "graph", graph, raising=False)
-    monkeypatch.setattr(speedups, "_pinned", plain)
+    monkeypatch.setattr(speedups, "pinned", plain)
     return hosts
 
 
@@ -294,7 +294,7 @@ def test_a_capture_that_paints_the_same_frame_whatever_the_latent_is_refused(mon
     """**The one failure no exception reports.** A recording that held none of the forward
     replays faster than anything and paints a still picture, and every later measurement --
     the dial sweep included -- would go on reading that one frame and calling it healthy."""
-    from ganlive.models.graph import capture
+    from ganlive.models.capture import capture
 
     net = _Echo()
     _backend(monkeypatch, lambda: None)                  # replays nothing at all
@@ -306,7 +306,7 @@ def test_a_capture_that_paints_the_same_frame_whatever_the_latent_is_refused(mon
 
 def test_a_capture_that_does_not_reproduce_the_forward_is_refused(monkeypatch):
     """Exact, not approximate -- the rule this module is written to."""
-    from ganlive.models.graph import capture
+    from ganlive.models.capture import capture
 
     net = _Echo()
     _backend(monkeypatch, lambda: net.out.copy_(torch.rand(1, 3, 4, 4) * 2 - 1))
@@ -319,7 +319,7 @@ def test_a_capture_that_does_not_reproduce_the_forward_is_refused(monkeypatch):
 def _taken(monkeypatch, feeds=()) -> tuple[nn.Module, object]:
     """A generator and the capture of it that the gate accepted. The stub replay does what a
     recorded one does: the uploads from the host buffers, then the forward."""
-    from ganlive.models.graph import capture
+    from ganlive.models.capture import capture
 
     net = _Echo()
 
@@ -364,7 +364,7 @@ def test_a_generator_that_is_not_a_module_is_never_captured():
     """An adopted ONNX graph runs under its own runtime, so a recording of the torch stream
     would hold none of its work -- and would replay a still picture with nothing raised. No
     backend is stubbed here: the refusal has to come before anything is asked of the device."""
-    from ganlive.models.graph import capture
+    from ganlive.models.capture import capture
 
     got, said = capture(lambda z: z, 8, "cpu", torch.float32)
 

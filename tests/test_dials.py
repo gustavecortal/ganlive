@@ -45,7 +45,7 @@ def _stub_net(gates=("se_64", "se_128", "se_256", "se_512"),
     from torch import nn
 
     from ganlive.models.fastgan import SkipLayerExcitation
-    from ganlive.models.graph import FoldedNoise
+    from ganlive.models.fold import FoldedNoise
 
     net = nn.Module()
     for name in rungs:
@@ -61,7 +61,7 @@ def _stub_net(gates=("se_64", "se_128", "se_256", "se_512"),
 def _ramped_to(gains):
     """`noise_for(1.0)` if every band carried `gains`. One definition, two callers."""
     return {name: 1.0 + (gains[name] - 1.0) * clamp01((1.0 - start) / NOISE_RAMP)
-            for name, _levels, start in NOISE_BANDS}
+            for name, levels, start in NOISE_BANDS}
 
 
 def test_the_documented_spread_table_matches_what_the_walk_does():
