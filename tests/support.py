@@ -169,7 +169,7 @@ def _panel(dials_live=None, levels=None):
     """A strip with a stub rig behind it, for the things that are facts about a model."""
     import types
 
-    from ganlive.control.tracks import INDEX
+    from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 

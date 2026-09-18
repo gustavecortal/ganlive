@@ -14,7 +14,8 @@ from tests.support import _drained
 def test_hit_detection_is_scored_against_the_simulator_rather_than_asserted():
     """The reason the stand-in Rytm returns its event list at all."""
     from ganlive.control.features import offline, score_onsets
-    from ganlive.control.tracks import INDEX, MachineSim
+    from ganlive.control.kit import INDEX
+    from ganlive.control.simulate import MachineSim
 
     for seed in (1, 3, 7):
         take = MachineSim(bpm=130.0, seed=seed).render(bars=8, tail=0.5)
@@ -29,7 +30,7 @@ def test_the_ground_truth_drops_hits_that_were_silenced_before_they_sounded():
     """Two tracks sharing one voice on the same step means the second erases the first, so
     listing the first as a hit would make the ground truth claim something nothing can hear --
     which once scored the detector at 90% on closed hats while it was completely correct."""
-    from ganlive.control.tracks import MachineSim, Section, _s
+    from ganlive.control.simulate import MachineSim, Section, _s
 
     both = [Section("clash", 1, {"CH": _s("x..............."),
                                  "OH": _s("x...............")})]
@@ -42,7 +43,7 @@ def test_the_preflight_tool_and_the_stand_in_agree_on_the_drums():
     """A preset tuned against the stand-in has to address the same drums the hardware tool
     labels, or the channel map discovered with one is read with the other's names."""
 
-    from ganlive.control.tracks import TRACKS
+    from ganlive.control.kit import TRACKS
     from ganlive.tools import doctor
 
     assert doctor.TRACKS == TRACKS
@@ -53,7 +54,8 @@ def test_the_pessimistic_eight_channel_case_still_finds_the_hits():
     one channel. A preset has to survive that, so the loss it costs is measured rather than
     assumed -- and the loss is real hardware behaviour, not a detection failure."""
     from ganlive.control.features import offline, score_onsets
-    from ganlive.control.tracks import VOICE_GROUPS, MachineSim, channel_map
+    from ganlive.control.kit import VOICE_GROUPS, channel_map
+    from ganlive.control.simulate import MachineSim
 
     take = MachineSim(bpm=130.0, seed=3).render(bars=8, tail=0.5)
     channel_of = channel_map("voices")
@@ -68,7 +70,7 @@ def test_the_pessimistic_eight_channel_case_still_finds_the_hits():
 def test_the_two_channel_layouts_are_what_the_hardware_might_give():
     """One channel per track is the optimistic case; one per analog voice is what an MKI
     advertising ten inputs most likely means."""
-    from ganlive.control.tracks import TRACKS, VOICE_GROUPS, channel_map
+    from ganlive.control.kit import TRACKS, VOICE_GROUPS, channel_map
 
     per_track = channel_map("tracks")
     assert len(set(per_track.values())) == len(TRACKS) == 12
@@ -84,7 +86,7 @@ def test_the_two_channel_layouts_are_what_the_hardware_might_give():
 def test_a_typo_in_a_discovered_layout_is_refused():
     """A wrong map is a machine where the kick drives what the hat should, and nothing
     anywhere reports a problem -- so a name that is not a real track has to raise."""
-    from ganlive.control.tracks import parse_channel_map
+    from ganlive.control.kit import parse_channel_map
 
     assert parse_channel_map("BD=0, ch=3") == {"BD": 0, "CH": 3}
     with pytest.raises(ValueError, match="unknown track"):
@@ -95,14 +97,8 @@ def test_the_stand_in_produces_whatever_layout_the_map_asks_for():
     """The one command meant to rehearse a discovered map used to hand it per-track audio."""
     import numpy as np
 
-    from ganlive.control.tracks import (
-        INDEX,
-        TRACKS,
-        MachineSim,
-        channel_map,
-        parse_channel_map,
-    )
-
+    from ganlive.control.kit import INDEX, TRACKS, channel_map, parse_channel_map
+    from ganlive.control.simulate import MachineSim
     take = MachineSim(bpm=130.0, seed=2).render(bars=2, tail=0.2)
 
     per_track = take.stems_for(channel_map("tracks"))
@@ -126,7 +122,7 @@ def test_the_stand_in_feeder_refuses_audio_shorter_than_one_block():
     the thread forever without ever pushing a sample -- silently, as a run that detects no hits
     and looks merely quiet. Both copies of this class had it before there was one class."""
     from ganlive.control.features import FeatureExtractor
-    from ganlive.control.tracks import StemFeeder
+    from ganlive.control.simulate import StemFeeder
 
     ex = FeatureExtractor(2, 48000)
     with pytest.raises(ValueError, match="shorter than one"):
@@ -139,7 +135,7 @@ def test_the_feeder_reaches_the_extractor_at_something_like_wall_clock_rate():
     differing only in whether being late was counted -- so they could drift apart and only one
     of them could have noticed."""
     from ganlive.control.features import FeatureExtractor
-    from ganlive.control.tracks import MachineSim, StemFeeder
+    from ganlive.control.simulate import MachineSim, StemFeeder
 
     take = MachineSim(bpm=130.0, seed=4).render(bars=2, tail=0.2)
     ex = FeatureExtractor(take.stems.shape[0], take.samplerate)
@@ -166,7 +162,8 @@ def test_swing_and_humanising_move_the_hits_and_the_detector_still_finds_them():
     exist. This also makes two branches in the innermost render loop reachable.
     """
     from ganlive.control.features import offline, score_onsets
-    from ganlive.control.tracks import INDEX, MachineSim
+    from ganlive.control.kit import INDEX
+    from ganlive.control.simulate import MachineSim
 
     straight = MachineSim(bpm=130.0, seed=6).render(bars=4, tail=0.4)
     loose = MachineSim(bpm=130.0, seed=6, swing=0.18, humanise_ms=6.0).render(bars=4, tail=0.4)
@@ -186,7 +183,8 @@ def test_no_voice_rings_longer_than_the_choke_reaches():
     """The choke silences a shared voice forward from the trig, and it stops at `LONGEST_VOICE_S` rather than
     at the end of the record -- which was averaging half a multi-megabyte row per trig, 625 MB written
     where 62 could be non-zero."""
-    from ganlive.control.tracks import LONGEST_VOICE_S, TRACKS, _voice
+    from ganlive.control.kit import TRACKS
+    from ganlive.control.simulate import LONGEST_VOICE_S, _voice
 
     longest = {}
     for track in TRACKS:
@@ -202,7 +200,8 @@ def test_no_voice_rings_longer_than_the_choke_reaches():
 def test_a_choked_trig_leaves_no_tail_behind_it():
     """The property the bound exists to preserve, asserted on the audio rather than on the
     arithmetic: a closed hat on top of a ringing open hat silences it from that sample on."""
-    from ganlive.control.tracks import INDEX, MachineSim
+    from ganlive.control.kit import INDEX
+    from ganlive.control.simulate import MachineSim
 
     take = MachineSim(bpm=130.0, seed=3).render(bars=8, tail=0.5)
     sr = take.samplerate
@@ -253,7 +252,7 @@ def test_midi_separates_the_drums_that_share_an_analog_voice():
     audio channel, so no audio rule can ever tell them apart -- and BT and LT are not streamed
     at all for want of USB bandwidth. Each still has its own note."""
     from ganlive.control.features import NoteFeatures
-    from ganlive.control.tracks import INDEX, VOICE_GROUPS
+    from ganlive.control.kit import INDEX, VOICE_GROUPS
 
     shared = [g for g in VOICE_GROUPS if len(g) > 1]
     assert shared, "this test is about the pairs; there must be some"
@@ -296,7 +295,8 @@ def test_a_quiet_send_loses_its_quietest_drums_first_and_preflight_says_so():
     anybody's Overbridge gain staging. This pins how much room it actually has, because `doctor`'s
     `HEADROOM` is a claim about this number and nothing else checks it."""
     from ganlive.control.features import FeatureConfig, FeatureExtractor
-    from ganlive.control.tracks import INDEX, MachineSim
+    from ganlive.control.kit import INDEX
+    from ganlive.control.simulate import MachineSim
 
     sr, block, tol = 48000, 256, 0.030
     render = MachineSim(bpm=130, samplerate=sr, seed=0).render(bars=2)
@@ -336,7 +336,7 @@ def test_the_stand_in_can_be_heard_and_measured_from_the_same_sample_index():
     import numpy as np
 
     from ganlive.control.features import FeatureExtractor
-    from ganlive.control.tracks import MonitorFeeder
+    from ganlive.control.simulate import MonitorFeeder
 
     stems = np.zeros((2, 1000), dtype=np.float32)
     stems[0, 500] = 1.0
@@ -362,7 +362,7 @@ def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
     index space is the NOTE's, the coarse one maps into it, and an onset on a shared voice fires
     both of its tracks -- which is what the audio genuinely says and all it can say."""
     from ganlive.control.features import BothFeatures, FeatureExtractor
-    from ganlive.control.tracks import INDEX, parse_channel_map
+    from ganlive.control.kit import INDEX, parse_channel_map
 
     tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
     both = BothFeatures(FeatureExtractor(10, 48000), tracks)
@@ -388,7 +388,7 @@ def test_every_source_answers_everything_the_end_of_run_report_asks_it():
     hit counts, the diagnosis of what to fix. The one run that needed it most was the one where nothing
     arrived."""
     from ganlive.control.features import BothFeatures, FeatureExtractor, NoteFeatures
-    from ganlive.control.tracks import parse_channel_map
+    from ganlive.control.kit import parse_channel_map
 
     tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
     sources = {
@@ -412,7 +412,7 @@ def test_a_pad_that_is_heard_as_well_as_read_counts_once():
     drives twice as far for a hand hit as for a sequencer trig, which is a difference nobody
     asked for and nothing would report."""
     from ganlive.control.features import PAIRED_S, BothFeatures, FeatureExtractor
-    from ganlive.control.tracks import INDEX, parse_channel_map
+    from ganlive.control.kit import INDEX, parse_channel_map
 
     tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
     both = BothFeatures(FeatureExtractor(10, 48000), tracks)
@@ -433,7 +433,7 @@ def test_the_combined_source_answers_everything_a_source_is_asked():
     them would fail at the one call site that used the rest, and several of those run once at
     the end of a performance -- the worst possible time to learn about it."""
     from ganlive.control.features import BothFeatures, FeatureExtractor
-    from ganlive.control.tracks import parse_channel_map
+    from ganlive.control.kit import parse_channel_map
 
     tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
     audio = FeatureExtractor(10, 48000)
@@ -456,7 +456,7 @@ def test_the_combined_source_answers_everything_a_source_is_asked():
 def test_a_track_channel_map_is_written_one_based_and_read_zero_based():
     """A person writes the channel the machine's screen shows; the comparison happens against
     `status & 0x0F`. `midi.parse_controls` resolves the same mismatch the same way."""
-    from ganlive.control.tracks import INDEX, TRACKS, parse_track_channels
+    from ganlive.control.kit import INDEX, TRACKS, parse_track_channels
 
     whole = parse_track_channels("1-12")
     assert whole == {i: i for i in range(len(TRACKS))}, whole
@@ -473,7 +473,7 @@ def test_the_track_a_note_is_comes_from_the_channel_when_the_machine_sends_that_
     TRACK CH each track has its own channel and the note carries the trig's PITCH, 12 to 60,
     which names no track at all. Reading the note in that mode indexes the kit with a pitch."""
     from ganlive.control.features import NoteFeatures
-    from ganlive.control.tracks import parse_track_channels
+    from ganlive.control.kit import parse_track_channels
 
     auto = NoteFeatures(12)
     auto.on_note(13, 5, 100)                       # pad: channel 14 on the wire, note 5
@@ -495,7 +495,7 @@ def test_the_pair_source_claims_a_voice_by_the_same_rule_the_notes_use():
     `NoteFeatures` learned about channels, so the pad-beats-onset rule would have gone on
     reading pitches and every trig would have been counted twice."""
     from ganlive.control.features import PAIRED_S, BothFeatures, FeatureExtractor
-    from ganlive.control.tracks import INDEX, parse_channel_map, parse_track_channels
+    from ganlive.control.kit import INDEX, parse_channel_map, parse_track_channels
 
     tracks = parse_channel_map("BD=0,SD=1,RS=2,CP=2,BT=3,LT=3,MT=4,HT=4,CH=5,OH=5,CY=6,CB=6")
     audio = FeatureExtractor(7, 48000)
@@ -516,7 +516,7 @@ def test_a_note_that_names_no_track_is_counted_rather_than_dropped():
     all twelve drums resolve to ONE index -- `played()` is 1, the hit watchdog stays quiet, and
     the picture runs with one drum driving what twelve should."""
     from ganlive.control.features import NoteFeatures
-    from ganlive.control.tracks import parse_track_channels
+    from ganlive.control.kit import parse_track_channels
 
     missing = NoteFeatures(12)                     # AUTO CH reader given TRACK CH pitches
     for note in (47, 53, 60):
@@ -536,7 +536,7 @@ def test_the_two_output_modes_are_told_apart_by_the_traffic_itself():
     """The flag was very nearly the only way to know the mode. It is an override: the modes do
     not overlap in what they put on the wire, so a few seconds of it settles the question --
     except for the one genuinely ambiguous case, which must not be guessed."""
-    from ganlive.control.tracks import output_mode
+    from ganlive.control.kit import output_mode
 
     assert output_mode({13: {0, 1, 5, 11}}) == "auto"           # pads, one channel, low notes
     assert output_mode({0: {47}, 1: {53}, 8: {36}}) == "track"  # pitches across many channels
@@ -552,7 +552,7 @@ def test_a_channel_map_and_a_note_base_are_both_live_because_the_machine_uses_bo
     left on AUTO puts sequencer pitches on channels 1-12 and pad notes on the auto channel
     simultaneously, so a reader that insisted on one rule would drop half the kit."""
     from ganlive.control.features import NoteFeatures
-    from ganlive.control.tracks import parse_track_channels
+    from ganlive.control.kit import parse_track_channels
 
     both = NoteFeatures(12, channels=parse_track_channels("1-12"))
     assert both.on_note(6, 53, 100) == 6, "a mapped channel is the track, whatever the pitch"

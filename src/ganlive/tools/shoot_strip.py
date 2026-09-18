@@ -22,8 +22,8 @@ import pygame  # noqa: E402
 from pygame._sdl2.video import Renderer, Window  # noqa: E402
 
 from ganlive import bank  # noqa: E402
+from ganlive.control.kit import INDEX, channel_map  # noqa: E402
 from ganlive.control.midi import EncoderMap  # noqa: E402
-from ganlive.control.tracks import INDEX, channel_map  # noqa: E402
 from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
 from ganlive.strip import PRIORITY, SOURCE, WIDTH, DialPanel  # noqa: E402
 

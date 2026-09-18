@@ -199,7 +199,7 @@ class NoteFeatures:
         self.n = int(tracks)
         #: Which note is which track, when the kit shares one channel. `base_note` is the
         #: shorthand for a kit whose pads are consecutive from there; `notes` says it outright
-        #: for one whose are not. See `simulate.parse_notes`.
+        #: for one whose are not. See `kit.parse_notes`.
         self.notes = dict(notes) if notes else {int(base_note) + i: i for i in range(self.n)}
         self.channels = dict(channels) if channels else None
         self.unresolved = 0
@@ -271,7 +271,7 @@ class NoteFeatures:
         `--notes 36=BD,38=SD,42=CH,46=OH` reaches four. Returning all twelve gave the strip
         eight drum lights that could never fire and the end-of-run report eight silent
         tracks to complain about -- a fault that cannot exist."""
-        from ganlive.control.tracks import TRACKS
+        from ganlive.control.kit import TRACKS
 
         reached = set(self.notes.values())
         if self.channels is not None:
