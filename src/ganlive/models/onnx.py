@@ -46,7 +46,7 @@ def _dials_cached(path: str, _mtime: int, _size: int) -> dict:
 
     model = onnx.load(path, load_external_data=False)
     graph = model.graph
-    # `smallgen.` is the prefix graphs exported before this project was named carry.
+    # The prefix graphs carry that were exported under this project's earlier name.
     raw = {e.key.replace("smallgen.", "ganlive."): e.value
            for e in model.metadata_props if e.value}
     names = raw.get("ganlive.settings", "")

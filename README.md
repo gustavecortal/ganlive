@@ -105,9 +105,11 @@ afterwards knows nothing about the architecture. It refuses rather than guesses 
 places: code it will not import unasked, a module that never produced a picture, and a graph
 still non-deterministic after its random draws are frozen. Needs `.[hub]`.
 
-FastGAN is this project's own architecture; `smallgen`, the training half of this project,
-is what produces those checkpoints. Nothing here needs it — `import-stylegan2` and `adopt`
-both reach a playable model without ever training one.
+This repository plays models; it does not train them. `import-stylegan2` converts a
+generator and writes a generator — a discriminator in the pickle is ignored, because the only
+thing one is for is adversarial finetuning. FastGAN is an architecture of my own that a
+separate training project produces checkpoints for, and nothing here depends on that project:
+`import-stylegan2` and `adopt` both reach a playable model without training anything.
 
 ## Layout
 

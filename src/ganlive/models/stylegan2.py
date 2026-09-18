@@ -27,7 +27,8 @@ BAND_PIXELS = {"w_coarse": "the 4, 8 and 16 pixel stages",
 #: Written into every converted file. A StyleGAN2 and one of this project's own checkpoints
 #: are both `.pt`, and the instrument has to tell them apart before it opens either.
 FORMAT = "ganlive-stylegan2/1"
-#: What conversions written before this project was named carry.
+#: The tag written under this project's earlier name. Read, never written, so a
+#: checkpoint converted before the rename still opens.
 FORMATS = (FORMAT, "smallgen-stylegan2/1")
 
 
@@ -448,22 +449,17 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
     return net.to(device)
 
 
-def save(path, cfg: Config, state: dict, d_cfg=None, d_state=None) -> None:
-    """Write a checkpoint that this file alone can open. See `ganlive import-stylegan2`."""
+def save(path, cfg: Config, state: dict) -> None:
+    """Write a checkpoint that this file alone can open. See `ganlive import-stylegan2`.
+
+    A generator, because a generator is the whole of what this project runs. A checkpoint
+    that carries a discriminator alongside -- a trainer's, say -- still opens here: the extra
+    keys are simply not read."""
     from dataclasses import asdict
 
-    def keep(cfg_obj):
-        return {k: v for k, v in asdict(cfg_obj).items() if k not in NOT_SAVED}
-
-    def weights(d):
-        return {k: v for k, v in d.items() if not k.endswith("resample_filter")}
-
-    blob = {"format": FORMAT, "config": keep(cfg), "state": weights(state)}
-    # **The discriminator is optional and the format does not change for it.** Every file converted before
-    # there was one to convert stays readable, and a file with one stays readable by anything that only
-    # wants the generator -- so `is_stylegan2` and the instrument never learn that this exists.
-    if d_state is not None:
-        blob["d_config"], blob["d_state"] = keep(d_cfg), weights(d_state)
+    blob = {"format": FORMAT,
+            "config": {k: v for k, v in asdict(cfg).items() if k not in NOT_SAVED},
+            "state": {k: v for k, v in state.items() if not k.endswith("resample_filter")}}
     torch.save(blob, path)
 
 
@@ -512,216 +508,3 @@ def from_file(path, device="cpu", half_from: int | None = None) -> Generator:
     """Open what `save` wrote, on any machine, with no other code in the room."""
     blob = _open(path)
     return load(_rebuild(Config, blob["config"], half_from), blob["state"], device)
-
-
-# ---------------------------------------------------------------------------------------
-# The discriminator. Only finetuning needs it -- the instrument never builds one -- but
-# without it there is no adversarial finetune at all, and transfer learning from a trained
-# pair is the whole reason a pretrained StyleGAN2 adapts to a small corpus.
-# ---------------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class DConfig:
-    """What a checkpoint's discriminator says about itself, in NVIDIA's own names."""
-
-    c_dim: int = 0
-    img_resolution: int = 1024
-    img_channels: int = 3
-    architecture: str = "resnet"
-    channel_base: int = 32768
-    channel_max: int = 512
-    num_fp16_res: int = 4
-    conv_clamp: float | None = 256.0
-    #: `None` means "the whole batch", which is what every published checkpoint was trained
-    #: with. Finetuning wants a real group -- 4 is NVIDIA's own default -- and it is here
-    #: rather than hardcoded because it changes what the network computes.
-    mbstd_group_size: int | None = None
-    mbstd_num_channels: int = 1
-    taps: tuple[float, ...] = TAPS
-    #: As on `Config`, and dropped by `save` for the same reason.
-    half_from: int | None = None
-
-    @property
-    def block_resolutions(self) -> tuple[int, ...]:
-        top = int(math.log2(self.img_resolution))
-        return tuple(2 ** i for i in range(top, 2, -1))
-
-    def channels(self, res: int) -> int:
-        return _channels(self.channel_base, self.channel_max, res)
-
-    @property
-    def fp16_from(self) -> int:
-        return _fp16_from(self.img_resolution, self.num_fp16_res, self.half_from)
-
-
-def _down_pads(kernel: int, down: int, taps: int) -> tuple[int, int, int, int]:
-    """`conv2d_resample`'s padding for a downsampling convolution, at build time."""
-    p = kernel // 2
-    return (p + (taps - down + 1) // 2, p + (taps - down) // 2,
-            p + (taps - down + 1) // 2, p + (taps - down) // 2)
-
-
-class Conv2dLayer(nn.Module):
-    """`Conv2dLayer`: a plain convolution with the runtime gains NVIDIA keeps outside it."""
-
-    def __init__(self, in_ch: int, out_ch: int, kernel: int, bias: bool = True,
-                 lrelu: bool = True, down: int = 1, gain: float = 1.0,
-                 conv_clamp: float | None = None, taps: tuple[float, ...] = TAPS,
-                 dtype=torch.float32) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.randn(out_ch, in_ch, kernel, kernel))
-        self.bias = nn.Parameter(torch.zeros(out_ch)) if bias else None
-        self.weight_gain = float(1.0 / math.sqrt(in_ch * kernel * kernel))
-        self.lrelu = lrelu
-        self.kernel, self.down = kernel, down
-        self.pad = kernel // 2
-        # `act_gain` is the activation's own gain times this call site's; the clamp is scaled
-        # by the call site's alone. That is `bias_act`'s contract, and scaling both or
-        # neither is the easy way to be quietly wrong.
-        self.act_gain = float((LRELU_GAIN if lrelu else 1.0) * gain)
-        self.clamp = None if conv_clamp is None else float(conv_clamp * gain)
-        if down > 1:
-            self.fpad = _down_pads(kernel, down, len(taps))
-            # Cast here rather than per call, exactly as `SynthesisLayer` does with
-            # `upfir`: a block's precision is fixed when it is built, and sixteen of these
-            # are otherwise cast on every discriminator forward.
-            f = fir(taps).flip([0, 1]).to(dtype)
-            self.register_buffer("downfir", f[None, None].repeat(in_ch, 1, 1, 1),
-                                 persistent=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w = (self.weight * self.weight_gain).to(x.dtype)
-        if self.down == 1:
-            x = F.conv2d(x, w, padding=self.pad)
-        elif self.kernel == 1:
-            # A 1x1 kernel filters and throws pixels away first, then convolves; a wider one
-            # filters and lets the convolution's own stride do the throwing away. Both are
-            # `conv2d_resample`, and swapping them shifts the picture by half a pixel.
-            x = _fir(x, self.downfir, self.fpad)[:, :, ::self.down, ::self.down]
-            x = F.conv2d(x, w)
-        else:
-            x = _fir(x, self.downfir, self.fpad)
-            x = F.conv2d(x, w, stride=self.down)
-        if self.bias is not None:
-            x = x + self.bias.to(x.dtype).reshape(1, -1, 1, 1)
-        if self.lrelu:
-            x = F.leaky_relu(x, LRELU_SLOPE)
-        x = x * self.act_gain
-        return x if self.clamp is None else x.clamp(-self.clamp, self.clamp)
-
-
-class DBlock(nn.Module):
-    """One resolution of the discriminator: two convolutions and a downsampling skip."""
-
-    def __init__(self, in_ch: int, tmp_ch: int, out_ch: int, cfg: DConfig,
-                 half: bool) -> None:
-        super().__init__()
-        self.dtype = dtype = torch.float16 if half else torch.float32
-        common = dict(conv_clamp=cfg.conv_clamp, taps=cfg.taps, dtype=dtype)
-        self.fromrgb = (Conv2dLayer(cfg.img_channels, tmp_ch, 1, **common)
-                        if in_ch == 0 else None)
-        self.conv0 = Conv2dLayer(tmp_ch, tmp_ch, 3, **common)
-        self.conv1 = Conv2dLayer(tmp_ch, out_ch, 3, down=2, gain=SQRT_HALF, **common)
-        self.skip = Conv2dLayer(tmp_ch, out_ch, 1, bias=False, lrelu=False, down=2,
-                                gain=SQRT_HALF, taps=cfg.taps, dtype=dtype)
-
-    def forward(self, x, img) -> torch.Tensor:
-        if self.fromrgb is not None:
-            x = self.fromrgb(img.to(self.dtype))
-        else:
-            x = x.to(self.dtype)
-        return self.skip(x).add_(self.conv1(self.conv0(x)))
-
-
-class Epilogue(nn.Module):
-    """The last 4x4 block: batch statistics, one convolution, and a single number out."""
-
-    def __init__(self, in_ch: int, cfg: DConfig) -> None:
-        super().__init__()
-        self.group = cfg.mbstd_group_size
-        self.chunks = cfg.mbstd_num_channels
-        self.conv = Conv2dLayer(in_ch + cfg.mbstd_num_channels, in_ch, 3,
-                                conv_clamp=cfg.conv_clamp, taps=cfg.taps)
-        self.fc = Dense(in_ch * 16, in_ch, activation="lrelu")
-        self.out = Dense(in_ch, 1)
-
-    def _mbstd(self, x: torch.Tensor) -> torch.Tensor:
-        """`MinibatchStdLayer`: how varied this batch is, as an extra channel."""
-        n, c, h, w = x.shape
-        g = n if self.group is None else min(self.group, n)
-        y = x.reshape(g, -1, self.chunks, c // self.chunks, h, w)
-        y = (y - y.mean(dim=0)).square().mean(dim=0)
-        y = (y + 1e-8).sqrt().mean(dim=[2, 3, 4])
-        return torch.cat([x, y.reshape(-1, self.chunks, 1, 1).repeat(g, 1, h, w)], dim=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.conv(self._mbstd(x.to(torch.float32)))
-        return self.out(self.fc(x.flatten(1)))
-
-
-class Discriminator(nn.Module):
-    """NVIDIA's `resnet` discriminator, loading their weights under their names."""
-
-    def __init__(self, cfg: DConfig = DConfig()) -> None:
-        super().__init__()
-        if cfg.architecture != "resnet":
-            raise ValueError(f"only the resnet discriminator is written here, not "
-                             f"{cfg.architecture!r}; every published checkpoint is resnet")
-        if cfg.c_dim:
-            raise ValueError(f"c_dim={cfg.c_dim}: this is the unconditional discriminator, "
-                             f"and a conditioning head nothing feeds would be dead code")
-        self.cfg = cfg
-        self.img_resolution, self.img_channels = cfg.img_resolution, cfg.img_channels
-        blocks = []
-        for res in cfg.block_resolutions:
-            block = DBlock(0 if res == cfg.img_resolution else cfg.channels(res),
-                           cfg.channels(res), cfg.channels(res // 2), cfg,
-                           half=res >= cfg.fp16_from)
-            setattr(self, f"b{res}", block)
-            blocks.append(block)
-        self.blocks = blocks
-        self.b4 = Epilogue(cfg.channels(4), cfg)
-
-    def forward(self, img: torch.Tensor) -> torch.Tensor:
-        x = None
-        for block in self.blocks:
-            x = block(x, img)
-        return self.b4(x)
-
-
-
-def d_config_from(D) -> DConfig:
-    """Read a loaded NVIDIA `Discriminator`'s own `init_kwargs`. Needs their repo importable."""
-    k = dict(D.init_kwargs)
-    ep = dict(k.get("epilogue_kwargs", {}))
-    blk = dict(k.get("block_kwargs", {}))
-    return DConfig(
-        c_dim=k["c_dim"], img_resolution=k["img_resolution"], img_channels=k["img_channels"],
-        architecture=k.get("architecture", "resnet"),
-        channel_base=k.get("channel_base", 32768), channel_max=k.get("channel_max", 512),
-        num_fp16_res=k.get("num_fp16_res", 0), conv_clamp=k.get("conv_clamp"),
-        mbstd_group_size=ep.get("mbstd_group_size"),
-        mbstd_num_channels=ep.get("mbstd_num_channels", 1),
-        taps=tuple(float(t) for t in blk.get("resample_filter", TAPS)))
-
-
-def load_d(cfg: DConfig, state: dict, device="cpu") -> Discriminator:
-    """Build a discriminator from its own description and load NVIDIA's weights into it."""
-    net = Discriminator(cfg).eval().requires_grad_(False)
-    missing, unexpected = net.load_state_dict(state, strict=False)
-    unexpected = [k for k in unexpected if not k.endswith("resample_filter")]
-    if missing or unexpected:
-        raise RuntimeError(
-            f"this is not the discriminator the weights describe: {len(missing)} parameter(s) "
-            f"the network wants and the file has not ({missing[:4]}), {len(unexpected)} the "
-            f"file has and the network does not ({unexpected[:4]}).")
-    return net.to(device)
-
-
-def discriminator_from_file(path, device="cpu", half_from: int | None = None):
-    """The discriminator a converted checkpoint carries, or `None` if it carries none."""
-    blob = _open(path)
-    if "d_config" not in blob:
-        return None
-    return load_d(_rebuild(DConfig, blob["d_config"], half_from), blob["d_state"], device)

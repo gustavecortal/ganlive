@@ -32,12 +32,16 @@ def next_path(folder: Path, stem: str, suffix: str) -> Path:
 
 
 def save_still(path: Path, rgb) -> threading.Thread:
-    """Write one RGB frame as a PNG, on its own thread, and hand the thread back."""
+    """Write one RGB frame as a PNG, on its own thread, and hand the thread back.
+
+    Through pygame, which is here for the window anyway, rather than a second imaging
+    library for one call."""
     def write():
-        from PIL import Image
+        import pygame
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(rgb).save(path)
+        # `swapaxes`: a frame is (H, W, 3) and a pygame surface is indexed (x, y).
+        pygame.image.save(pygame.surfarray.make_surface(rgb.swapaxes(0, 1)), str(path))
 
     thread = threading.Thread(target=write, name=f"still {Path(path).name}", daemon=True)
     thread.start()

@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Real-time latent-space exploration: any GAN, any accelerator, any MIDI controller."
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["numpy>=1.26", "pygame>=2.5", "python-rtmidi>=1.5", "psutil>=6"]
+# Three. `torch` is deliberately not here: which build you need depends on your
+# accelerator, so the README installs it from the right index first. Everything else is an
+# extra, and the instrument runs without any of them.
+dependencies = ["numpy>=1.26", "pygame>=2.5"]
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
@@ -15,8 +18,10 @@ record = ["av>=13"]
 onnx = ["onnx>=1.17", "onnxruntime>=1.20"]
 onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6"]
 # `ganlive adopt hf:...` fetches a generator from the Hub before dialling it.
-hub = ["huggingface_hub>=0.25", "onnxscript>=0.7"]
-dev = ["pytest>=8", "ruff>=0.6"]
+# `psutil` lets `adopt` refuse to start while another job holds the card, and report free
+# host RAM. Advisory only: without it both checks say so rather than passing quietly.
+hub = ["huggingface_hub>=0.25", "onnxscript>=0.7", "psutil>=6"]
+dev = ["pytest>=8", "ruff>=0.6", "psutil>=6"]
 
 [project.scripts]
 ganlive = "ganlive.cli:main"
