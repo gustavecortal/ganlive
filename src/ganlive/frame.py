@@ -7,9 +7,9 @@ import torch
 import torch.nn.functional as F
 
 from ganlive.models.common import first_image
-from ganlive.models.graph import to_bgra as _eager_bgra
-from ganlive.models.graph import to_nv12
-from ganlive.models.graph import to_rgb as _eager_rgb
+from ganlive.pixels import to_bgra as _eager_bgra
+from ganlive.pixels import to_nv12
+from ganlive.pixels import to_rgb as _eager_rgb
 
 
 class _Deferred:
@@ -78,7 +78,7 @@ class FrameStage:
         Never fatal, on the same rule as `speedups.compile_and_count`: the conversions are the
         one compile that would otherwise fail at the first *frame*, with the window open, so a
         machine Inductor cannot build them on gets them in eager and a line saying so."""
-        from ganlive.models.graph import warm
+        from ganlive.models.capture import warm
 
         try:
             return warm([self.to_yuv, self.to_rgb, self.to_bgra], staged)
@@ -92,7 +92,7 @@ class FrameStage:
         key = (name, tuple(tensor.shape), tensor.dtype)
         ring = self._rings.get(key)
         if ring is None:
-            from ganlive.models.graph import PinnedRing
+            from ganlive.pixels import PinnedRing
 
             ring = self._rings[key] = PinnedRing(depth, self.device, self.host_copy)
         if self._wait:

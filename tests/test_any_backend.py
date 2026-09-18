@@ -12,7 +12,7 @@ import torch
 from ganlive import bank
 from ganlive import device as dev
 from ganlive.frame import FrameStage
-from ganlive.models import graph as speedups
+from ganlive.models import capture as speedups
 from ganlive.models import stylegan2 as S2
 
 

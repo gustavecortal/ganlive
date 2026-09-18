@@ -192,9 +192,9 @@ class SlerpWalk:
 
     def _staging_ring(self):
         """The pinned host ring the latent is written into, at the current width."""
-        from ganlive.models.graph import _pinned
+        from ganlive.pixels import pinned
 
-        bufs = [_pinned((1, self.nz), self.dtype) for _ in range(self.STAGING)]
+        bufs = [pinned((1, self.nz), self.dtype) for _ in range(self.STAGING)]
         return bufs, [buf.numpy().reshape(-1) for buf in bufs]
 
     def retarget(self, nz: int) -> None:
