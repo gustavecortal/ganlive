@@ -161,8 +161,8 @@ def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
 def test_the_strip_reads_an_adopted_graph_without_knowing_the_architecture(tmp_path):
     """The payoff, end to end: a file this code has never seen becomes a control surface."""
     from ganlive.dials import onnx_dials as A
-    from ganlive.models.onnx import dials_of
     from ganlive.dials import table as S
+    from ganlive.models.onnx import dials_of
 
     torch.manual_seed(5)
     out = tmp_path / "playable.onnx"

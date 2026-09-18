@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import torch
 
+from ganlive import bank
 from ganlive import device as dev
+from ganlive.frame import FrameStage
 from ganlive.models import graph as speedups
 from ganlive.models import stylegan2 as S2
-from ganlive import bank
-from ganlive.frame import FrameStage
 
 
 def test_half_on_a_card_and_single_on_the_cpu():

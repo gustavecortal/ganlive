@@ -121,8 +121,8 @@ def _banded(count: int = 8, **over):
     silence, so they are written once."""
     import torch as _torch
 
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import sefa_banded, split
+    from ganlive.models import stylegan2 as S2
 
     net = _sg2(**over)
     dirs = sefa_banded(S2.style_bands(net), split(count, len(S2.BANDS)), z_dim=net.z_dim)
@@ -213,8 +213,8 @@ def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
 
 def test_a_banded_basis_is_zero_outside_its_own_range():
     """What lets one matrix-vector product on the host still produce the whole push."""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import sefa_banded, split
+    from ganlive.models import stylegan2 as S2
 
     net = _sg2()
     counts = split(8, len(S2.BANDS))
@@ -234,8 +234,8 @@ def test_a_banded_basis_is_zero_outside_its_own_range():
 
 def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_seam():
     """The two failure modes are opposite, so neither is allowed to happen quietly."""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import sefa, sefa_banded, split, verify
+    from ganlive.models import stylegan2 as S2
 
     net = _sg2()
     w = sefa_banded(S2.style_bands(net), split(8, len(S2.BANDS)), z_dim=net.z_dim)
@@ -290,8 +290,8 @@ def test_equalising_gives_a_w_basis_the_size_a_latent_basis_gets_for_free():
 
 def test_the_range_a_row_came_from_survives_the_drop_that_reorders_the_rows():
     """**The label has to ride on the basis, because the basis is what gets shortened.**"""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import rank
+    from ganlive.models import stylegan2 as S2
 
     net, d = _banded()
     assert d.ranges == ("w_coarse",) * 2 + ("w_mid",) * 3 + ("w_fine",) * 3
@@ -367,8 +367,8 @@ def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
     """The baseline has to live where the candidate lives. `random_like` cycled one flat list
     of templates, so a basis longer than `RANDOM_PROBES` never reached its later bands and
     those rows were judged against the sensitivity of the bands above them."""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import RANDOM_PROBES, random_like, sefa_banded, split
+    from ganlive.models import stylegan2 as S2
 
     net = _sg2()
     names = [name for name, _lo, _hi in S2.BANDS]
@@ -395,8 +395,8 @@ def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
 def test_each_band_is_held_to_its_own_bar_and_the_report_says_what_they_were():
     """One pooled bar asked half the dials to clear a number that was never theirs: on FFHQ a
     random direction moves 6.2, 4.3 and 6.7 levels through the three bands."""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import rank
+    from ganlive.models import stylegan2 as S2
 
     net, d = _banded()
     kept = rank(net, d, "cpu", torch.float32, amount=2.0, into=net.mapping.push)
@@ -468,8 +468,8 @@ def test_the_pool_is_wider_than_the_strip_and_measurement_picks_from_it(net):
 
 def test_a_wide_pool_keeps_each_band_its_own_share():
     """A pool is per band and so is the cap; one strong band must not eat the strip."""
-    from ganlive.models import stylegan2 as S2
     from ganlive.dials.derive import CANDIDATES, rank, shortlist
+    from ganlive.models import stylegan2 as S2
 
     nbands = len(S2.BANDS)
     net, pool = _banded(CANDIDATES * nbands)
