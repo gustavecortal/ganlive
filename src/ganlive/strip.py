@@ -5,7 +5,7 @@ import time
 from dataclasses import replace
 
 from ganlive.dials.table import GROUPS, clamp01, direction_index, readout
-from ganlive.presets import AMOUNT_MAX, to_source
+from ganlive.presets import AMOUNT_MAX
 from ganlive.walk import position
 
 PAD = 12
@@ -107,7 +107,7 @@ HELP = ((("r",), "free", MINE), (("s",), "save", "save"), (("v",), "rec", "recor
         (("c",), "still", "still"), (("tab",), "preset", "preset"),
         (("[", "]"), "model", "model"), (("m",), "load", NEEDS_SHELF),
         (("l",), "learn", NEEDS_ENCODERS),
-        (("g",), "route", MINE), (("p",), "print", MINE), (("escape",), "quit", None))
+        (("g",), "route", MINE), (("escape",), "quit", None))
 
 BUILT_IN = (None, MINE, NEEDS_SHELF, NEEDS_ENCODERS)
 ACTIONS = frozenset(a for _keys, _label, a in HELP if a not in BUILT_IN)
@@ -232,12 +232,15 @@ def value_at(x: int, width: int) -> float:
     return clamp01((x - left) / span)
 
 
+def row_at(y: int, laid_out) -> str | None:
+    """Which dial a vertical position is on, given rows from `rows()` or already laid out."""
+    return next((label for label, top, tall in laid_out if top <= y < top + tall), None)
+
+
 def hit(x: int, y: int, width: int, height: int, groups) -> tuple[str, float] | None:
     """Which dial is under a point in the strip, and what value that point asks for."""
-    for label, top, tall in rows(height, groups):
-        if top <= y < top + tall:
-            return label, value_at(x, width)
-    return None
+    label = row_at(y, rows(height, groups))
+    return None if label is None else (label, value_at(x, width))
 
 
 def scope_box(width: int, top: int, tall: int) -> tuple[int, int, int, int]:
@@ -440,10 +443,6 @@ class DialPanel:
         """The whole setting as it stands at the controls: the preset with your hands folded in."""
         preset = self.runner.preset
         return replace(preset, dials={**preset.dials, **self.settings()})
-
-    def as_patch(self) -> str:
-        """The whole setting as Python to paste into `preset.py`: dials, hit rules, slow rules."""
-        return to_source(self.preset_now())
 
     def reload(self, repaint: bool = True) -> None:
         """The preset changed underneath us: re-read what drives what, and repaint."""
@@ -892,13 +891,11 @@ class DialPanel:
 
     def _hit(self, x: int, y: int):
         """`hit`, against the rows this panel has already laid out."""
-        for label, top, tall in self._rows:
-            if top <= y < top + tall:
-                live = self.live_dials()
-                if live is not None and label not in live:
-                    return None                      # a dead dial does not take the mouse
-                return label, value_at(x, self._size[0])
-        return None
+        label = row_at(y, self._rows)
+        live = self.live_dials()
+        if label is None or (live is not None and label not in live):
+            return None                              # a dead dial does not take the mouse
+        return label, value_at(x, self._size[0])
 
 
     def _choose(self, y: int) -> None:
@@ -977,8 +974,6 @@ class DialPanel:
             act = self.actions.get
             if ev.key == pg.K_r:
                 self.release()
-            elif ev.key == pg.K_p:
-                print("\n" + self.as_patch(), flush=True)
             elif ev.key == pg.K_g:
                 self.mode = MODE_DIALS if self.mode == MODE_ROUTING else MODE_ROUTING
                 self._dirty = True

@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from ganlive.dials.derive import _latent
+
 NOISE_RUNGS = ("feat_8", "feat_32", "feat_128", "feat_512", "feat_2048")
 
 
@@ -211,12 +213,6 @@ def install_stylegan2(net, device, dtype=torch.float32) -> Knobs:
     return knobs
 
 
-def _probe(nz: int, device, dtype, seed: int) -> torch.Tensor:
-    """The one latent every measurement in this file is taken against."""
-    g = torch.Generator(device=device).manual_seed(seed)
-    return torch.randn(1, nz, device=device, generator=g).to(dtype)
-
-
 def _render(net: nn.Module, z: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     """One frame, in 0..1, with the generator's multi-output convention unwrapped once."""
     from ganlive.models.fastgan import denormalise, first_image
@@ -235,7 +231,7 @@ def calibrate_noise(net: nn.Module, knobs: Knobs, nz: int, device,
     """Find, for this model, the gain each grain band needs to buy the levels it should."""
     from ganlive.dials.table import NOISE_BANDS
 
-    z = _probe(nz, device, dtype, seed)
+    z = _latent(nz, seed, device, dtype)
     knobs.reset()
     base = _render(net, z)
 
@@ -278,7 +274,7 @@ def verify(net: nn.Module, knobs: Knobs, layout, nz: int, device, dtype=torch.fl
         knobs.commit()
         return _render(net, z)
 
-    z = _probe(nz, device, dtype, seed)
+    z = _latent(nz, seed, device, dtype)
     base = frame(z)
     out = []
     for knob in layout.knobs:

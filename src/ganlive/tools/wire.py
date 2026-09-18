@@ -20,6 +20,7 @@ from ganlive.control.midi import (  # noqa: E402
     SONG_POSITION,
     START,
     STOP,
+    find_ports,
 )
 from ganlive.control.tracks import TRACKS, output_mode  # noqa: E402
 from ganlive.walk import MusicalClock  # noqa: E402
@@ -83,17 +84,10 @@ class Wire:
 def open_ports(port_match: str, want_output: bool):
     import pygame.midi
 
-    pygame.midi.init()
-    ins, outs = [], []
-    for i in range(pygame.midi.get_count()):
-        _interf, raw, is_in, is_out, _open = pygame.midi.get_device_info(i)
-        label = raw.decode(errors="replace")
-        if port_match.lower() not in label.lower():
-            continue
-        (ins if is_in else outs).append((i, label))
+    ins, outs, _rejected = find_ports(port_match)
     if not ins:
-        raise SystemExit(f"no MIDI input matching {port_match!r}. Is the Rytm on USB MIDI, and "
-                         f"is the Overbridge Control Panel open?")
+        raise SystemExit(f"no MIDI input matching {port_match!r}. Is the machine connected over "
+                         f"USB MIDI, and is anything that claims its port exclusively closed?")
     print("MIDI in  : " + ", ".join(f"{i} {n}" for i, n in ins))
     print("MIDI out : " + (", ".join(f"{i} {n}" for i, n in outs) or "NONE"))
     if want_output and not outs:

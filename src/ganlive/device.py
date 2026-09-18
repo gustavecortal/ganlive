@@ -76,12 +76,6 @@ def synchronize(name: str | None = None) -> None:
         m.synchronize()
 
 
-def reset_peak_memory() -> None:
-    m = _mod()
-    if m is not None and hasattr(m, "reset_peak_memory_stats"):
-        m.reset_peak_memory_stats()
-
-
 def peak_memory_gb() -> float:
     return (memory_report() or {}).get("max_allocated_gb", 0.0)
 
