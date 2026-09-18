@@ -317,7 +317,7 @@ class PresetRunner:
     def observe(self, onsets) -> None:
         """Record what arrived this frame."""
         for ch, vel, _ago in onsets:
-            self._velocity[ch] = min(1.0, max(0.0, vel))
+            self._velocity[ch] = clamp01(vel)
 
     def apply(self, since, features: dict, knobs) -> None:
         """Write this frame's whole control state."""

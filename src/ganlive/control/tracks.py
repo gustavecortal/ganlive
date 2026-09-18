@@ -36,7 +36,7 @@ def channel_map(layout: str = "tracks") -> dict[str, int]:
     raise ValueError(f"unknown layout {layout!r}; have tracks, voices")
 
 
-def _track_index(name: str) -> int:
+def track_index(name: str) -> int:
     """A track to its index, or raise. Its name, or the index itself for a
     machine whose pads are not called BD and SD -- `0` to `11`, the order the twelve tracks
     are wired in. Every parser here validates the same way."""
@@ -60,7 +60,7 @@ def parse_channel_map(text: str) -> dict[str, int]:
         if not part:
             continue
         name, _, channel = part.partition("=")
-        _track_index(name)               # validated, but this map is by NAME
+        track_index(name)               # validated, but this map is by NAME
         out[name.strip().upper()] = int(channel)
     return out
 
@@ -85,7 +85,7 @@ def parse_notes(text: str) -> dict[int, int]:
         if number in out:
             raise ValueError(f"note {number} is already {TRACKS[out[number]]}; two tracks on "
                              f"one note cannot be told apart")
-        out[number] = _track_index(name)
+        out[number] = track_index(name)
     if not out:
         raise ValueError("--notes needs a first note, as '0', or a map, as '36=BD,38=SD'")
     return out
@@ -123,7 +123,7 @@ def parse_track_channels(text: str) -> dict[int, int]:
         if not part:
             continue
         channel, _, name = part.partition("=")
-        index = _track_index(name)
+        index = track_index(name)
         number = int(channel) - 1
         if number in out:
             raise ValueError(f"MIDI channel {number + 1} is already {TRACKS[out[number]]}; two "

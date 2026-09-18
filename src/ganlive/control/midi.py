@@ -5,6 +5,7 @@ import threading
 import time
 from typing import NamedTuple
 
+from ganlive.dials.table import clamp01
 from ganlive.files import remember
 from ganlive.walk import MusicalClock
 
@@ -296,7 +297,7 @@ class EncoderMap:
             key = (channel, number)
             self.unmapped[key] = self.unmapped.get(key, 0) + 1
             return None
-        self.held[dial] = min(1.0, max(0.0, value / top))
+        self.held[dial] = clamp01(value / top)
         self.seen += 1
         runner.hold(self.source, self.held, self.PRIORITY)      # `hold` copies
         return dial
@@ -315,7 +316,7 @@ def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple
 
     The pad is named as a track -- `BD`, or its index -- and `notes` (`simulate.parse_notes`)
     says which note that track's pad presses on; a Rytm's press on 0 to 11."""
-    from ganlive.control.tracks import _track_index
+    from ganlive.control.tracks import track_index
 
     note_of = {} if notes is None else {track: note for note, track in notes.items()}
     out: dict[tuple[int, int], str] = {}
@@ -324,7 +325,7 @@ def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple
         if not part:
             continue
         name, _, dial = part.partition("=")
-        track = _track_index(name)
+        track = track_index(name)
         out[(-1, note_of.get(track, track))] = _dial_or_raise(dial)
     return out
 
