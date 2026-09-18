@@ -2,32 +2,29 @@
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from collections import deque
 from pathlib import Path
 
-os.environ.setdefault("SD_ENABLE_ASIO", "1")
+import torch
 
-import torch  # noqa: E402
-
-from ganlive import bank  # noqa: E402
-from ganlive import device as dev  # noqa: E402
-from ganlive.control.audio import NoAudioDevice, pick_input  # noqa: E402
-from ganlive.control.features import (  # noqa: E402
+from ganlive import bank
+from ganlive import device as dev
+from ganlive.control.audio import NoAudioDevice, pick_input
+from ganlive.control.features import (
     BothFeatures,
     FeatureExtractor,
     NoteFeatures,
 )
-from ganlive.control.machine import profile  # noqa: E402
-from ganlive.control.midi import (  # noqa: E402
+from ganlive.control.machine import profile
+from ganlive.control.midi import (
     ClockReader,
     EncoderMap,
     PressureMap,
     parse_controls,
     parse_pressure,
 )
-from ganlive.control.tracks import (  # noqa: E402
+from ganlive.control.tracks import (
     TRACKS,
     MachineSim,
     MonitorFeeder,
@@ -37,15 +34,15 @@ from ganlive.control.tracks import (  # noqa: E402
     parse_channel_map,
     parse_notes,
     parse_track_channels,
-)  # noqa: E402
-from ganlive.dials.table import per_model  # noqa: E402
-from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner, remember  # noqa: E402
-from ganlive.record import video  # noqa: E402
-from ganlive.record.sync import Guide  # noqa: E402
-from ganlive.strip import PRIORITY as HAND_PRIORITY  # noqa: E402
-from ganlive.strip import SOURCE as HAND  # noqa: E402
-from ganlive.timing import stat_ms  # noqa: E402
-from ganlive.walk import MusicalClock  # noqa: E402
+)
+from ganlive.dials.table import per_model
+from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner, remember
+from ganlive.record import video
+from ganlive.record.sync import Guide
+from ganlive.strip import PRIORITY as HAND_PRIORITY
+from ganlive.strip import SOURCE as HAND
+from ganlive.timing import stat_ms
+from ganlive.walk import MusicalClock
 
 OUT = Path("runs/ganlive")
 SETTINGS, TAKES, STILLS = OUT / "settings", OUT / "takes", OUT / "stills"
@@ -135,9 +132,6 @@ def per_model_lines(by_model, budget_ms: float) -> list[str]:
         out.append(f"  {name:<{wide}} {each['n']:7d} {each['median']:8.2f} "
                    f"{each['p95']:8.2f} {each['over_budget'] / each['n'] * 100:6.1f}%")
     return out
-
-
-screen_size = bank.screen_size
 
 
 def open_audio(args, extractor, device, info, channels):
@@ -558,7 +552,7 @@ def main(argv=None) -> int:
     if positions.trouble:
         print(positions.trouble, flush=True)
 
-    screen = screen_size()
+    screen = bank.screen_size()
     r = bank.build(args.checkpoint, args.device,
                   height=args.height, screen=screen,
                   options=bank.LoadOptions(compile_net=args.compile_net, capture=args.capture,

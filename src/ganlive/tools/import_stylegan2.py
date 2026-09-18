@@ -24,9 +24,7 @@ import dataclasses
 import sys
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-from ganlive.models import stylegan2 as S2  # noqa: E402
+from ganlive.models import stylegan2 as S2
 
 #: A `half_from` above any resolution, so every block runs fp32. The comparison against the
 #: original is the one thing here that must not have a rounding argument available to it.

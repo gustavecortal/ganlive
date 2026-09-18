@@ -432,7 +432,7 @@ def sefa_onnx(path, nz: int, count: int | None = None) -> Directions:
     initial = {i.name: i for i in graph.initializer}
     producer = {out: node for node in graph.node for out in node.output}
 
-    name, weight, op = _first_onnx_consumer(graph, initial, producer, nz)
+    name, weight, op = _first_onnx_consumer(graph, initial, producer)
     if weight.HasField("data_location") and weight.data_location == onnx.TensorProto.EXTERNAL:
         onnx.external_data_helper.load_external_data_for_tensor(
             weight, str(pathlib.Path(path).parent))
@@ -454,8 +454,12 @@ def sefa_onnx(path, nz: int, count: int | None = None) -> Directions:
 AFFINE = ("Conv", "ConvTranspose", "Gemm", "MatMul")
 
 
-def _first_onnx_consumer(graph, initial, producer, nz: int):
-    """`(name, weight initializer, op type)` for the first node that really consumes `z`."""
+def _first_onnx_consumer(graph, initial, producer):
+    """`(name, weight initializer, op type)` for the first node that really consumes `z`.
+
+    It does not check the width: which axis is the latent's is a question about the weight's
+    shape, and `sefa_onnx` asks it there, once, after picking the axis. Taking `nz` here as
+    well left a parameter that read as a second check and was never looked at."""
     live = {graph.input[0].name}
     for node in graph.node:
         if not live.intersection(node.input):

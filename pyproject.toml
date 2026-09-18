@@ -1,10 +1,14 @@
 [project]
 name = "ganlive"
-version = "0.1.0"
+# Read from `ganlive.__version__` rather than written here too. Both said 0.1.0 with nothing
+# keeping them equal, which is one edit away from a wheel that misreports itself.
+dynamic = ["version"]
 description = "Real-time latent-space exploration: any GAN, any accelerator, any MIDI controller."
+readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-# Three. `torch` is deliberately not here: which build you need depends on your
+license = "MIT"
+license-files = ["LICENSE"]
+# Two. `torch` is deliberately not here: which build you need depends on your
 # accelerator, so the README installs it from the right index first. Everything else is an
 # extra, and the instrument runs without any of them.
 dependencies = ["numpy>=1.26", "pygame>=2.5"]
@@ -15,11 +19,16 @@ record = ["av>=13"]
 # The portable ONNX runtime. `models/runtime.py` tries TensorRT, CUDA, ROCm, MIGraphX,
 # CoreML and DirectML in turn, so this reaches most cards; `onnx-intel` swaps in the
 # OpenVINO build, which is the one the timings in the README were taken on.
-onnx = ["onnx>=1.17", "onnxruntime>=1.20"]
-onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6"]
+# `onnxscript` is here and not only under `hub` because `ganlive export-onnx` exports through
+# the dynamo path, which needs it -- and the README tells you to install `onnx` and then
+# advertises that command, so it was an advertised command the advertised install could not run.
+onnx = ["onnx>=1.17", "onnxruntime>=1.20", "onnxscript>=0.7"]
+onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6",
+              "onnxscript>=0.7"]
 # `ganlive adopt hf:...` fetches a generator from the Hub before dialling it.
-# `psutil` lets `adopt` refuse to start while another job holds the card, and report free
-# host RAM. Advisory only: without it both checks say so rather than passing quietly.
+# `psutil` lets `adopt` refuse to start while another job holds the card, `play` put its
+# submission thread on a performance core, and both report free host RAM. Advisory only:
+# without it each says so rather than passing quietly.
 hub = ["huggingface_hub>=0.25", "onnxscript>=0.7", "psutil>=6"]
 dev = ["pytest>=8", "ruff>=0.6", "psutil>=6"]
 
@@ -29,6 +38,9 @@ ganlive = "ganlive.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/ganlive/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ganlive"]

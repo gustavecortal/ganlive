@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from ganlive.dials import derive as D  # noqa: E402
+from ganlive.dials import derive as D
 
 
 def main(argv=None) -> int:

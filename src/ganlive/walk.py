@@ -134,7 +134,7 @@ class WalkConfig:
     base_seed: int = 0
     loop_segments: int = 0
 
-    #: `(n, nz)` unit rows: the generator's principal latent directions, from `gan.directions.sefa`.
+    #: `(n, nz)` unit rows: the generator's principal latent directions, from `dials.derive.sefa`.
     #: Set when a model is loaded; `None` until then, and the mechanism costs nothing.
     directions: object = None
     #: How far to push along each direction, one per row of `directions`. The surface writes
@@ -171,7 +171,6 @@ class SlerpWalk:
 
     def __init__(self, nz: int, device, config: WalkConfig | None = None,
                  dtype=torch.float32) -> None:
-        self._slerp = slerp_path
         self.nz, self.device, self.dtype = nz, device, dtype
         self.cfg = config or WalkConfig()
         self._k: tuple | None = None
@@ -245,7 +244,7 @@ class SlerpWalk:
         target = self._draw(k)
         if self.cfg.spread >= 1.0:
             return target
-        return self._slerp(self._home_canon(k), target,
+        return slerp_path(self._home_canon(k), target,
                            torch.tensor([max(0.0, self.cfg.spread)]))[0]
 
     # Everything that chooses WHICH destination a segment is must appear here, or a cache hit
@@ -275,10 +274,12 @@ class SlerpWalk:
         self.segment_index = k
 
     def phase(self, beats: float) -> tuple[int, float]:
-        """`(segment index, raw phase in [0,1))` for a musical position."""
-        b = max(0.0, beats) / max(self.cfg.beats_per_segment, 1e-6)
-        k = math.floor(b)
-        return k, b - k
+        """`(segment index, raw phase in [0,1))` for a musical position.
+
+        `position` without the shaping, rather than a second copy of the same two lines: which
+        segment a beat falls in is one rule, and `latent` reads it through `position`."""
+        k, u, _t = position(self.cfg, beats)
+        return k, u
 
     def latent(self, beats: float) -> torch.Tensor:
         """The `(1, nz)` input for this musical position, on `device`."""

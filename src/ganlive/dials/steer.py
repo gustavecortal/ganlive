@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from ganlive.dials.derive import _latent
+from ganlive.pixels import levels
 
 NOISE_RUNGS = ("feat_8", "feat_32", "feat_128", "feat_512", "feat_2048")
 
@@ -103,7 +104,7 @@ class Knobs:
 
     def feed_from(self, host: torch.Tensor) -> None:
         """From now on the card reads `vec` from `host` on every replay -- a captured graph
-        uploads it itself, see `speedups.capture` -- so a commit is a host write into it and
+        uploads it itself, see `models.capture.capture` -- so a commit is a host write into it and
         nothing is sent. `host` already holds what the card holds."""
         self._sent, self._fed = host.numpy(), True
 
@@ -179,8 +180,7 @@ def install(net: nn.Module, device, dtype=torch.float16, wanted=None) -> Knobs:
                 setattr(parent, child_name, SteerableSLE(child.gate, knobs.view(name)))
                 sites["sle"] += 1
 
-    reachable = {n for n in knobs.names
-                 if n.startswith("noise.") or n.startswith("sle.")}
+    reachable = {n for n in knobs.names if n.startswith(("noise.", "sle."))}
     if reachable and not (sites["noise"] and sites["sle"]):
         raise RuntimeError(
             f"steering install matched nothing it needed: {sites}. The net must be folded "
@@ -213,16 +213,16 @@ def install_stylegan2(net, device, dtype=torch.float32) -> Knobs:
     return knobs
 
 
-def _render(net: nn.Module, z: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-    """One frame, in 0..1, with the generator's multi-output convention unwrapped once."""
-    from ganlive.models.common import denormalise, first_image
+def _render(net: nn.Module, z: torch.Tensor) -> torch.Tensor:
+    """One frame as the generator left it, with the multi-output convention unwrapped once.
 
-    return denormalise(first_image(net(z * scale)).float())
+    **In the generator's own range, not denormalised to 0..1.** Both are only ever handed to
+    `levels`, and `mean|a-b|` on [-1,1] at 127.5 is the same number as on [0,1] at 255 -- so
+    the rescale bought nothing and cost a float32 copy of the whole frame on each side of every
+    comparison, which at 3072x2048 is 75 MB apiece on the load path."""
+    from ganlive.models.common import first_image
 
-
-def levels(frame: torch.Tensor, base: torch.Tensor) -> float:
-    """Mean absolute change in 8-bit levels -- the unit this module's whole table is in."""
-    return float((frame - base).abs().mean() * 255)
+    return first_image(net(z))
 
 
 @torch.no_grad()

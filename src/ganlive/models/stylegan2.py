@@ -430,12 +430,6 @@ def style_bands(net: Generator) -> list[tuple[str, torch.Tensor]]:
     return out
 
 
-# ---------------------------------------------------------------------------------------
-# Where a low-rank adapter can go, per network. Architecture knowledge, so it lives here
-# beside `noise_sites`, `affine_sites` and `style_bands` rather than in `gan/lowrank.py` --
-# which knows how to factorise a weight and deliberately knows nothing about which weight.
-# ---------------------------------------------------------------------------------------
-
 def load(cfg: Config, state: dict, device="cpu") -> Generator:
     """Build from a checkpoint's own description and load its weights under their own names."""
     net = Generator(cfg).eval().requires_grad_(False)

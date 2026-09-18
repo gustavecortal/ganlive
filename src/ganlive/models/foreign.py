@@ -37,24 +37,28 @@ class Fetched:
                 f"{self.size[1]}x{self.size[0]}")
 
 
-def files_of(repo: str, token=None) -> list[str]:
+# No `token` parameter anywhere here. It was threaded through all five of these functions,
+# twelve mentions, and no caller in the repo ever passed one -- `tools/adopt.py` has no flag
+# for it. `huggingface_hub` reads `HF_TOKEN` from the environment itself, so a private repo
+# still works; what the parameter bought was a ternary and five wider signatures.
+def files_of(repo: str) -> list[str]:
     from huggingface_hub import HfApi
 
-    return HfApi().list_repo_files(repo, token=token)
+    return HfApi().list_repo_files(repo)
 
 
-def graph_in(repo: str, token=None) -> str | None:
+def graph_in(repo: str) -> str | None:
     """An ONNX file already in the repo, if there is one. Then none of the rest is needed."""
-    return next((f for f in files_of(repo, token) if f.endswith(".onnx")), None)
+    return next((f for f in files_of(repo) if f.endswith(".onnx")), None)
 
 
-def _config(repo: str, token=None) -> dict:
+def _config(repo: str) -> dict:
     import json
 
     from huggingface_hub import hf_hub_download
 
     try:
-        path = hf_hub_download(repo, "config.json", token=token)
+        path = hf_hub_download(repo, "config.json")
     except Exception:                                    # noqa: BLE001  no config is normal
         return {}
     try:
@@ -63,11 +67,11 @@ def _config(repo: str, token=None) -> dict:
         return {}
 
 
-def _import_code(repo: str, token=None) -> list[object]:
+def _import_code(repo: str) -> list[object]:
     """Every Python module the repo ships, imported. This is the part that trusts."""
     from huggingface_hub import snapshot_download
 
-    root = Path(snapshot_download(repo, token=token, allow_patterns=["*.py", "*.json"]))
+    root = Path(snapshot_download(repo, allow_patterns=["*.py", "*.json"]))
     names = sorted(f.stem for f in root.glob("*.py"))
     if not names:
         return []
@@ -132,25 +136,30 @@ def probe(net, widths=WIDTHS) -> tuple[int, tuple[int, int]] | None:
     return None
 
 
-def from_hub(repo: str, trust: bool = False, token=None, revision=None) -> Fetched:
-    """One generator out of a Hub repository, identified by what it does."""
+def from_hub(repo: str, trust: bool = False) -> Fetched:
+    """One generator out of a Hub repository, identified by what it does.
+
+    No `revision`: it took one and passed it to none of the three calls that fetch, so
+    pinning a commit downloaded the branch tip and said nothing. Wiring it through means
+    threading it into `_import_code`, `_config` and each `from_pretrained`, and nothing here
+    asks for it yet -- an argument that is not honoured is worse than one that is absent."""
     if not trust:
         raise PermissionError(f"{repo}: {TRUST}")
-    modules = _import_code(repo, token)
+    modules = _import_code(repo)
     if not modules:
         raise RuntimeError(
             f"{repo} ships no model code, so there is nothing here that knows how to build "
             f"the network its weights belong to. Install the library it came from and export "
             f"to ONNX with that, or find a repository that carries a .onnx.")
 
-    config = _config(repo, token)
+    config = _config(repo)
     widths = tuple(dict.fromkeys(
         [int(config[k]) for k in WIDTH_KEYS if isinstance(config.get(k), int)] + list(WIDTHS)))
 
     found = []
     for cls in _candidates(modules):
         try:
-            net = cls.from_pretrained(repo, token=token) if token else cls.from_pretrained(repo)
+            net = cls.from_pretrained(repo)
         except Exception:                                # noqa: BLE001  most classes are not it
             continue
         got = probe(net, widths)

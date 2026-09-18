@@ -36,7 +36,7 @@ def _folded(nz: int = 32, seed: int = 0, gain: float = 2.0) -> tuple[nn.Module, 
         for parameter in net.parameters():
             parameter.mul_(gain)
     prepared = prepare_for_inference(net, nz, "cpu", half=False, fold=True,
-                                     compile_yuv=False, compile_net=False)
+                                     compile_yuv=False)
     return prepared["net"].eval(), nz
 
 

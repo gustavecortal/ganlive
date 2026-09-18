@@ -34,10 +34,9 @@ def _widths(table: dict[int, float], base: int) -> dict[int, int]:
     return {k: int(v * base) for k, v in table.items()}
 
 
-def conv(*args, spectral: bool = True, **kwargs) -> nn.Module:
-    """Spectrally normalised convolution."""
-    c = nn.Conv2d(*args, **kwargs)
-    return spectral_norm(c) if spectral else c
+def conv(*args, **kwargs) -> nn.Module:
+    """Spectrally normalised convolution. `fold.remove_spectral_norm` bakes it in for play."""
+    return spectral_norm(nn.Conv2d(*args, **kwargs))
 
 
 def conv_transpose(*args, **kwargs) -> nn.Module:

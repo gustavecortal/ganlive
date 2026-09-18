@@ -3,21 +3,18 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import sys
 import time
 from collections import defaultdict
 
-os.environ.setdefault("SD_ENABLE_ASIO", "1")
+from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input
+from ganlive.control.features import FeatureConfig
+from ganlive.control.machine import profile
+from ganlive.control.midi import dispatch, open_inputs
+from ganlive.control.tracks import TRACKS
+from ganlive.walk import MusicalClock
 
 RATES = (48000, 44100, 96000)
-
-from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input  # noqa: E402
-from ganlive.control.features import FeatureConfig  # noqa: E402
-from ganlive.control.machine import profile  # noqa: E402
-from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
-from ganlive.control.tracks import TRACKS  # noqa: E402
-from ganlive.walk import MusicalClock  # noqa: E402
 
 
 def find_devices(sd, pattern="rytm"):

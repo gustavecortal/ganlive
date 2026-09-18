@@ -38,22 +38,19 @@ class FrameStage:
 
     **All of it on the stage's own queue, never the generator's.** An eager op on a captured
     generator's queue between two replays makes every later replay slower, without bound --
-    see `models.graph.Replay`. So `step`, the first call after the generator,
+    see `models.capture.Replay`. So `step`, the first call after the generator,
     fences on its queue once and moves to this stage's; the conversions and the host copies
     follow it there, in order; and the frame's own wait for the card, `deferred` or
     `PinnedRing.take`, is a host wait that appends to neither queue."""
 
-    HOST_COPY = "pinned"
-
     def __init__(self, height: int, width: int, to_yuv=None, to_rgb=None,
-                 to_bgra=None, host_copy: str | None = None, device: str | None = None) -> None:
+                 to_bgra=None, device: str | None = None) -> None:
         from ganlive.device import detect_backend, streams
 
         self.height, self.width = int(height), int(width)
         self.device = device or detect_backend()
         self._streams = streams(self.device)
         self._side = self._streams.Stream() if self._streams is not None else None
-        self.host_copy = host_copy or self.HOST_COPY
         self._rings: dict[str, object] = {}
         self.to_yuv = to_yuv or to_nv12
         self.to_rgb = to_rgb or _eager_rgb
@@ -75,7 +72,7 @@ class FrameStage:
     def warm(self, staged: torch.Tensor) -> int:
         """Build the three conversions on a frame the real shape. Returns graphs built.
 
-        Never fatal, on the same rule as `speedups.compile_and_count`: the conversions are the
+        Never fatal, on the same rule as `capture.compile_and_count`: the conversions are the
         one compile that would otherwise fail at the first *frame*, with the window open, so a
         machine Inductor cannot build them on gets them in eager and a line saying so."""
         from ganlive.models.capture import warm
@@ -94,7 +91,7 @@ class FrameStage:
         if ring is None:
             from ganlive.pixels import PinnedRing
 
-            ring = self._rings[key] = PinnedRing(depth, self.device, self.host_copy)
+            ring = self._rings[key] = PinnedRing(depth, self.device)
         if self._wait:
             return ring.take(tensor)
         self._pending = True

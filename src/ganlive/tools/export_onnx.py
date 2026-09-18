@@ -18,18 +18,12 @@ import sys
 import time
 from pathlib import Path
 
-# The dynamo exporter prints a check mark when it succeeds, and a Windows console is cp1252
-# by default, so the export dies with a UnicodeEncodeError *after* doing all of the work.
-for stream in (sys.stdout, sys.stderr):
-    if hasattr(stream, "reconfigure"):
-        stream.reconfigure(encoding="utf-8", errors="replace")
+import torch
 
-import torch  # noqa: E402
-
-from ganlive.dials import steer as K  # noqa: E402
-from ganlive.models.fastgan import freeze_noise, load  # noqa: E402
-from ganlive.models.fold import prepare_for_inference  # noqa: E402
-from ganlive.models.onnx_rewrite import (  # noqa: E402
+from ganlive.dials import steer as K
+from ganlive.models.fastgan import freeze_noise, load
+from ganlive.models.fold import prepare_for_inference
+from ganlive.models.onnx_rewrite import (
     bank_the_knobs,
     equivalent,
     split_gated_convs,
@@ -43,10 +37,10 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     net, cfg = load(checkpoint, "cpu")
     freeze_noise(net, seed=noise_seed)
     report = prepare_for_inference(net, cfg.nz, "cpu", half=False, fold=True,
-                                   compile_yuv=False, compile_net=False)
+                                   compile_yuv=False)
     net = report["net"].eval()
 
-    # **The settings, as a second graph input.** `knobs.install` hands each steerable module a view into one
+    # **The settings, as a second graph input.** `steer.install` hands each steerable module a view into one
     # tensor, and a view traces as a *constant* -- which is why an exported model used to arrive with an
     # empty MODEL block and the strip drew six dials dark.
     names: list[str] = []
