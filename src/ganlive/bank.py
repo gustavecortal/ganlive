@@ -80,7 +80,7 @@ def index_of(models, path) -> int | None:
 
 
 def is_stylegan2(path) -> bool:
-    """Whether this is a converted StyleGAN2. Three kinds of file now, and two of them `.pt`."""
+    """Whether this is a converted StyleGAN2. Three kinds of file, and two of them `.pt`."""
     from ganlive.models.stylegan2 import is_stylegan2 as said
 
     return not is_onnx(path) and said(path)
@@ -88,17 +88,7 @@ def is_stylegan2(path) -> bool:
 
 def config_of(path):
     """A model's latent width and output size, whichever kind of file it is."""
-    if is_onnx(path):
-        from ganlive.models.onnx import config_of as onnx_config_of
-
-        return onnx_config_of(path)
-    if is_stylegan2(path):
-        from ganlive.models.stylegan2 import config_of as stylegan2_config_of
-
-        return stylegan2_config_of(path)
-    from ganlive.models.fastgan import config_of as torch_config_of
-
-    return torch_config_of(path)
+    return family_of(path).config_of(path)
 
 
 def admit(models, path) -> None:
@@ -119,6 +109,24 @@ def _conversions():
     from ganlive.models.graph import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb
 
     return compiled_to_nv12(), compiled_to_rgb(), compiled_to_bgra()
+
+
+def _onnx_config(path):
+    from ganlive.models.onnx import config_of as said
+
+    return said(path)
+
+
+def _stylegan2_config(path):
+    from ganlive.models.stylegan2 import config_of as said
+
+    return said(path)
+
+
+def _fastgan_config(path):
+    from ganlive.models.fastgan import config_of as said
+
+    return said(path)
 
 
 def _prepare_onnx(path, device, dtype, conversions, options: LoadOptions):
@@ -221,26 +229,45 @@ def _prepare_fastgan(path, device, dtype, conversions, options: LoadOptions):
             conversions)
 
 
+@dataclass(frozen=True)
+class Family:
+    """One kind of generator file, and everything the bank ever asks about it.
+
+    Five separate places used to re-ask "is this ONNX? is this a StyleGAN2?" -- the config
+    reader, the dispatcher, the capture gate, the layout, and the shelf -- so a fourth format
+    meant five edits and a disagreement between any two of them was a silent bug. It is one
+    record and one lookup now."""
+
+    name: str
+    #: Is this file mine? Asked in `FAMILIES` order, so the last may simply say yes.
+    owns: object
+    #: Latent width and output size, without building the generator.
+    config_of: object
+    #: `(what the `Model` needs, the conversions this compiled)`.
+    prepare: object
+    #: The dials it offers, given a path and whatever knobs are already installed.
+    layout: object
+    #: Whether its forward can be recorded as one device graph.
+    capturable: bool = True
+
+
 def _prepare(path, device, dtype, conversions, options: LoadOptions | None = None):
     """One model made ready to play, its dials verified, and the conversions the bank shares.
 
     Each family returns what differs -- the `Model` fields it knows -- and the conversions it
     compiled, if it compiled any; the `Model` is built once, here."""
     options = options or LoadOptions()
-    if is_onnx(path):
-        found, conversions = _prepare_onnx(path, device, dtype, conversions, options)
-    elif is_stylegan2(path):
-        found, conversions = _prepare_stylegan2(path, device, dtype, conversions, options)
-    else:
-        found, conversions = _prepare_fastgan(path, device, dtype, conversions, options)
+    family = family_of(path)
+    found, conversions = family.prepare(path, device, dtype, conversions, options)
     # Last, because every sweep above reads the module tree or holds two frames side by side to
     # difference them, and a capture offers one output buffer and bakes in the addresses it
     # recorded. Before the gate below, though, so the gate runs *through* the capture: the
     # graph that plays is the graph whose dials were checked.
-    # Asked the way `_compiled` asks it -- the families that own an `nn.Module` -- rather than
-    # left for `capture` to refuse. It would refuse, but an ONNX load would then carry a line
-    # reporting the outcome of a question that family can never be asked.
-    if options.capture and not is_onnx(path):
+    # Asked of the family rather than left for `capture` to refuse. It would refuse, but an
+    # ONNX load would then carry a line reporting the outcome of a question it can never be
+    # asked -- its graph runs under its own runtime, so a recording of the torch stream would
+    # hold none of its work.
+    if options.capture and family.capturable:
         from ganlive.models.graph import Replay, capture
 
         # Both torch families build a `K.Knobs`; the push is the StyleGAN2 family's alone.
@@ -286,18 +313,40 @@ def layout_for(knobs, path):
     would put five dials from one architecture on the strip of another -- drawn dark by
     `verified`, but still named there, still taking the space, and still implying the model has
     something it does not."""
+    return family_of(path).layout(knobs, path)
+
+
+def _onnx_layout(_knobs, path):
     from ganlive.models.onnx import dials_of
 
-    if is_onnx(Path(path)):
-        said = dials_of(path)
-        # An export with no settings baked in: a plain graph, nothing to steer inside it.
-        return (S.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
-                if said["curves"] else S.adopted((), (), (), ()))
-    if is_stylegan2(path):
-        # Reached by a caller holding a path and no sweep; the bank always measures. `S.stylegan2`
-        # rather than `S.adopted` so what that family says on its dials is said in one place.
-        return S.stylegan2()
+    said = dials_of(path)
+    # An export with no settings baked in: a plain graph, nothing to steer inside it.
+    return (S.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
+            if said["curves"] else S.adopted((), (), (), ()))
+
+
+def _stylegan2_layout(_knobs, _path):
+    # Reached by a caller holding a path and no sweep; the bank always measures. `S.stylegan2`
+    # rather than `S.adopted` so what that family says on its dials is said in one place.
+    return S.stylegan2()
+
+
+def _fastgan_layout(knobs, _path):
     return S.fastgan(noise_gains=getattr(knobs, "noise_gains", None))
+
+
+#: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
+#: A FastGAN checkpoint says nothing about itself that the others do not, so it is the tail.
+FAMILIES = (
+    Family("onnx", is_onnx, _onnx_config, _prepare_onnx, _onnx_layout, capturable=False),
+    Family("stylegan2", is_stylegan2, _stylegan2_config, _prepare_stylegan2, _stylegan2_layout),
+    Family("fastgan", lambda _path: True, _fastgan_config, _prepare_fastgan, _fastgan_layout),
+)
+
+
+def family_of(path) -> Family:
+    """Which of `FAMILIES` this file belongs to. Never `None`: the last one takes anything."""
+    return next(f for f in FAMILIES if f.owns(path))
 
 
 def live_dials(knobs, directions, layout=None) -> frozenset:
