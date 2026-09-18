@@ -1,19 +1,11 @@
 """The strip as a picture, headless, in every mode -- the check no test performs.
 
-Three layout defects have been invisible in the code and obvious in a PNG, and a fourth came
-out of this one: the routing cells on a dial that cannot be wired were drawn in `DEAD`, a
-*text* colour, which is brighter than the outline every other cell uses -- so the rows a click
-is refused on were the brightest thing in the grid.
-
-Two traps, both paid for once:
-
-* **Draw through the renderer, not `_paint`.** The routing cells, the dial bars and the drum
-  lights go straight to the renderer and never reach the strip's own surface. A PNG taken from
-  `_paint` shows an empty grid and reads as a broken mode.
-* **Build the rig for real.** A stubbed `knobs.index` darkens exactly the dials it should, and
-  the picture then tells you nothing you did not already assume.
-
     ganlive shoot-strip runs/my-run --out runs/strip
+
+Four layout defects so far have been invisible in code and obvious in a PNG. Two traps, both
+paid for once: draw through the renderer rather than the strip's own surface, or the routing
+cells, dial bars and drum lights are all missing; and build the bank for real, or a stubbed
+`knobs.index` darkens exactly the dials you already assumed it would.
 """
 from __future__ import annotations
 

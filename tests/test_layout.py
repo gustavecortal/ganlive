@@ -60,3 +60,25 @@ def test_an_unknown_command_is_refused_with_the_list():
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 2
     assert "no command 'nope'" in done.stderr and "play" in done.stderr
+
+
+def test_nothing_points_at_a_file_or_tool_this_repository_does_not_have():
+    """Error messages and help text send people places. Those places must exist.
+
+    The split out of `smallgen` left nine `scripts/rytm_*.py` paths in text a user reads
+    only when something has already gone wrong."""
+    gone = ("scripts/", "rytm_live", "rytm_map", "rytm_preflight", "rytm_sysex",
+            "rytm_wire", "rytm_fuzz", "realtime_video", "onnx_bench", "NOTES.md",
+            "PLAN.md", "smallgen", ".venv/Scripts")
+    #: The one place the old name is deliberate: graphs and checkpoints written before the
+    #: rename still carry it, and both readers accept either spelling.
+    allowed = "before this project was named"
+    found = []
+    for path in sorted(SRC.rglob("*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
+            if allowed in "\n".join(lines[max(0, number - 4):number + 1]):
+                continue
+            found += [f"{path.relative_to(SRC)}:{number}: {line.strip()[:90]}"
+                      for stale in gone if stale in line]
+    assert not found, "\n".join(found)

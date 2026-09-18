@@ -110,7 +110,7 @@ def resolve_map(explicit: str, layout: str) -> tuple[dict[str, int], str]:
     return channel_map(layout), (
         f"map: --layout {layout}, a GUESS. Overbridge does not start the kit at channel 0, so "
         f"every hit may be credited to the wrong drum and a shared channel lights both of its "
-        f"tracks. Run scripts/rytm_map.py, then pass --map once and it is remembered.")
+        f"tracks. Run `ganlive learn`, then pass --map once and it is remembered.")
 
 SAMPLE_CAP = 110_000
 
@@ -581,7 +581,7 @@ def main(argv=None) -> int:
         ("both", "Pads reach it as notes and sequencer trigs as sound. No notes means the "
                  "Overbridge Control Panel is closed, which leaves the machine's engine idle "
                  "and its pads silent on MIDI; no sound means the channel map or the send "
-                 "levels -- scripts/rytm_preflight.py --meter reports those.")
+                 "levels -- `ganlive doctor --meter` reports those.")
         if use_notes and use_audio else
         ("notes", "No note-on named a track: check --notes and --midi-channels against the "
                   "unresolved-notes line below. On a Rytm, pads send notes only while the "
@@ -589,7 +589,7 @@ def main(argv=None) -> int:
                   "SEND MIDI is on; --triggers both adds its trigs back through the sound.")
         if use_notes else
         ("audio", "Check the channel map and the send levels; "
-                  "scripts/rytm_preflight.py --meter reports both."))
+                  "`ganlive doctor --meter` reports both."))
     hits_checked = False
     t_start = time.perf_counter()
     # **Seconds, not frames-that-would-have-fitted.** `total` is what `--seconds` buys at the

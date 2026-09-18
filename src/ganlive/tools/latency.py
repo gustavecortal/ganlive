@@ -134,15 +134,13 @@ def main(argv=None) -> int:
                     metavar="auto|native|PIXELS",
                     help="what the window is sent. 'native' (the default here, for comparison "
                          "with every earlier reading in NOTES) is the generator's own size; "
-                         "'auto' is what `rytm_live` uses -- the largest this screen can draw "
+                         "'auto' is what `ganlive play` uses -- the largest this screen can draw "
                          "the frame at, which at 3072x2048 is 12 MB a frame across the bus "
                          "instead of 25")
     ap.add_argument("--blocksize", type=int, default=256)
     ap.add_argument("--channels", type=int, default=12,
                     help="12 is the optimistic per-track case; 8 is the MKI voice case, which "
                          "its USB 2.0 Full Speed bandwidth may also force")
-    # `docs/` was folded into NOTES.md and deleted; `write_metrics` mkdirs, so the old default
-    # quietly recreated the folder for one file.
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/latency.json"))
     ap.add_argument("--window", action="store_true",
                     help="also run arm C: the loop as it is actually played, with the real "

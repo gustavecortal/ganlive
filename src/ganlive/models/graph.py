@@ -240,31 +240,20 @@ def _pinned(shape, dtype) -> torch.Tensor:
 class Replay:
     """A generator recorded as one device graph, called exactly like the generator.
 
-    **What it removes is submission, not work.** A frame here is one forward submitted and
-    waited on, and the card finishes it long before Python has finished asking: the compiled
-    FastGAN issues a hundred-odd kernels a frame through Dynamo's guards, and pinning the
-    process to the P-cores was worth 5.8 ms precisely because that asking is the expensive
-    part. A capture records the whole forward once and replays it as a single submission, so
-    the asking happens at load. See `bank.Load.capture`, which carries the measurement.
+    It removes submission, not work: the card finishes a frame long before Python has
+    finished asking for it, and a capture does the asking once, at load. Exact, not
+    approximate -- a replayed frame matches the compiled net to 0.0000 8-bit levels.
 
-    It is exact and not approximate, which is the rule this module is written to: the replayed
-    frame matched the compiled net's **to 0.0000 8-bit levels** on four latents, on both
-    families.
+    Three invariants, structural rather than remembered:
 
-    Three invariants, all structural rather than remembered:
-
-    - **Every upload is inside the recording, and nothing is issued between replays.** The
-      latent, and each tensor handed to `capture` as a `feed`, is read by the graph from a
-      pinned host buffer this object owns, so a frame's inputs are host writes. Not tidiness:
-      on this runtime an eager op on the replay's queue between two replays makes every later
-      replay slower, without bound -- see *Nothing between replays* in NOTES.
-    - **The frame returned is the same tensor every time.** Nothing may hold it across a frame
-      boundary. The loop converts and downloads inside the frame that produced it and the
-      `deferred` block waits for the card before the next replay; the probes that keep frames
-      to diff (`knobs.verify`, `adopt`) all copy through `.float()` or `.cpu()` first.
-    - **The latent arrives on the host.** `latent_on_host` tells the walk to hand over its own
-      host view, the way `OnnxGenerator` already asks; a device tensor is still accepted, as a
-      download, for the probes and gates that run at load.
+    - **Nothing is issued on the generator's queue between two replays.** The latent and
+      every `capture(feeds=)` tensor is read by the graph from a pinned host buffer this
+      object owns, so a frame's inputs are host writes. On XPU an eager op between two
+      replays makes every later replay slower, without bound.
+    - **The frame returned is the same tensor every time.** Nothing may hold it across a
+      frame boundary; copy through `.float()` or `.cpu()` to keep one.
+    - **The latent arrives on the host.** `latent_on_host` asks the walk for its own host
+      view. A device tensor is still accepted, as a download, for the gates run at load.
     """
 
     latent_on_host = True

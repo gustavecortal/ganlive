@@ -1,30 +1,14 @@
 """Export a trained generator to ONNX, so a runtime other than PyTorch can play it.
 
-The instrument runs one architecture today. ONNX is the candidate format for loading any
-GAN, and the question that decides it is the frame budget -- so this exports, and
-`onnx_bench.py` prices the result against the PyTorch path it would replace.
+The dials become graph inputs, so a runtime with no module tree can still steer the model.
 
-The graph is exported AFTER `prepare_for_inference`, which folds every BatchNorm into its
-convolution and freezes the noise patterns into constants. Both matter: the folded net is
-what actually ships, and a graph exported from the eager net would carry BatchNorm nodes and
-a `randn` the instrument does not have.
+Exported after the BatchNorm folding and noise freezing, because that is the net that
+actually ships. fp32 on the way out: OpenVINO converts to fp16 itself at load.
 
-fp32 on the way out. OpenVINO does its own fp16 conversion at load, and exporting fp16 here
-would hand it a graph already quantised by a different tool.
+The dynamo exporter, not the TorchScript one, which refuses any non-square model --
+`adaptive_avg_pool2d` onto a size that is not a factor of the input.
 
-**The dynamo exporter, not the TorchScript one, and that is forced.** The legacy path refuses
-this graph outright:
-
-    Unsupported: ONNX export of operator adaptive_avg_pool2d, output size that are not
-    factor of input size
-
-The cause is the 3:2 canvas, not FastGAN. `se_64` pools its gate from the base block, which is
-(4, 6) at this aspect ratio, down to (4, 4) -- and 6 is not a multiple of 4. The other three
-gates pool from (8,12), (16,24) and (32,48) and would have exported fine. A square model would
-never have hit this, so it is a fact about non-square GANs generally.
-
-Weights land in a sibling `.onnx.data` file. That is the exporter's own external-data format,
-and both files must travel together.
+Weights land in a sibling `.onnx.data` file; both files must travel together.
 """
 from __future__ import annotations
 

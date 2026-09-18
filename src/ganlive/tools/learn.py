@@ -105,7 +105,7 @@ def report(seen, votes, levels, struck, silent, order):
             print(f"  {line}")
     if mapping:
         print()
-        print("pass this to rytm_live.py:")
+        print("pass this to `ganlive play`:")
         print("  --map " + ",".join(f"{n}={c}" for n, c in sorted(mapping.items())))
     return mapping
 
