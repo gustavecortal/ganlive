@@ -121,8 +121,8 @@ separate training project produces checkpoints for, and nothing here depends on 
 
 | | |
 |---|---|
-| `models/` | the three families, the graph capture that makes them fast, the ONNX export |
-| `dials/` | where dials come from: SVD on the weights, the verification gate, the table |
+| `models/` | the three families, the graph capture that makes them fast, and the ONNX side: the export, the adoption surgery, and the calibration that gives a dial its travel |
+| `dials/` | what a dial *is*: the table, the SVD on the weights that finds the directions, and the live handles on a loaded generator |
 | `control/` | MIDI in, audio in, and the track vocabulary both speak |
 | `record/` | video, stills, and a guide track that lines a take up with a DAW |
 | `bank.py` | turning a checkpoint into something playable, and switching between several |

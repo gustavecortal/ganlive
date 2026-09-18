@@ -21,8 +21,8 @@ import time
 from pathlib import Path
 
 from ganlive import device as dev
-from ganlive.dials import onnx_dials as A
 from ganlive.models import foreign as F
+from ganlive.models import onnx_adopt as A
 
 HUB = "hf:"
 

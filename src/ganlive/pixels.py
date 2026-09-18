@@ -25,7 +25,7 @@ EXACT_LEVELS = 0.5
 
 #: A dial or a direction moving less than this many 8-bit levels at full travel is not a
 #: control. Here, beside the unit it is quoted in, rather than in the module that first
-#: needed it: `models.capture` and `dials.onnx_dials` both had to reach into `dials.derive`
+#: needed it: `models.capture` and `models.calibrate` both had to reach into `dials.derive`
 #: for it, which put a model-layer module behind a dials-layer one for a single float.
 FLOOR_LEVELS = 1.0
 
@@ -40,7 +40,7 @@ RANDOM_FLOOR = 2.0
 def levels(a: torch.Tensor, b: torch.Tensor) -> float:
     """Mean difference between two frames in [-1, 1], in the 8-bit levels this repo judges by.
 
-    `dials.onnx_dials.levels` is the same quantity for numpy arrays and carries the note about the unit;
+    `models.calibrate.levels` is the same quantity for numpy arrays and carries the note about the unit;
     this one stays in torch and on the card. Scaling **after** the reduction rather than before
     it, and accumulating in float32, keeps a full-resolution frame from costing three more
     tensors of its own size -- 226 MB at 3072x2048 -- to answer one scalar question. The

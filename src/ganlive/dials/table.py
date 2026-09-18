@@ -52,7 +52,8 @@ DIRECTION_TAIL = ("Rests in the middle and travels both ways. What it does is me
                   "model you have loaded, and is for you to name.")
 
 #: The spine: what every model offers, whatever it is. One architecture's own
-#: dials live with that architecture -- see `fastgan_dials`, `onnx_dials`.
+#: dials live with that architecture -- see `fastgan_dials`. A graph that declares its
+#: own reads them out of the file instead; see `adopted` below.
 DIALS: dict[str, tuple[float, str]] = {
     "reaction": (0.50, "how hard the picture answers individual hits. 0.5 is as written, 0 "
                        "ignores every hit so only the arrangement moves the picture, 1 is "
