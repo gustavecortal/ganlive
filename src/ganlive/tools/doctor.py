@@ -7,7 +7,7 @@ import sys
 import time
 from collections import defaultdict
 
-from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input
+from ganlive.control.audio import HOSTAPI, NoAudioDevice, named_inputs, pick_input
 from ganlive.control.features import FeatureConfig
 from ganlive.control.machine import profile
 from ganlive.control.midi import dispatch, open_inputs
@@ -18,13 +18,16 @@ RATES = (48000, 44100, 96000)
 
 
 def find_devices(sd, pattern="rytm"):
-    """Every input-capable device whose name matches, with its host API."""
+    """Every input-capable device whose name matches, with its host API.
+
+    Through `named_inputs`, which is the same question `pick_input` asks when it goes looking
+    -- so this tool reports on the devices the instrument would actually consider, rather than
+    on its own second opinion. `hostapi=None` because listing is not choosing: everything that
+    matches is shown, whichever API it is on."""
     out = []
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] <= 0:
-            continue
-        if pattern.lower() in d["name"].lower():
-            out.append((i, d, sd.query_hostapis(d["hostapi"])["name"]))
+    for i in named_inputs(sd, pattern, hostapi=None):
+        d = sd.query_devices(i)
+        out.append((i, d, sd.query_hostapis(d["hostapi"])["name"]))
     return out
 
 
@@ -39,17 +42,18 @@ def cmd_list(sd, pattern="rytm") -> int:
             print("  here the wrong DLL was loaded.")
         print("  An interface on another API still works; pass --device with its index.")
 
+    hits = find_devices(sd, pattern)
+    matched = {i for i, _d, _api in hits}
+
     print("\ninput-capable devices:")
     for i, d in enumerate(sd.query_devices()):
         if d["max_input_channels"] <= 0:
             continue
         api = sd.query_hostapis(d["hostapi"])["name"]
-        mark = "  <--" if pattern.lower() in d["name"].lower() else ""
         print(f"  {i:3} [{api:12}] in={d['max_input_channels']:3} "
               f"out={d['max_output_channels']:3} sr={d['default_samplerate']:6.0f}  "
-              f"{d['name']}{mark}")
+              f"{d['name']}{'  <--' if i in matched else ''}")
 
-    hits = find_devices(sd, pattern)
     print()
     if not hits:
         print(f"  Nothing named {pattern!r}. The instrument plays without any audio input --")

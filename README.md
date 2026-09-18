@@ -40,9 +40,15 @@ with a 512-wide latent plays beside a FastGAN at 3072×2048 with a 256-wide one,
 takes a still.
 
     ganlive                     # the command list
-    ganlive wire                # is the controller talking?
+    ganlive doctor              # what this machine's audio and MIDI offer
+    ganlive wire --drive        # do the sequencer's trigs reach MIDI?
+    ganlive learn               # which audio channel is which drum
     ganlive latency --checkpoint ...   # what this machine does, drift included
     ganlive adopt hf:owner/model       # dial an unseen model and save it playable
+
+`doctor`, `wire` and `learn` are the three questions to ask when a drum is not moving the
+picture: is the hardware there, is it sending, and is what it sends landing where this thinks
+it is. Each answers one and says what to switch on if the answer is no.
 
 ## The dials
 
@@ -123,9 +129,14 @@ separate training project produces checkpoints for, and nothing here depends on 
 | `walk.py` | the latent walk, measured in beats rather than frames |
 | `presets.py` | a preset: the rules connecting what the drums do to what the picture does |
 | `strip.py`, `window.py` | the sliders, and the window both they and the picture live in |
-| `frame.py` | what crosses the bus each frame, and in which colour order |
-| `device.py`, `timing.py` | which accelerator, which precision; medians and drift |
+| `frame.py`, `pixels.py` | what crosses the bus each frame, in which colour order, and the 8-bit unit every measurement here is quoted in |
+| `settings.py` | the model's whole control state as one vector, and getting it to the card |
+| `device.py`, `timing.py`, `files.py` | which accelerator, which precision; medians and drift; where a file goes |
 | `tools/`, `cli.py` | one module per `ganlive` subcommand, and the dispatcher |
+
+Nothing imports upward: `models/` depends only on `device`, `pixels` and `settings`, and
+`dials/` on `models/`. There is one deferred import from a lower layer in the package, and it
+is `pixels` asking `device` to synchronise.
 
 Tests run on the CPU and need no hardware (`.[dev]`):
 

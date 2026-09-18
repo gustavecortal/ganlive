@@ -328,6 +328,8 @@ class DialPanel:
         self._lights: list[tuple[int, int, int, int]] = []
         self._columns: list[tuple[int, int]] = []
         self._blocks: dict[str, tuple[int, int]] = {}
+        #: `dial -> group colour`, filled on demand by `_colour` and cleared on a relayout.
+        self._colours: dict[str, tuple[int, int, int, int]] = {}
         self._dirty = True
         self._last_paint = 0.0
         self._said: dict = {}
@@ -401,7 +403,16 @@ class DialPanel:
         return self._focus
 
     def _colour(self, name: str) -> tuple[int, int, int, int]:
-        return (*GROUP_COLOUR[self.dials[name].group], 255)
+        """This dial's group colour, kept.
+
+        `self.dials` is a property that walks the bank to the loaded model's layout, and this
+        is asked once per drawn row and twice on a row with a driver dot -- twenty-odd chains
+        and twenty-odd freshly built 4-tuples per frame, for a mapping that changes only when
+        the model does. Cleared in `_resize`, which is what runs when it changes."""
+        got = self._colours.get(name)
+        if got is None:
+            got = self._colours[name] = (*GROUP_COLOUR[self.dials[name].group], 255)
+        return got
 
     def _directions(self):
         return None if self.bank is None else self.bank.current.directions
@@ -427,10 +438,13 @@ class DialPanel:
         self._dirty |= bool(held) if name is None else name in held
         self.runner.free(SOURCE, name)
 
-    def live(self) -> dict[str, float]:
-        """Where every dial actually is this frame, once the preset and the rules have moved it."""
+    def live(self, layout=None) -> dict[str, float]:
+        """Where every dial actually is this frame, once the preset and the rules have moved it.
+
+        `layout` is the one `draw` already resolved, so the property is not walked again."""
         values = self.runner.surface.values
-        return {name: values[name] for name in self.dials if name in values}
+        names = self.dials if layout is None else layout
+        return {name: values[name] for name in names if name in values}
 
     def settings(self) -> dict[str, float]:
         """What your hands are holding, as a line to paste into a preset."""
@@ -475,10 +489,13 @@ class DialPanel:
         # so a switch to a model with the same number of rows, or fewer, left the strip drawing
         # the outgoing model's names, every one of them dark, with none of the incoming model's
         # on it at all. Ours and a converted StyleGAN2 both come to nineteen rows.
-        if (w, h) != self._size or self.dials.groups != self._laid:
+        # Resolved once and passed down. It is a property that walks `bank.current.layout`,
+        # and this function and the two below it asked for it about twenty-eight times a frame.
+        layout = self.dials
+        if (w, h) != self._size or layout.groups != self._laid:
             self._resize(w, h)
-        live = self.live()
-        self._follow_the_hand()
+        live = self.live(layout)
+        self._follow_the_hand(layout)
         now = time.perf_counter()
         if self._dirty or now - self._last_paint >= 1.0 / TEXT_HZ:
             self._paint(live)
@@ -508,6 +525,7 @@ class DialPanel:
             return
 
         live_dials = self.live_dials()
+        since_any = min(since) if since else 1e6
         for name, top, tall in self._rows:
             if self.dead(name, live, live_dials):
                 continue
@@ -521,17 +539,18 @@ class DialPanel:
                                    ty - 3, 3, 14))
             drivers = self._drivers.get(name)
             if drivers is not None:
-                ren.draw_color = self._driver_colour(name, drivers, since)
+                ren.draw_color = self._driver_colour(name, drivers, since, since_any)
                 ren.fill_rect(rect(x0 + PAD, ty + 1, 6, 6))
 
         self._draw_scope(ren, x0, y0)
 
         self._draw_lights(ren, x0, y0, since)
 
-    def _follow_the_hand(self) -> None:
+    def _follow_the_hand(self, layout=None) -> None:
         """Describe whatever was just grabbed, whoever grabbed it."""
         held = self.runner.hands
-        grabbed = [n for n in self.dials if n in held and n not in self._was_held]
+        names = self.dials if layout is None else layout
+        grabbed = [n for n in names if n in held and n not in self._was_held]
         self._was_held = set(held)
         if grabbed:
             self._focus = grabbed[0]
@@ -600,12 +619,14 @@ class DialPanel:
                 mid = x0 + cx + half
                 ren.fill_rect(rect(mid if push else mid - span, y0 + cy, span, ch))
 
-    def _driver_colour(self, name, drivers, since):
+    def _driver_colour(self, name, drivers, since, since_any: float):
+        """`since_any` is `min(since)`, taken once by the caller: an any-hit rule asked for it
+        per driven row, which is a reduction over the kit for each dot in the column."""
         hits, slow = drivers
         glow = 0.0
         for _imp, channel in hits:
             if channel < 0:
-                glow = max(glow, 1.0 - (min(since) if since else 1e6) / LIGHT_TAIL)
+                glow = max(glow, 1.0 - since_any / LIGHT_TAIL)
             else:
                 glow = max(glow, lit(since, channel))
         glow = max(0.35 if slow else 0.0, min(1.0, glow))
@@ -633,6 +654,8 @@ class DialPanel:
         self._size = (w, h)
         self._track = track_span(w)
         groups = self._laid = self.dials.groups
+        # The incoming model's dials are not the outgoing one's, and a name may move group.
+        self._colours.clear()
         self._cells = layout(h, groups)
         self._rows = [(label, top, tall) for kind, label, top, tall in self._cells
                       if kind == "dial"]

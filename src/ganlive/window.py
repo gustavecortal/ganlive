@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import traceback
 
+from ganlive.dials.table import clamp01
+
 
 def window_size(w: int, h: int, screen_w: int, screen_h: int, overlay=None) -> tuple[int, int]:
     """How big to open the window for a `w` x `h` frame beside `overlay`."""
@@ -147,8 +149,8 @@ class Display:
                         elif ev.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
                             d = {pygame.K_LEFT: (-.1, 0), pygame.K_RIGHT: (.1, 0),
                                  pygame.K_UP: (0, -.1), pygame.K_DOWN: (0, .1)}[ev.key]
-                            pan[0] = min(1.0, max(0.0, pan[0] + d[0]))
-                            pan[1] = min(1.0, max(0.0, pan[1] + d[1]))
+                            pan[0] = clamp01(pan[0] + d[0])
+                            pan[1] = clamp01(pan[1] + d[1])
         except Exception as e:  # noqa: BLE001
             # **A dead window thread must stop the session, not freeze it.** This thread owns
             # the only picture; when it raised, the traceback went to stderr and the frame loop

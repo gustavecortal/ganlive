@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ganlive.dials.table import clamp01
 from ganlive.models.onnx import dials_of as onnx_dials
 
 #: The floor a derived dial has to clear, in mean 8-bit levels. Imported rather than
@@ -465,7 +466,7 @@ def _knots(sweep, targets) -> list[float]:
             if l1 >= target:
                 share = 0.0 if l1 == l0 else (target - l0) / (l1 - l0)
                 lo, hi = math.log(k0), math.log(k1)
-                value = math.exp(lo + max(0.0, min(1.0, share)) * (hi - lo))
+                value = math.exp(lo + clamp01(share) * (hi - lo))
                 break
         out.append(_sig(value))
     return out
