@@ -58,9 +58,10 @@ def pick_input(sd, device: int | None = None, pattern: str = "rytm",
     found = named_inputs(sd, pattern, hostapi)
     if not found:
         raise NoAudioDevice(
-            f"no {pattern} on ASIO. Note the Overbridge installer registers a node for "
-            f"every Elektron product, so a name in the list is not a connection -- run "
-            f"`ganlive doctor --list` to see what actually opens.")
+            f"no input named {pattern}" + (f" on {hostapi}" if hostapi else " on any host API")
+            + ". A name in the list is not a connection -- Elektron's Overbridge installer, "
+              "for one, registers a node for every product it knows. Run "
+              "`ganlive doctor --list` to see what actually opens.")
     tried = []
     for candidate in found:
         info = sd.query_devices(candidate)

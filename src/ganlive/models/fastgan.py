@@ -16,12 +16,6 @@ SUPPORTED_SIZES = (256, 512, 1024, 2048)
 
 BASE = 4
 
-def _memory_format(x: torch.Tensor) -> torch.memory_format:
-    if x.is_contiguous(memory_format=torch.channels_last):
-        return torch.channels_last
-    return torch.contiguous_format
-
-
 @dataclass(frozen=True)
 class Ladder:
     """The (height, width) the generator climbs — square or not."""
@@ -335,6 +329,3 @@ def load(checkpoint: str | Path, device=None) -> tuple[Generator, Config]:
     return net, cfg
 
 
-def pin_noise(net: Generator, seed: int) -> None:
-    """Freeze the noise layers to a pattern that depends only on `seed`."""
-    freeze_noise(net, seed=seed)

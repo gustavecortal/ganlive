@@ -27,7 +27,7 @@ for stream in (sys.stdout, sys.stderr):
 import torch  # noqa: E402
 
 from ganlive.dials import steer as K  # noqa: E402
-from ganlive.models.fastgan import load, pin_noise  # noqa: E402
+from ganlive.models.fastgan import freeze_noise, load  # noqa: E402
 from ganlive.models.graph import prepare_for_inference  # noqa: E402
 from ganlive.models.rewrite import (  # noqa: E402
     bank_the_knobs,
@@ -41,7 +41,7 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     import copy
 
     net, cfg = load(checkpoint, "cpu")
-    pin_noise(net, noise_seed)
+    freeze_noise(net, seed=noise_seed)
     report = prepare_for_inference(net, cfg.nz, "cpu", half=False, fold=True,
                                    compile_yuv=False, compile_net=False)
     net = report["net"].eval()

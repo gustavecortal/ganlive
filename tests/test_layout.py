@@ -66,7 +66,8 @@ def test_nothing_points_at_a_file_or_tool_this_repository_does_not_have():
     """Error messages and help text send people places. Those places must exist.
 
     The split out of `smallgen` left nine `scripts/rytm_*.py` paths in text a user reads
-    only when something has already gone wrong."""
+    only when something has already gone wrong -- and seven dead `sys.path.insert` calls in
+    the suite, which this missed for looking only at `src/`."""
     gone = ("scripts/", "rytm_live", "rytm_map", "rytm_preflight", "rytm_sysex",
             "rytm_wire", "rytm_fuzz", "realtime_video", "onnx_bench", "NOTES.md",
             "PLAN.md", "smallgen", ".venv/Scripts")
@@ -74,11 +75,14 @@ def test_nothing_points_at_a_file_or_tool_this_repository_does_not_have():
     #: rename still carry it, and both readers accept either spelling.
     allowed = "before this project was named"
     found = []
-    for path in sorted(SRC.rglob("*.py")):
+    here = pathlib.Path(__file__).resolve().parent
+    # not this file: it names every stale spelling in order to look for them
+    for path in sorted(SRC.rglob("*.py")) + sorted(
+            p for p in here.glob("*.py") if p.name != pathlib.Path(__file__).name):
         lines = path.read_text(encoding="utf-8").splitlines()
         for number, line in enumerate(lines, 1):
             if allowed in "\n".join(lines[max(0, number - 4):number + 1]):
                 continue
-            found += [f"{path.relative_to(SRC)}:{number}: {line.strip()[:90]}"
+            found += [f"{path.name}:{number}: {line.strip()[:90]}"
                       for stale in gone if stale in line]
     assert not found, "\n".join(found)

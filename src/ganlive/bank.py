@@ -121,16 +121,16 @@ def _conversions():
     return compiled_to_yuv420(), compiled_to_rgb(), compiled_to_bgra()
 
 
-def _prepare_onnx(path, device, dtype, conversions, load: LoadOptions):
+def _prepare_onnx(path, device, dtype, conversions, options: LoadOptions):
     """One exported graph made ready to play, with whatever settings it carries."""
     from ganlive.dials import derive as D
     from ganlive.models.onnx import OnnxGenerator
 
     net = OnnxGenerator(path, device=device)
     print(net.report(), flush=True)
-    if load.measure_grain and net.steerable:
+    if options.measure_grain and net.steerable:
         net.knobs.noise_gains = K.calibrate_noise(net, net.knobs, net.cfg.nz, device, dtype)
-    found = directions_for(net, net.cfg.nz, device, dtype, floor=load.direction_floor,
+    found = directions_for(net, net.cfg.nz, device, dtype, floor=options.direction_floor,
                            path=path,
                            read=lambda _net, nz: D.sefa_onnx(path, nz, count=D.CANDIDATES))
     return dict(net=net, cfg=net.cfg, knobs=net.knobs, directions=found), conversions
@@ -153,31 +153,31 @@ def open_stylegan2(path, device, exact: bool = False, dtype=None):
     return net, knobs, net.mapping.push, S2.style_bands(net)
 
 
-def _compiled(net, nz: int, device, dtype, load: LoadOptions):
+def _compiled(net, nz: int, device, dtype, options: LoadOptions):
     """The net compiled if this load asks for it, and what that cost. Shared by the families
     that own an `nn.Module`, because the three lines had been written out in both and `LoadOptions`'s
     own docstring names `exact` as a setting that reached one path and not the other."""
     from ganlive.models.graph import compile_and_count
 
-    if not load.compile_net:
+    if not options.compile_net:
         return net, 0, 0.0
     return compile_and_count(net, nz, device, dtype)
 
 
-def _prepare_stylegan2(path, device, dtype, conversions, load: LoadOptions):
+def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
     """A converted StyleGAN2 made ready to play, dials measured rather than remembered."""
     from ganlive.dials import derive as D
     from ganlive.dials import onnx_dials as A
     from ganlive.models import stylegan2 as S2
 
-    net, knobs, push, bands = open_stylegan2(path, device, exact=load.exact, dtype=dtype)
+    net, knobs, push, bands = open_stylegan2(path, device, exact=options.exact, dtype=dtype)
     cfg = net.cfg
-    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, load)
+    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
 
     # Directions before layout: `rank` drops what dies before the output, so which style range a
     # surviving dial belongs to -- and the strip labels by range -- is only known after this call.
     found_dirs = directions_for(
-        net, cfg.nz, device, dtype, into=push, floor=load.direction_floor, path=path,
+        net, cfg.nz, device, dtype, into=push, floor=options.direction_floor, path=path,
         # `CANDIDATES` is per band, so the pool is that many from each of the three.
         read=lambda _net, nz: D.sefa_banded(bands, (D.CANDIDATES,) * len(bands), nz))
     ranges = () if found_dirs is None or not found_dirs.ranges else tuple(
@@ -198,13 +198,13 @@ def _prepare_stylegan2(path, device, dtype, conversions, load: LoadOptions):
                 push=push, directions=found_dirs), conversions
 
 
-def _prepare_fastgan(path, device, dtype, conversions, load: LoadOptions):
+def _prepare_fastgan(path, device, dtype, conversions, options: LoadOptions):
     """This project's own generator made ready to play."""
-    from ganlive.models.fastgan import load, pin_noise
+    from ganlive.models.fastgan import freeze_noise, load
     from ganlive.models.graph import prepare_for_inference
 
     net, cfg = load(path, device)
-    pin_noise(net, load.noise_seed)
+    freeze_noise(net, seed=options.noise_seed)
     prep = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16, fold=True,
                                  compile_yuv=conversions is None, compile_net=False)
     if conversions is None:
@@ -212,27 +212,27 @@ def _prepare_fastgan(path, device, dtype, conversions, load: LoadOptions):
     net = prep["net"]
 
     knobs = K.install(net, device, dtype)
-    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, load)
-    if load.measure_grain:
+    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
+    if options.measure_grain:
         knobs.noise_gains = K.calibrate_noise(net, knobs, cfg.nz, device, dtype)
     return (dict(net=net, cfg=cfg, knobs=knobs, graphs=graphs, compile_s=secs,
                  directions=directions_for(net, cfg.nz, device, dtype, path=path,
-                                           floor=load.direction_floor)),
+                                           floor=options.direction_floor)),
             conversions)
 
 
-def _prepare(path, device, dtype, conversions, load: LoadOptions | None = None):
+def _prepare(path, device, dtype, conversions, options: LoadOptions | None = None):
     """One model made ready to play, its dials verified, and the conversions the bank shares.
 
     Each family returns what differs -- the `Model` fields it knows -- and the conversions it
     compiled, if it compiled any; the `Model` is built once, here."""
-    load = load or LoadOptions()
+    options = options or LoadOptions()
     if is_onnx(path):
-        found, conversions = _prepare_onnx(path, device, dtype, conversions, load)
+        found, conversions = _prepare_onnx(path, device, dtype, conversions, options)
     elif is_stylegan2(path):
-        found, conversions = _prepare_stylegan2(path, device, dtype, conversions, load)
+        found, conversions = _prepare_stylegan2(path, device, dtype, conversions, options)
     else:
-        found, conversions = _prepare_fastgan(path, device, dtype, conversions, load)
+        found, conversions = _prepare_fastgan(path, device, dtype, conversions, options)
     # Last, because every sweep above reads the module tree or holds two frames side by side to
     # difference them, and a capture offers one output buffer and bakes in the addresses it
     # recorded. Before the gate below, though, so the gate runs *through* the capture: the
@@ -240,7 +240,7 @@ def _prepare(path, device, dtype, conversions, load: LoadOptions | None = None):
     # Asked the way `_compiled` asks it -- the families that own an `nn.Module` -- rather than
     # left for `capture` to refuse. It would refuse, but an ONNX load would then carry a line
     # reporting the outcome of a question that family can never be asked.
-    if load.capture and not is_onnx(path):
+    if options.capture and not is_onnx(path):
         from ganlive.models.graph import Replay, capture
 
         # Both torch families build a `K.Knobs`; the push is the StyleGAN2 family's alone.
@@ -500,7 +500,7 @@ class Bank:
     height: int
     index: int = 0
     #: How every model in this bank was prepared, including the ones added later.
-    load: LoadOptions = field(default_factory=LoadOptions)
+    options: LoadOptions = field(default_factory=LoadOptions)
     #: The precision the bank plays in. `None` is the device's own; see `device.playback_dtype`.
     dtype: object = None
     height_want: int | None = 0
@@ -575,7 +575,7 @@ class Bank:
         admit(self.models, path)
         stage = self.stage
         model, _ = _prepare(path, self.device, self.dtype,
-                            (stage.to_yuv, stage.to_rgb, stage.to_bgra), self.load)
+                            (stage.to_yuv, stage.to_rgb, stage.to_bgra), self.options)
         self.models.append(model)
         self.graphs += model.graphs
         self.compile_s += model.compile_s
@@ -704,7 +704,7 @@ class Shelf:
 
 
 def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=None,
-          screen=None, load: LoadOptions | None = None, **settings) -> Bank:
+          screen=None, options: LoadOptions | None = None, **settings) -> Bank:
     """Load, prepare, install the dials' settings, compile -- in that order, for each model.
 
     `device` and `dtype` default to whichever accelerator this machine has and the precision
@@ -717,7 +717,7 @@ def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=N
     dtype = dtype or playback_dtype(device)
     # `**settings` so a caller can pass one field without building a `LoadOptions`; both spellings
     # end up as the same object, and the object is what travels.
-    load = replace(load or LoadOptions(), **settings) if settings else load or LoadOptions()
+    options = replace(options or LoadOptions(), **settings) if settings else options or LoadOptions()
     targets = [checkpoint] if isinstance(checkpoint, (str, Path)) else list(checkpoint)
     paths = [checkpoint_for(Path(t)) for t in targets]
 
@@ -726,7 +726,7 @@ def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=N
     t_all = time.perf_counter()
     for path in paths:
         admit(models, path)
-        model, conversions = _prepare(path, device, dtype, conversions, load)
+        model, conversions = _prepare(path, device, dtype, conversions, options)
         models.append(model)
 
     out_height, out_width = frame_size(models[0].cfg, height, screen)
@@ -742,4 +742,4 @@ def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=N
     return Bank(models=models, stage=stage, device=device, width=out_width, height=out_height,
                graphs=sum(m.graphs for m in models) + warmed,
                compile_s=time.perf_counter() - t_all, dtype=dtype,
-               height_want=height, screen=screen, load=load)
+               height_want=height, screen=screen, options=options)

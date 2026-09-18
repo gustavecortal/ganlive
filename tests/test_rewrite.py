@@ -19,7 +19,7 @@ import pytest
 import torch
 from torch import nn
 
-from ganlive.models.fastgan import Generator, pin_noise
+from ganlive.models.fastgan import Generator, freeze_noise
 from ganlive.models.graph import prepare_for_inference
 from ganlive.models.rewrite import GatedPair, equivalent, split_gated_convs
 
@@ -31,7 +31,7 @@ def _folded(nz: int = 32, seed: int = 0, gain: float = 2.0) -> tuple[nn.Module, 
     """A folded generator small enough for a test and loud enough to detect a change."""
     torch.manual_seed(seed)
     net = Generator(ngf=8, nz=nz, im_size=256, im_width=384)
-    pin_noise(net, 0)
+    freeze_noise(net, seed=0)
     with torch.no_grad():
         for parameter in net.parameters():
             parameter.mul_(gain)
@@ -211,6 +211,7 @@ def test_the_settings_names_travel_inside_the_graph(tmp_path):
 
     model = onnx.load(str(path), load_external_data=False)
     entry = model.metadata_props.add()
+    # The prefix graphs written before this project was named carry; readers accept both.
     entry.key, entry.value = "smallgen.settings", ",".join(names)
     onnx.save(model, str(path))
     assert settings_of(path) == names

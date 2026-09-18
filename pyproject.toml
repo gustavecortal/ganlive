@@ -9,7 +9,11 @@ dependencies = ["numpy>=1.26", "pygame>=2.5", "python-rtmidi>=1.5"]
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
 record = ["av>=13"]
-onnx = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6"]
+# The portable ONNX runtime. `models/runtime.py` tries TensorRT, CUDA, ROCm, MIGraphX,
+# CoreML and DirectML in turn, so this reaches most cards; `onnx-intel` swaps in the
+# OpenVINO build, which is the one the timings in the README were taken on.
+onnx = ["onnx>=1.17", "onnxruntime>=1.20"]
+onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

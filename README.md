@@ -18,7 +18,7 @@ measured before it is offered, so a dial that does nothing is never shown.
 
 Swap `cu128` for your build — `xpu`, `rocm6.3`, or drop `--index-url` entirely for CPU and
 Apple silicon. The extras are optional: `audio` for audio-driven triggers, `record` for video,
-`onnx` for the third model family.
+`onnx` for the third model family (`onnx-intel` instead, on an Intel GPU).
 
 ## Play
 

@@ -55,8 +55,12 @@ class Display:
     def _run(self, title: str) -> None:
         try:
             import os
+            import sys
 
-            os.environ.setdefault("SDL_VIDEODRIVER", "windows")
+            if sys.platform == "win32":
+                # Only here. Named unconditionally, SDL refuses it everywhere else and the
+                # whole block falls into the `except` below as "no display".
+                os.environ.setdefault("SDL_VIDEODRIVER", "windows")
             import pygame
             from pygame._sdl2.video import Renderer, Texture, Window
 

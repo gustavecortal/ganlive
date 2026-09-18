@@ -10,84 +10,15 @@ import pytest
 from ganlive.dials.table import (
     DIALS,
 )
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
-
-NZ = 32
-STILL = Preset(
-    name="still",
-    blurb="test fixture",
-)
-BREATHE = Preset(
-    name="breathe",
-    blurb="test fixture",
-    dials={"spread": 0.12, "speed": 0.25},
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.10, 0.62, glide=1.6),
-        Macro("density", "se_512", 2.5, 9.5, 0.40, 0.68, glide=1.2),
-        Macro("density", "se_128", 2.5, 9.5, 0.42, 0.62, glide=1.4),
-    ],
-)
-PULSE = Preset(
-    name="pulse",
-    blurb="test fixture",
-    dials={"spread": 0.24},
-    impulses=[
-        Impulse("*", "dir1", amount=0.22, decay=0.13, velocity=0.0),
-        Impulse("*", "noise", amount=0.16, decay=0.10, velocity=0.0),
-    ],
-)
-VOICES = Preset(
-    name="voices",
-    blurb="test fixture",
-    dials={"spread": 0.22},
-    impulses=[
-        Impulse("BD", "se_128", amount=0.34, decay=0.17, velocity=0.8),
-        Impulse("CP", "se_512", amount=0.32, decay=0.16),
-        Impulse("SD", "se_512", amount=0.24, decay=0.12),
-        Impulse("OH", "se_256", amount=-0.30, decay=0.30),
-        Impulse("CH", "noise", amount=0.10, decay=0.07, velocity=0.9),
-        Impulse("CY", "noise", amount=0.30, decay=0.90),
-        Impulse("LT", "dir1", amount=0.20, decay=0.22),
-        Impulse("MT", "dir2", amount=0.18, decay=0.20),
-        Impulse("HT", "dir3", amount=0.16, decay=0.18),
-    ],
-)
-RELEASE = Preset(
-    name="release",
-    blurb="test fixture",
-    dials={"hold": 0.78, "late": 0.15, "spread": 0.42, "speed": 0.5},
-    impulses=[
-        # A short attack, because these move where the picture IS rather than how fast it is
-        # going, and shoving one instantly is a visible step. 60 ms is under four frames.
-        Impulse("BD", "hold", amount=-0.62, decay=0.34, velocity=0.6, attack=0.06),
-        Impulse("CP", "spread", amount=0.28, decay=0.45, attack=0.06),
-        Impulse("OH", "late", amount=0.25, decay=0.30, attack=0.06),
-    ],
-    macros=[Macro("density", "speed", 2.5, 9.5, 0.30, 0.62, glide=1.8)],
-)
-FULL = Preset(
-    name="full",
-    blurb="test fixture",
-    dials={"hold": 0.45, "late": 0.35, "spread": 0.20},
-    impulses=list(VOICES.impulses) + [
-        Impulse("BD", "hold", amount=-0.34, decay=0.30, velocity=0.6, attack=0.06),
-        Impulse("RS", "dir1", amount=0.20, decay=0.20),
-    ],
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.14, 0.55, glide=1.6),
-        Macro("density", "hold", 2.5, 9.5, 0.62, 0.20, glide=1.8),
-    ],
-)
-FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
-
-from tests.support import FakeKnobs  # noqa: E402
+from ganlive.presets import Impulse, Macro, Preset
+from tests.support import FIXTURES, FakeKnobs
 
 
 def test_a_hit_cannot_push_a_dial_off_its_scale():
     """The clamp is at the dial, once, instead of at every parameter -- so an impulse with a
     wildly wrong amount is a setting that does nothing extra, not a broken picture."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.5},
                   impulses=[Impulse("BD", "noise", amount=9.0, decay=0.5, velocity=0.0)])
@@ -103,7 +34,7 @@ def test_the_runner_counts_which_dials_were_played():
     frames it moved, time a hand held it, how far it got from rest. A dial nothing touched
     is named as such rather than left off the list."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
                   impulses=[Impulse("BD", "noise", amount=0.5, decay=0.5, velocity=0.0)])
@@ -127,7 +58,7 @@ def test_the_runner_counts_which_dials_were_played():
 def test_a_hit_on_any_track_reaches_a_star_rule():
     """One rule for the whole kit is the commonest thing to want and should not need twelve."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
                   impulses=[Impulse("*", "noise", amount=0.5, decay=0.5, velocity=0.0)])
@@ -147,7 +78,7 @@ def test_a_whole_kit_rule_decays_on_audio_time_like_every_other_rule():
     against a 16.7 ms period that is 1.3x fast, on `pulse`, which is the one preset built entirely from `*`
     rules."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
                   impulses=[Impulse("*", "noise", amount=0.5, decay=0.2, velocity=0.0)])
@@ -170,7 +101,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
     values rather than over the top of the rules -- so turning an encoder moves where the
     reaction happens instead of cancelling it."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="", dials={"noise": 0.1},
                   impulses=[Impulse("BD", "noise", amount=0.2, decay=0.5, velocity=0.0)])
@@ -189,7 +120,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
 def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
     """The one control to reach for when a performance is too much or too little."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Macro, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(
         name="t", blurb="",
@@ -232,7 +163,7 @@ def test_a_hand_beats_the_slow_rule_for_that_dial_and_only_that_dial():
     """A slow rule SETS, so without this a slider on any dial a macro drives would be overwritten a
     microsecond later and the control would look broken."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Macro, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
                   macros=[Macro("density", "spread", 0.0, 10.0, 0.1, 0.9, glide=0.0),
@@ -258,7 +189,7 @@ def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
     slider glide the dial from wherever the rule was when the hand arrived, which is a move
     nothing asked for and would read as the slider being sticky."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Macro, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     preset = Preset(name="t", blurb="",
                   macros=[Macro("density", "dir1", 0.0, 10.0, 0.0, 1.0, glide=0.2)])
@@ -295,7 +226,7 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
 def test_a_setting_naming_a_dial_that_no_longer_exists_says_so():
     """**Silence here cost the player both of his saved takes.**"""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Macro, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     old = Preset(name="from-before-the-rename", blurb="",
                 dials={"warmth": 0.8, "hold": 0.4},
@@ -389,7 +320,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     rule already and only the interface could not reach it -- so the failure this guards is a
     grid that can only wire at one fixed strength."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import AMOUNT_MAX, Impulse, PresetRunner
+    from ganlive.presets import AMOUNT_MAX, PresetRunner
 
     bd = INDEX["BD"]
     runner = PresetRunner(FIXTURES["still"], INDEX, 60.0)
@@ -427,7 +358,7 @@ def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire
     the loudest rule on the channel while writing to whichever track a display listed first
     let the bar sit still while the wheel moved something else -- a control that looks dead."""
     from ganlive.control.tracks import channel_map
-    from ganlive.presets import Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     voices = channel_map("voices")
     assert voices["RS"] == voices["CP"], "this test needs two drums on one channel"
@@ -451,7 +382,7 @@ def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it
     added an RS rule beside it, and clicking again took that one away and left the light on.
     Four of the twelve tracks could not be wired from the grid at all."""
     from ganlive.control.tracks import channel_map
-    from ganlive.presets import Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     voices = channel_map("voices")
     channel = voices["RS"]

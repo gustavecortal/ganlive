@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import pathlib
-import sys
 import types
 
 import numpy as np
@@ -24,7 +23,6 @@ from ganlive.dials.table import (
     spread_for,
 )
 from ganlive.frame import FrameStage
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
 from ganlive.walk import (
     BEATS_PER_BAR,
     MusicalClock,
@@ -35,76 +33,12 @@ from ganlive.walk import (
     _smoothstep,
     shape,
 )
-
-NZ = 32
-STILL = Preset(
-    name="still",
-    blurb="test fixture",
+from tests.support import (
+    _applied,
+    _panel,
+    _pulses,
+    _StubModel,
 )
-BREATHE = Preset(
-    name="breathe",
-    blurb="test fixture",
-    dials={"spread": 0.12, "speed": 0.25},
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.10, 0.62, glide=1.6),
-        Macro("density", "se_512", 2.5, 9.5, 0.40, 0.68, glide=1.2),
-        Macro("density", "se_128", 2.5, 9.5, 0.42, 0.62, glide=1.4),
-    ],
-)
-PULSE = Preset(
-    name="pulse",
-    blurb="test fixture",
-    dials={"spread": 0.24},
-    impulses=[
-        Impulse("*", "dir1", amount=0.22, decay=0.13, velocity=0.0),
-        Impulse("*", "noise", amount=0.16, decay=0.10, velocity=0.0),
-    ],
-)
-VOICES = Preset(
-    name="voices",
-    blurb="test fixture",
-    dials={"spread": 0.22},
-    impulses=[
-        Impulse("BD", "se_128", amount=0.34, decay=0.17, velocity=0.8),
-        Impulse("CP", "se_512", amount=0.32, decay=0.16),
-        Impulse("SD", "se_512", amount=0.24, decay=0.12),
-        Impulse("OH", "se_256", amount=-0.30, decay=0.30),
-        Impulse("CH", "noise", amount=0.10, decay=0.07, velocity=0.9),
-        Impulse("CY", "noise", amount=0.30, decay=0.90),
-        Impulse("LT", "dir1", amount=0.20, decay=0.22),
-        Impulse("MT", "dir2", amount=0.18, decay=0.20),
-        Impulse("HT", "dir3", amount=0.16, decay=0.18),
-    ],
-)
-RELEASE = Preset(
-    name="release",
-    blurb="test fixture",
-    dials={"hold": 0.78, "late": 0.15, "spread": 0.42, "speed": 0.5},
-    impulses=[
-        # A short attack, because these move where the picture IS rather than how fast it is
-        # going, and shoving one instantly is a visible step. 60 ms is under four frames.
-        Impulse("BD", "hold", amount=-0.62, decay=0.34, velocity=0.6, attack=0.06),
-        Impulse("CP", "spread", amount=0.28, decay=0.45, attack=0.06),
-        Impulse("OH", "late", amount=0.25, decay=0.30, attack=0.06),
-    ],
-    macros=[Macro("density", "speed", 2.5, 9.5, 0.30, 0.62, glide=1.8)],
-)
-FULL = Preset(
-    name="full",
-    blurb="test fixture",
-    dials={"hold": 0.45, "late": 0.35, "spread": 0.20},
-    impulses=list(VOICES.impulses) + [
-        Impulse("BD", "hold", amount=-0.34, decay=0.30, velocity=0.6, attack=0.06),
-        Impulse("RS", "dir1", amount=0.20, decay=0.20),
-    ],
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.14, 0.55, glide=1.6),
-        Macro("density", "hold", 2.5, 9.5, 0.62, 0.20, glide=1.8),
-    ],
-)
-FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
-
-from tests.support import _applied, _panel, _pulses, _StubModel  # noqa: E402
 
 
 def _displacement(spread):
@@ -664,13 +598,7 @@ def test_the_frame_report_says_which_model_the_slow_frames_belong_to():
     then loaded a StyleGAN2 from the shelf, and reported 53.8 fps with 25.7% of frames over
     budget as a single number -- which is either one expensive model or every model getting
     slower, and the report could not tell them apart."""
-    import importlib.util
-    import pathlib
-
-    spec = importlib.util.spec_from_file_location("rytm_live_for_report",
-                                                  pathlib.Path("src/ganlive/tools/play.py"))
-    live = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(live)
+    from ganlive.tools import play as live
 
     fast = [8.0] * 100
     slow = [20.0] * 40 + [8.0] * 60
@@ -743,13 +671,11 @@ def test_the_worst_case_setting_turns_on_every_dial_that_costs_anything():
     """**The frame budget is priced against one setting**, so a dial missing from it is a per-frame cost
     nobody has measured -- which is what happened once when a stage dial was added and left out of the
     hand-written list."""
-    from pathlib import Path
 
-    sys.path.insert(0, str(Path("scripts").resolve()))
     from ganlive.dials.table import DIALS, SPANS
-    from ganlive.tools import latency as rytm_latency
+    from ganlive.tools import latency
 
-    worst = rytm_latency.WORST
+    worst = latency.WORST
     driven = {name for name, value in worst.dials.items() if value != DIALS[name][0]}
     driven |= {i.dial for i in worst.impulses} | {m.dial for m in worst.macros}
 
@@ -818,3 +744,30 @@ def test_both_stylegan2_layout_builders_offer_the_same_spine(tmp_path):
     mine = R.layout_for(None, ours)
     assert [n for n in mine if mine[n].group != "MODEL"] == spine, (
         "the spine is the spine on every family, which is the whole argument for having one")
+
+
+def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
+    """The whole FastGAN load path: rebuild, freeze the noise, install, measure, lay out.
+
+    There was no test that took a `.pt` FastGAN from disk to a playable `Model`, so when
+    `sample.load_generator` became `fastgan.load` and collided with `_prepare_fastgan`'s
+    `load: LoadOptions` parameter, 372 tests passed and `ganlive play` raised on every
+    FastGAN checkpoint it was given."""
+    from ganlive import bank as R
+    from ganlive.models.fastgan import Generator
+
+    cfg = dict(nz=16, ngf=8, im_size=256, im_width=None)
+    net = Generator(**cfg)
+    path = tmp_path / "tiny.pt"
+    torch.save({"g_ema": net.state_dict(), "config": cfg}, path)
+
+    model, _ = R._prepare(path, "cpu", torch.float32, (None, None, None),
+                          R.LoadOptions(compile_net=False, capture=False,
+                                        measure_grain=False))
+    assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
+    assert model.knobs.names, "no dials were installed on the generator"
+    # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and
+    # drawn dark rather than installed.
+    assert "sle.se_512" not in model.knobs.index
+    assert "se_512" not in model.dials_live and "se_256" in model.dials_live
+    assert model.dials_live, "nothing reached the model"
