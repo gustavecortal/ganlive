@@ -17,16 +17,12 @@ stays non-deterministic after its random draws have been frozen.
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-from ganlive import device as dev  # noqa: E402
-from ganlive.dials import onnx_dials as A  # noqa: E402
-from ganlive.models import foreign as F  # noqa: E402
+from ganlive import device as dev
+from ganlive.dials import onnx_dials as A
+from ganlive.models import foreign as F
 
 HUB = "hf:"
 

@@ -2,21 +2,18 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from collections import defaultdict
 
 import numpy as np
 
-os.environ.setdefault("SD_ENABLE_ASIO", "1")
-
-from ganlive.control.audio import NoAudioDevice, pick_input  # noqa: E402
-from ganlive.control.features import FeatureExtractor  # noqa: E402
-from ganlive.control.machine import profile  # noqa: E402
-from ganlive.control.midi import dispatch, open_inputs  # noqa: E402
-from ganlive.control.tracks import TRACKS  # noqa: E402
-from ganlive.walk import MusicalClock  # noqa: E402
+from ganlive.control.audio import NoAudioDevice, pick_input
+from ganlive.control.features import FeatureExtractor
+from ganlive.control.machine import profile
+from ganlive.control.midi import dispatch, open_inputs
+from ganlive.control.tracks import TRACKS
+from ganlive.walk import MusicalClock
 
 WINDOW_S = 0.050
 
@@ -41,7 +38,7 @@ def open_midi(match: str = ""):
     return opened[0][1]
 
 
-def report(seen, votes, levels, struck, silent, order, machine):
+def report(seen, votes, levels, struck, silent, order):
     """Everything measured, turned into a map plus an honest account of what is shaky."""
     by_note = sorted(seen)
     named = {note: (order[note] if note < len(order) else f"note{note}") for note in by_note}
@@ -272,7 +269,7 @@ def main(argv=None) -> int:
                   "cable rather than a setting.")
         return 1
 
-    mapping = report(seen, votes, levels, struck, silent, order, machine)
+    mapping = report(seen, votes, levels, struck, silent, order)
     report_recall(strikes, onsets, mapping, order)
     return 0
 

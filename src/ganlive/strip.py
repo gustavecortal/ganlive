@@ -653,7 +653,7 @@ class DialPanel:
         strengths = self._strengths()
 
         if self.mode == MODE_MODELS:
-            self._paint_models(surf, w)
+            self._paint_models(surf)
         shown = self.dials
         blocks_of = dict(shown.groups)
         for kind, label, top, tall in (self._cells if self.mode != MODE_MODELS else ()):
@@ -696,7 +696,7 @@ class DialPanel:
                                           TEXT if label in hands else FAINT), mid - 7)
 
         if self.mode == MODE_ROUTING:
-            self._paint_grid_header(surf, w)
+            self._paint_grid_header(surf)
         if self.mode != MODE_MODELS:
             self._paint_scope(surf, w)
             self._paint_description(surf, w)
@@ -715,7 +715,7 @@ class DialPanel:
         """Where the picker's list stops: the top of the drum lights."""
         return self._blocks["lights"][0] - PAD
 
-    def _paint_models(self, surf, w: int) -> None:
+    def _paint_models(self, surf) -> None:
         """Every model on disk: what is playing, what is loaded, and what could be."""
         top = PAD
         entries = self.shelf.entries()
@@ -743,7 +743,7 @@ class DialPanel:
                     f"· wheel to scroll")
             surf.blit(self._say(self._small, more, TRACK), (PAD, top + 2))
 
-    def _paint_grid_header(self, surf, w: int) -> None:
+    def _paint_grid_header(self, surf) -> None:
         """One column label per kit channel, above the first group heading.
 
         In the narrower font when the name of a shared channel does not fit its column: the

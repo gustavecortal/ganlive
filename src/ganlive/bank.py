@@ -39,7 +39,7 @@ class LoadOptions:
     #: Run a converted StyleGAN2 in the precision its own file declares.
     exact: bool = False
     #: Times what a random direction of the same length moves, for a derived direction to earn
-    #: a dial. See `directions.RANDOM_FLOOR` for why it is relative.
+    #: a dial. See `dials.derive.RANDOM_FLOOR` for why it is relative.
     direction_floor: float = RANDOM_FLOOR
 
 
@@ -215,7 +215,7 @@ def _prepare_fastgan(path, device, dtype, conversions, options: LoadOptions):
     net, cfg = load(path, device)
     freeze_noise(net, seed=options.noise_seed)
     prep = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16, fold=True,
-                                 compile_yuv=conversions is None, compile_net=False)
+                                 compile_yuv=conversions is None)
     if conversions is None:
         conversions = (prep["yuv"], prep["rgb"], prep["bgra"])
     net = prep["net"]
@@ -513,7 +513,7 @@ class Model:
     knobs: object
     graphs: int = 0
     compile_s: float = 0.0
-    #: The measured `gan.directions.Directions`, or `None` when they could not be derived.
+    #: The measured `dials.derive.Directions`, or `None` when they could not be derived.
     directions: object = None
     #: The same basis as the `(n, nz)` float32 array the walk adds. Held here rather than
     #: converted per switch, because `SlerpWalk._offset` caches on the array's identity.

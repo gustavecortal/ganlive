@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from collections import defaultdict
 from typing import NamedTuple
 
-os.environ.setdefault("SD_ENABLE_ASIO", "1")
+import numpy as np
 
-import numpy as np  # noqa: E402
-
-from ganlive.control.midi import (  # noqa: E402
+from ganlive.control.midi import (
     AFTERTOUCH_POLY,
     CLOCK,
     CONTINUE,
@@ -22,8 +19,8 @@ from ganlive.control.midi import (  # noqa: E402
     STOP,
     find_ports,
 )
-from ganlive.control.tracks import TRACKS, output_mode  # noqa: E402
-from ganlive.walk import MusicalClock  # noqa: E402
+from ganlive.control.tracks import TRACKS, output_mode
+from ganlive.walk import MusicalClock
 
 VOICE = {0x80: "note_off", NOTE_ON: "note_on", AFTERTOUCH_POLY: "aftertouch_poly",
          CONTROL_CHANGE: "control_change", 0xC0: "program_change",

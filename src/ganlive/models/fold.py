@@ -10,7 +10,6 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ganlive.models.capture import compile_and_count
 from ganlive.models.fastgan import NoiseInjection
 from ganlive.pixels import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb, to_bgra, to_nv12, to_rgb
 
@@ -111,29 +110,28 @@ def fold_free_noise(net: nn.Module) -> int:
 # ORDER MATTERS BOTH WAYS. The fold must come AFTER a forward pass -- it reads running statistics, so
 # folding a cold net silently folds nothing in the blocks that matter most -- and BEFORE compile.
 def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
-                          fold: bool = True, compile_yuv: bool = True,
-                          compile_net: bool = False, spectral: bool = True) -> dict:
-    """Fold, cast, and hand back the colour conversion to use. Reports what was applied."""
+                          fold: bool = True, compile_yuv: bool = True) -> dict:
+    """Fold, cast, and hand back the colour conversion to use. Reports what was applied.
+
+    **It does not compile.** It took a `compile_net` flag that every caller passed `False` --
+    the bank compiles through `bank._compiled`, which is the one place that knows what this
+    load asked for, and the export must not compile at all. The flag's only effect was to make
+    this module import `models.capture`, which is a dependency on the graph recorder from a
+    module that does nothing but rewrite weights."""
     with torch.no_grad():
         net(torch.zeros(1, nz, device=device))       # draws the lazy frozen patterns
-    report: dict = {"folded": {}, "half": half, "graphs": 0}
+    report: dict = {"folded": {}, "half": half}
     # **Bake the spectral norm, which was being recomputed on every frame.** It is a pre-forward hook, so
     # `weight = weight_orig / sigma` ran once per forward for every module still carrying one -- 15.4 M
     # parameters read and written for nothing, plus the power-iteration matmuls, at 61.6 MB of traffic a
     # frame in fp16. In eval nothing updates `u` and `v`, so sigma is a constant and baking it is exact:
     # measured at 0.00000 8-bit levels over three latents in fp32. Before the fold, not after.
-    if spectral:
-        report["spectral_removed"] = remove_spectral_norm(net)
+    report["spectral_removed"] = remove_spectral_norm(net)
     if fold:
         report["folded"] = fold_norms(net)
         report["folded"]["free_noise"] = fold_free_noise(net)
     if half:
         net = net.to(torch.float16).to(memory_format=torch.channels_last)
-    if compile_net:
-        net, graphs, secs = compile_and_count(
-            net, nz, device, torch.float16 if half else torch.float32)
-        report["net_compile_s"] = secs
-        report["net_graphs"] = graphs
     report["net"] = net
     report["yuv"] = to_nv12
     report["rgb"] = to_rgb

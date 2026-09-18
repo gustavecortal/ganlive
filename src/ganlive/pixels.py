@@ -27,7 +27,7 @@ EXACT_LEVELS = 0.5
 def levels(a: torch.Tensor, b: torch.Tensor) -> float:
     """Mean difference between two frames in [-1, 1], in the 8-bit levels this repo judges by.
 
-    `adopt.levels` is the same quantity for numpy arrays and carries the note about the unit;
+    `dials.onnx_dials.levels` is the same quantity for numpy arrays and carries the note about the unit;
     this one stays in torch and on the card. Scaling **after** the reduction rather than before
     it, and accumulating in float32, keeps a full-resolution frame from costing three more
     tensors of its own size -- 226 MB at 3072x2048 -- to answer one scalar question. The
@@ -104,27 +104,28 @@ def pinned(shape, dtype) -> torch.Tensor:
 
 
 class PinnedRing:
-    """A ring of pinned host buffers to copy device frames into, instead of `Tensor.cpu()`."""
+    """A ring of pinned host buffers to copy device frames into, instead of `Tensor.cpu()`.
 
-    def __init__(self, depth: int, device: str, mode: str = "pinned"):
-        self.depth, self._device, self._mode = max(2, depth), device, mode
+    **No `mode`.** It took one, defaulting to `"pinned"`, with a `"cpu"` arm kept as the
+    baseline that `Tensor.cpu()` is -- and nothing could select it: no caller and no test ever
+    passed the `host_copy` that reached it. `pinned()` below already falls back to a pageable
+    buffer where the driver refuses to pin one, so the unreachable arm was not even the
+    fallback it looked like."""
+
+    def __init__(self, depth: int, device: str):
+        self.depth, self._device = max(2, depth), device
         self._buf: list = []
         self._key = None
         self._n = 0
         self.pinned = False
 
     def _alloc(self, src) -> None:
-        if self._mode == "pinned":
-            self._buf = [pinned(src.shape, src.dtype) for _ in range(self.depth)]
-        else:
-            self._buf = [torch.empty(src.shape, dtype=src.dtype) for _ in range(self.depth)]
+        self._buf = [pinned(src.shape, src.dtype) for _ in range(self.depth)]
         self.pinned = all(b.is_pinned() for b in self._buf)
         self._key = (tuple(src.shape), src.dtype)
 
     def take(self, src, wait: bool = True):
         """Copy `src` to the host and return a numpy view of the buffer it landed in."""
-        if self._mode == "cpu":
-            return src.cpu().numpy()            # the original path, kept as the baseline arm
         if self._key is None:
             self._alloc(src)
         if (tuple(src.shape), src.dtype) != self._key:
