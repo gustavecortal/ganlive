@@ -10,8 +10,8 @@ import torch
 from ganlive.dials import fastgan_dials as F
 from ganlive.dials import steer as K
 from ganlive.dials import table as S
-from ganlive.dials.derive import FLOOR_LEVELS, RANDOM_FLOOR
 from ganlive.frame import FrameStage
+from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class LoadOptions:
     #: Run a converted StyleGAN2 in the precision its own file declares.
     exact: bool = False
     #: Times what a random direction of the same length moves, for a derived direction to earn
-    #: a dial. See `dials.derive.RANDOM_FLOOR` for why it is relative.
+    #: a dial. See `pixels.RANDOM_FLOOR` for why it is relative.
     direction_floor: float = RANDOM_FLOOR
 
 
@@ -289,12 +289,49 @@ def _prepare(path, device, dtype, conversions, options: LoadOptions | None = Non
     return model, conversions or _conversions()
 
 
+@torch.no_grad()
+def measure_dials(net, knobs, layout, nz: int, device, dtype=torch.float16, seed: int = 0):
+    """Drive every unmeasured dial that writes the model to each end of its travel and measure
+    what moved, **through `Surface.apply` -- the path a hand takes**. Returns the layout with
+    `measured` filled in; `live_dials` below draws anything under `FLOOR_LEVELS` dark.
+
+    Here rather than in `dials.steer`, where it was `verify`: it builds a `Surface` and a
+    `WalkConfig` and drives them, which is the instrument's whole control surface, inside a
+    module whose subject is the handles on one generator. Both imports had to be written
+    inside the function to keep `dials -> walk -> dials` from closing."""
+    from ganlive.models.common import first_image, latent
+    from ganlive.pixels import levels
+    from ganlive.walk import WalkConfig
+
+    surface, walk = S.Surface(layout=layout), WalkConfig()
+
+    def frame(z, **held):
+        surface.values.update(layout.rests)
+        surface.set_held(held)
+        surface.apply(knobs, walk)
+        knobs.commit()
+        return first_image(net(z))
+
+    z = latent(nz, seed, device, dtype)
+    base = frame(z)
+    out = []
+    for knob in layout.knobs:
+        if not knob.writes or knob.measured is not None:
+            out.append(knob)
+            continue
+        moved = max((levels(frame(z, **{knob.name: x}), base)
+                     for x in (0.0, 1.0) if abs(x - knob.rest) > 1e-6), default=0.0)
+        out.append(replace(knob, measured=round(moved, 3)))
+    knobs.reset()
+    return S.Layout(tuple(out))
+
+
 def verified(model: Model, device, dtype) -> Model:
     """The same model with every MODEL dial measured through the path a hand takes.
 
     The one gate every family passes: a dial that reaches nothing is drawn dark rather than
     offered, whether it was hand-tuned here, swept at load, or read out of a foreign file."""
-    layout = K.verify(model.net, model.knobs, model.layout, model.cfg.nz, device, dtype)
+    layout = measure_dials(model.net, model.knobs, model.layout, model.cfg.nz, device, dtype)
     live = live_dials(model.knobs, model.directions, layout)
     writing = [k for k in layout.knobs if k.writes]
     dark = [k for k in writing if k.name not in live]

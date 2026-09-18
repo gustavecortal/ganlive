@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from ganlive.models.fastgan import NoiseInjection
+from ganlive.models.surgery import rewrite_sequential
 from ganlive.pixels import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb, to_bgra, to_nv12, to_rgb
 
 
@@ -58,42 +59,26 @@ def _fuse(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
     return fused
 
 
+def _norm_rule(a, b, c):
+    """`conv -> bn`, and `conv -> noise -> bn`, as one folded convolution plus what is left."""
+    if isinstance(a, nn.Conv2d) and isinstance(b, nn.BatchNorm2d):
+        return [_fuse(a, b)], 2, "conv_bn"
+    if not (isinstance(a, nn.Conv2d) and isinstance(b, NoiseInjection)
+            and isinstance(c, nn.BatchNorm2d)):
+        return None
+    if b.frozen is None:
+        # Nothing to precompute yet, so the run is left whole and only the conv consumed.
+        return [a], 1, "skipped_unfrozen"
+    scale, _ = _bn_affine(c)
+    return ([_fuse(a, c),
+             FoldedNoise((scale * b.weight).reshape(1, -1, 1, 1).float(), b.frozen.float())],
+            3, "conv_noise_bn")
+
+
 def fold_norms(net: nn.Module) -> dict[str, int]:
     """Fold every eval-time BatchNorm into the convolution feeding it. Returns what changed."""
-    counts = {"conv_bn": 0, "conv_noise_bn": 0, "skipped_unfrozen": 0}
-    for parent in net.modules():
-        if not isinstance(parent, nn.Sequential):
-            continue
-        items, out, i = list(parent), [], 0
-        while i < len(items):
-            a = items[i]
-            b = items[i + 1] if i + 1 < len(items) else None
-            c = items[i + 2] if i + 2 < len(items) else None
-            if isinstance(a, nn.Conv2d) and isinstance(b, nn.BatchNorm2d):
-                out.append(_fuse(a, b))
-                counts["conv_bn"] += 1
-                i += 2
-            elif (isinstance(a, nn.Conv2d) and isinstance(b, NoiseInjection)
-                  and isinstance(c, nn.BatchNorm2d)):
-                if b.frozen is None:
-                    counts["skipped_unfrozen"] += 1
-                    out.append(a)
-                    i += 1
-                    continue
-                scale, _ = _bn_affine(c)
-                out.append(_fuse(a, c))
-                out.append(FoldedNoise((scale * b.weight).reshape(1, -1, 1, 1).float(),
-                                       b.frozen.float()))
-                counts["conv_noise_bn"] += 1
-                i += 3
-            else:
-                out.append(a)
-                i += 1
-        if len(out) != len(items):
-            parent._modules.clear()
-            for j, m in enumerate(out):
-                parent._modules[str(j)] = m
-    return counts
+    counts = rewrite_sequential(net, _norm_rule)
+    return {name: counts[name] for name in ("conv_bn", "conv_noise_bn", "skipped_unfrozen")}
 
 
 def fold_free_noise(net: nn.Module) -> int:

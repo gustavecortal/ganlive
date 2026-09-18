@@ -16,21 +16,6 @@ DEFAULT_CODEC = "auto"
 POOL = 4
 
 
-def next_path(folder: Path, stem: str, suffix: str) -> Path:
-    """`folder/stem-01.suffix`, at the lowest number not already taken."""
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
-    # One directory read, not one stat per candidate. This is called from the frame
-    # loop, where a session that has saved 200 stills paid 200 sequential syscalls
-    # inside a single frame.
-    taken = {p.stem.rsplit("-", 1)[-1] for p in folder.glob(f"{stem}-*{suffix}")}
-    used = {int(t) for t in taken if t.isdigit()}
-    n = next((i for i in range(1, 1000) if i not in used), None)
-    if n is None:
-        raise FileExistsError(f"a thousand {stem} files in {folder}")
-    return folder / f"{stem}-{n:02d}{suffix}"
-
-
 def save_still(path: Path, rgb) -> threading.Thread:
     """Write one RGB frame as a PNG, on its own thread, and hand the thread back.
 

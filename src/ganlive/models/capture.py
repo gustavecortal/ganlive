@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ganlive.pixels import EXACT_LEVELS, levels, pinned
+from ganlive.pixels import EXACT_LEVELS, FLOOR_LEVELS, levels, pinned
 
 
 def warm(fns, probe: torch.Tensor) -> int:
@@ -125,8 +125,8 @@ def capture(net, nz: int, device, dtype=torch.float16, warmup: int = 3, feeds=()
     the compiled net's own frame, and it has to give a different frame for a different latent.
     A capture that recorded nothing replays fast and paints a still picture, which is the one
     failure mode of this that no exception reports and no later measurement would question."""
-    from ganlive.dials.derive import FLOOR_LEVELS, _latent
     from ganlive.models.common import first_image
+    from ganlive.models.common import latent as probe_latent
 
     if not isinstance(net, nn.Module):
         return net, "not captured: this generator is not a torch module"
@@ -141,7 +141,7 @@ def capture(net, nz: int, device, dtype=torch.float16, warmup: int = 3, feeds=()
     twins = [(t, pinned(t.shape, t.dtype)) for t in feeds]
     # Seeded, so the verdict below cannot flake on two latents that happened to be alike, and
     # so taking it does not disturb the global stream the frozen noise was drawn from.
-    probes = [_latent(nz, seed, device, dtype) for seed in (0, 1)]
+    probes = [probe_latent(nz, seed, device, dtype) for seed in (0, 1)]
 
     def upload() -> None:
         latent.copy_(host, non_blocking=True)

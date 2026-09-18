@@ -10,11 +10,11 @@ import pytest
 import torch
 
 from ganlive.dials import fastgan_dials as _fastgan
-from ganlive.dials.steer import Knobs
 from ganlive.dials.table import (
     DIALS,
 )
 from ganlive.frame import FrameStage
+from ganlive.settings import Knobs
 from ganlive.walk import (
     SlerpWalk,
     WalkConfig,

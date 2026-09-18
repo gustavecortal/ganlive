@@ -168,8 +168,8 @@ def test_every_dial_is_accounted_for_on_a_fully_featured_model():
     """**The same defect wearing the other face.**"""
     from ganlive.bank import live_dials
     from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
-    from ganlive.dials.steer import Knobs
     from ganlive.dials.table import DIRECTIONS
+    from ganlive.settings import Knobs
 
     full = Knobs(sorted(SETTINGS_WRITTEN), "cpu", torch.float32)
     live = live_dials(full, directions=range(DIRECTIONS))    # `len()` is all it asks of them
@@ -218,8 +218,8 @@ def test_an_onnx_model_offers_no_settings_it_cannot_write(tmp_path):
     `live_dials` reads the same empty index to stop them being drawn."""
     from ganlive.bank import live_dials
     from ganlive.dials.fastgan_dials import MODEL
-    from ganlive.dials.steer import Knobs
     from ganlive.dials.table import MOTION, Surface
+    from ganlive.settings import Knobs
 
     knobs = Knobs([], "cpu", torch.float32)
     live = live_dials(knobs, directions=None)
@@ -404,7 +404,7 @@ def test_the_settings_vector_is_staged_through_a_ring_like_the_walk_is():
     """A transfer from pinned memory is asynchronous, so a single host buffer can be
     overwritten by the next frame's writes while its copy is still in flight -- half of one
     frame's control state and half of the next. The walk already had a ring for this."""
-    from ganlive.dials.steer import Knobs
+    from ganlive.settings import Knobs
 
     knobs = Knobs(["a", "b"], "cpu", torch.float32)
     assert knobs.STAGING >= 2
@@ -506,7 +506,7 @@ def test_the_settings_vector_is_not_resent_when_no_dial_moved():
     motion and direction dials holds it still while the picture moves."""
     import torch
 
-    from ganlive.dials.steer import Knobs
+    from ganlive.settings import Knobs
 
     k = Knobs(["a", "b"], "cpu", torch.float32)
     k.commit()
@@ -706,7 +706,7 @@ def test_the_gate_measures_every_writing_dial_through_the_path_a_hand_takes():
             # Only one gate reaches the picture; every other setting is divided back out.
             return torch.tanh(torch.zeros(1, 3, 8, 8) + (knobs.view("sle.se_256") - 1.0))
 
-    layout = K.verify(_Net(), knobs, fastgan(), 4, "cpu", torch.float32)
+    layout = R.measure_dials(_Net(), knobs, fastgan(), 4, "cpu", torch.float32)
     assert layout["se_256"].measured > 1.0
     assert layout["se_512"].measured == 0.0
     assert layout["noise"].measured == 0.0

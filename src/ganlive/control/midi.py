@@ -5,7 +5,7 @@ import threading
 import time
 from typing import NamedTuple
 
-from ganlive.presets import remember
+from ganlive.files import remember
 from ganlive.walk import MusicalClock
 
 

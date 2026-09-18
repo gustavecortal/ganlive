@@ -52,3 +52,13 @@ def denormalise(x: torch.Tensor) -> torch.Tensor:
 def first_image(out):
     """The image a generator returned, whichever calling convention it uses."""
     return out[0] if isinstance(out, (list, tuple)) else out
+
+
+def latent(nz: int, seed: int, device, dtype) -> torch.Tensor:
+    """One latent, drawn on the host so the picture does not depend on the card it ran on.
+
+    Here rather than in `dials.derive`, where it started: `models.capture` needs a seeded
+    latent to check a replay against the forward, and was importing it -- by its private name
+    -- from a module two layers above it. Drawing a probe latent is not a fact about dials."""
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    return torch.randn(1, nz, generator=generator).to(device=device, dtype=dtype)

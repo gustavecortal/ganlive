@@ -7,8 +7,8 @@ from dataclasses import dataclass, replace
 import torch
 from torch import nn
 
-from ganlive.models.common import first_image
-from ganlive.pixels import levels
+from ganlive.models.common import first_image, latent
+from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, levels
 
 #: The layer types that can be the first thing a latent meets.
 CONSUMERS = (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)
@@ -130,12 +130,6 @@ class Directions:
         if self.random_levels is None:
             return None
         return f"{self.random_levels:.1f} 8-bit levels"
-
-
-def _latent(nz: int, seed: int, device, dtype) -> torch.Tensor:
-    """One latent, drawn on the host so the picture does not depend on the card it ran on."""
-    generator = torch.Generator(device="cpu").manual_seed(seed)
-    return torch.randn(1, nz, generator=generator).to(device=device, dtype=dtype)
 
 
 def pushed(net: nn.Module, z: torch.Tensor, push, into, push_shape=None) -> torch.Tensor:
@@ -292,7 +286,7 @@ def metric(net: nn.Module, nz: int, device, dtype, into=None, slot: int = 0,
 
     with torch.no_grad():
         for k in range(seeds):
-            z = _latent(nz, k, device, dtype)
+            z = latent(nz, k, device, dtype)
             # Written into one buffer rather than stacked from a list: `torch.stack` would
             # allocate and copy a second 151 MB on the card, doubling this function's peak.
             rows = None
@@ -570,16 +564,6 @@ def equalise(net: nn.Module, dirs: Directions, device, dtype, amount: float,
     return replace(dirs, basis=dirs.basis * (target / mid))
 
 
-#: A direction moving less than this many 8-bit levels at full travel is not a control.
-FLOOR_LEVELS = 1.0
-
-#: Times what a random unit direction of the same length moves -- on the same latents, in the
-#: pipeline that plays -- for a direction to be a control rather than a walk. **Relative, and
-#: deliberately so**: one FastGAN moves 70 levels along its best direction against another's
-#: model's 44 for its worst kept one, and still keeps fewer, because everything on that
-#: checkpoint moves the picture that hard. 2.5 was tried first and kept too little.
-RANDOM_FLOOR = 2.0
-
 #: Latents a level is averaged over. One is not a measurement: the same random direction reads
 #: 18 levels on one latent and 36 on the next, and `dir1` 46 on one and 132 on another.
 SEEDS = 4
@@ -744,7 +728,7 @@ def _measure(net: nn.Module, dirs: Directions, device, dtype=torch.float16,
 
     with torch.no_grad():
         for k in range(seeds):
-            z = _latent(dirs.nz, seed + k, device, dtype)
+            z = latent(dirs.nz, seed + k, device, dtype)
             base = pushed(net, z, None, into, dirs.push_shape)
             for s, sign in enumerate(signs):
                 for i, row in enumerate(basis):
