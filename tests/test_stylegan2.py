@@ -204,8 +204,8 @@ def test_without_a_measurement_it_shows_the_spine_and_nothing_else(tmp_path):
     nothing on the strip to reach them. What lands here is a `Model` built without a sweep at
     all, where a spine is the only honest answer -- a derived dial's curve *is* its measurement,
     so there is nothing to draw."""
-    from ganlive.dials import steer as K
     from ganlive import bank
+    from ganlive.dials import steer as K
 
     cfg = tiny()
     path = tmp_path / "tiny.pt"

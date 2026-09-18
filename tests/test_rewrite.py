@@ -19,10 +19,9 @@ import pytest
 import torch
 from torch import nn
 
-from ganlive.models.rewrite import GatedPair, equivalent, split_gated_convs
-from ganlive.models.fastgan import Generator
-from ganlive.models.fastgan import pin_noise
+from ganlive.models.fastgan import Generator, pin_noise
 from ganlive.models.graph import prepare_for_inference
+from ganlive.models.rewrite import GatedPair, equivalent, split_gated_convs
 
 #: Worst tolerable difference, in 8-bit levels. See the module note.
 IDENTICAL = 1e-3
@@ -114,10 +113,10 @@ def _steerable(tmp_path, split=True):
 
     import numpy as np
 
-    from ganlive.models.rewrite import bank_the_knobs, split_gated_convs
+    from ganlive.dials import steer as K
     from ganlive.models.fastgan import Generator, freeze_noise
     from ganlive.models.graph import prepare_for_inference
-    from ganlive.dials import steer as K
+    from ganlive.models.rewrite import bank_the_knobs, split_gated_convs
 
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()
@@ -221,10 +220,10 @@ def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
     """It counts *slots reached*, not modules replaced -- one noise dial drives every
     injection at its rung, so there are more sites than settings and counting modules would
     have said yes to a graph with a frozen dial in it."""
-    from ganlive.models.rewrite import bank_the_knobs
+    from ganlive.dials import steer as K
     from ganlive.models.fastgan import Generator, freeze_noise
     from ganlive.models.graph import prepare_for_inference
-    from ganlive.dials import steer as K
+    from ganlive.models.rewrite import bank_the_knobs
 
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()

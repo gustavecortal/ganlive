@@ -35,10 +35,10 @@ from pygame._sdl2.video import Renderer, Window  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from ganlive.dials import table as S  # noqa: E402
-from ganlive.strip import MIN_H, WIDTH, DialPanel  # noqa: E402
-from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
 from ganlive.control.tracks import INDEX  # noqa: E402
+from ganlive.dials import table as S  # noqa: E402
+from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
+from ganlive.strip import MIN_H, WIDTH, DialPanel  # noqa: E402
 
 #: The layouts a bank can hold at once, including the awkward ones: a single direction, and a
 #: family whose MODEL block shares no dial name with this one.
@@ -214,12 +214,15 @@ def run(renderer, rounds: int, seed: int, switch_odds: float = 0.06):
         strip = (0, 0, WIDTH, height)
 
         def paint(at=strip):
-            """One frame, exactly as `Display` draws it."""
+            """One frame, exactly as `Display` draws it.
+
+            `panel` is read late on purpose: it is rebuilt below, after this is defined
+            and before this is called, so a default argument would paint the old one."""
             renderer.draw_color = (0, 0, 0, 255)
             renderer.clear()
-            panel.draw(renderer, at)
+            panel.draw(renderer, at)                             # noqa: B023
             renderer.present()
-            check(panel)
+            check(panel)                                         # noqa: B023
 
         if panel is None:
             lname, vname = names[rng.randrange(len(names))]
