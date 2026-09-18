@@ -397,10 +397,15 @@ def screen_size():
     the latency harness built its bank without a screen, so the harness sized frames natively
     and the tool sized them to the display -- and at 3072x2048 that is 25 MB a frame across the
     bus instead of 12, which is most of what the window costs."""
-    for ask in (_win32_screen, _sdl_screen):
+    import sys
+
+    # Named for the platform rather than discovered by letting `ctypes.windll` raise: SDL
+    # answers everywhere, and asking it first elsewhere saves an exception per call.
+    asks = (_win32_screen, _sdl_screen) if sys.platform == "win32" else (_sdl_screen,)
+    for ask in asks:
         try:
             size = ask()
-        except Exception:  # noqa: BLE001 -- not that platform, or no desktop at all: try the next
+        except Exception:  # noqa: BLE001 -- no desktop at all, or no SDL: try the next
             continue
         if min(size) > 0:
             return size
@@ -408,6 +413,7 @@ def screen_size():
 
 
 def _win32_screen():
+    """Windows only. Asked before SDL there because it needs no video subsystem started."""
     import ctypes
 
     user32 = ctypes.windll.user32
