@@ -404,7 +404,7 @@ def main(argv=None) -> int:
     screen = screen_size()
     r = bank.build(args.checkpoint, args.device,
                   height=args.height, screen=screen,
-                  load=bank.LoadOptions(compile_net=args.compile_net, capture=args.capture,
+                  options=bank.LoadOptions(compile_net=args.compile_net, capture=args.capture,
                                 measure_grain=args.measure_grain, exact=args.exact,
                                 direction_floor=args.direction_floor))
     print(f"generator: {r.report()}", flush=True)
@@ -513,7 +513,7 @@ def main(argv=None) -> int:
                        "record": ask("record"), "still": ask("still")}
             if len(r.models) > 1 or shelf is not None:
                 actions["model"] = ask_model
-            panel = DialPanel(runner, actions=actions, extractor=extractor, rig=r, shelf=shelf,
+            panel = DialPanel(runner, actions=actions, extractor=extractor, bank=r, shelf=shelf,
                               encoders=encoders)
         display = Display((r.height, r.width), title=f"ganlive - {preset.name}",
                           overlay=panel, fullscreen=not args.console)

@@ -99,7 +99,7 @@ def main(argv=None) -> int:
         # -- and the pictures then prove nothing about a switch. They were taken that way while
         # the rows were a function of the layout and the cache was keyed on the window alone.
         if panel is None:
-            panel = DialPanel(runner, rig=r, shelf=shelf, encoders=knobs,
+            panel = DialPanel(runner, bank=r, shelf=shelf, encoders=knobs,
                               actions={"preset": lambda d: None, "save": lambda f: None,
                                        "record": lambda: None, "still": lambda: None,
                                        "model": lambda d: None})

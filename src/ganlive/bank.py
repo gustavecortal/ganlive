@@ -116,9 +116,9 @@ def frame_size(cfg, want: int | None, screen=None) -> tuple[int, int]:
 
 def _conversions():
     """The three host conversions, compiled. They are functions of a frame, not of a net."""
-    from ganlive.models.graph import compiled_to_bgra, compiled_to_rgb, compiled_to_yuv420
+    from ganlive.models.graph import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb
 
-    return compiled_to_yuv420(), compiled_to_rgb(), compiled_to_bgra()
+    return compiled_to_nv12(), compiled_to_rgb(), compiled_to_bgra()
 
 
 def _prepare_onnx(path, device, dtype, conversions, options: LoadOptions):

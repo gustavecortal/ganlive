@@ -72,7 +72,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     from ganlive.strip import DialPanel
     from ganlive.window import Display
 
-    panel = DialPanel(runner, actions={}, extractor=ex, rig=r)
+    panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
     display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
                       fullscreen=False)
     to_window = r.stage.bgra_bytes if Display.PIXELS == "bgra" else r.stage.rgb_bytes

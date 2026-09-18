@@ -173,6 +173,13 @@ def other_gpu_pythons() -> list[int]:
     return sorted(set(parents) - seen)
 
 
+def host_ram_free_gb() -> float:
+    """Host RAM available right now, in GB, or `nan` where it cannot be asked."""
+    import psutil
+
+    return round(psutil.virtual_memory().available / 1e9, 2)
+
+
 def refuse_if_gpu_busy(what: str) -> bool:
     """False, with an explanation, while anything else holds the card."""
     others = other_gpu_pythons()

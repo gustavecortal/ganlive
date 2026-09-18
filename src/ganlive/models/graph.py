@@ -124,8 +124,8 @@ def fold_free_noise(net: nn.Module) -> int:
     return n
 
 
-def compiled_to_yuv420():
-    """`to_yuv420` through TorchInductor, which is a 5.8x on that function alone."""
+def compiled_to_nv12():
+    """`to_nv12` through TorchInductor, which is a 5.8x on that function alone."""
     return torch.compile(to_nv12, dynamic=False)
 
 
@@ -183,7 +183,7 @@ def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
     report["rgb"] = to_rgb
     report["bgra"] = to_bgra
     if compile_yuv:
-        report["yuv"] = compiled_to_yuv420()
+        report["yuv"] = compiled_to_nv12()
         report["rgb"] = compiled_to_rgb()
         report["bgra"] = compiled_to_bgra()
     return report
@@ -198,13 +198,6 @@ def warm(fns, probe: torch.Tensor) -> int:
         for fn in fns:
             fn(probe)
     return counters["frames"]["ok"] - before
-
-
-def to_yuv420(out: torch.Tensor) -> torch.Tensor:
-    """Generator output in [-1,1] -> the encoder's `(H*3/2, W)` uint8 plane stack, on the GPU."""
-    y, u, v = _yuv_planes(out)
-    h, w = out.shape[-2:]
-    return torch.cat([y.reshape(-1), u.reshape(-1), v.reshape(-1)]).reshape(h * 3 // 2, w)
 
 
 def compile_and_count(net, nz: int, device, dtype=torch.float16,
@@ -415,14 +408,14 @@ class PinnedRing:
 
 def nv12_plane_views(frame, height: int, width: int):
     """numpy views onto an nv12 frame's own buffers, honouring each plane's line size."""
-    import numpy as np
-
     return [np.frombuffer(p, dtype=np.uint8).reshape(rows, p.line_size)[:, :width]
             for p, rows in ((frame.planes[0], height), (frame.planes[1], height // 2))]
 
 
 def to_nv12(out: torch.Tensor) -> torch.Tensor:
-    """As `to_yuv420`, but with the chroma interleaved: Y plane, then UVUVUV rows."""
+    """Generator output in [-1,1] -> the encoder's `(H*3/2, W)` uint8 plane stack, on the GPU.
+
+    NV12: the Y plane, then the chroma interleaved as UVUVUV rows."""
     y, u, v = _yuv_planes(out)
     h, w = out.shape[-2:]
     chroma = torch.stack([u, v], dim=-1).reshape(-1)     # U,V,U,V... in row order
