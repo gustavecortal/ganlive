@@ -885,6 +885,21 @@ class DialPanel:
             level, rank = knob.measured, ""
         return f" Measured on this model: {level:.0f} 8-bit levels at full travel{rank}."
 
+    def offers(self, action: str | None) -> bool:
+        """Whether this strip acts on the key whose `HELP` row names `action`.
+
+        **One test, because the help line and the handler have to agree.** They each decided
+        it for themselves -- `_status_lines` from a four-clause comprehension, `handle` from
+        the same conditions written out again down its `KEYDOWN` chain -- and a key listed and
+        not handled is a lie, while a key handled and not listed cannot be found."""
+        if action in (None, MINE):
+            return True                       # the strip itself, or the window, always acts
+        if action == NEEDS_SHELF:
+            return self.shelf is not None
+        if action == NEEDS_ENCODERS:
+            return self.encoders is not None
+        return self.actions.get(action) is not None
+
     def _status_lines(self) -> list[str]:
         """Short lines rather than long ones, so a long model name cannot push the rest off the panel."""
         model = "no model"
@@ -893,9 +908,7 @@ class DialPanel:
             if len(self.bank.models) > 1:
                 model = f"model {self.bank.index + 1}/{len(self.bank.models)} · {model}"
         keys = [f"{' '.join(spelling)} {label}" for spelling, label, action in HELP
-                if action in (None, MINE) or action in self.actions
-                or (action == NEEDS_SHELF and self.shelf is not None)
-                or (action == NEEDS_ENCODERS and self.encoders is not None)]
+                if self.offers(action)]
         hands = sorted({HAND_WORDS.get(s, s) for s in self.runner.hands_from.values()})
         holding = f"held by {', '.join(hands)}" if hands else "nothing held"
         learning = None if self.encoders is None else self.encoders.learning
@@ -992,30 +1005,33 @@ class DialPanel:
             return True
 
         if ev.type == pg.KEYDOWN:
+            # Every arm asks `offers` the same question the key help asks, so a key can never
+            # be listed and unhandled, or handled and unlisted. `act` is only reached once
+            # `offers` has said the action is there.
             act = self.actions.get
             if ev.key == pg.K_r:
                 self.release()
             elif ev.key == pg.K_g:
                 self.mode = MODE_DIALS if self.mode == MODE_ROUTING else MODE_ROUTING
                 self._dirty = True
-            elif ev.key == pg.K_m and self.shelf is not None:
+            elif ev.key == pg.K_m and self.offers(NEEDS_SHELF):
                 self.mode = MODE_DIALS if self.mode == MODE_MODELS else MODE_MODELS
                 self._dirty = True
-            elif ev.key == pg.K_l and self.encoders is not None:
+            elif ev.key == pg.K_l and self.offers(NEEDS_ENCODERS):
                 self.encoders.learning = None if self.encoders.learning else self.focus
                 self._dirty = True
-            elif ev.key == pg.K_s and act("save") is not None:
+            elif ev.key == pg.K_s and self.offers("save"):
                 act("save")(self.preset_now())
                 self._dirty = True
-            elif ev.key == pg.K_v and act("record") is not None:
+            elif ev.key == pg.K_v and self.offers("record"):
                 act("record")()
                 self._dirty = True
-            elif ev.key == pg.K_c and act("still") is not None:
+            elif ev.key == pg.K_c and self.offers("still"):
                 act("still")()
-            elif ev.key == pg.K_TAB and act("preset") is not None:
+            elif ev.key == pg.K_TAB and self.offers("preset"):
                 act("preset")(-1 if ev.mod & pg.KMOD_SHIFT else 1)
                 self.reload()
-            elif ev.key in (pg.K_LEFTBRACKET, pg.K_RIGHTBRACKET) and act("model") is not None:
+            elif ev.key in (pg.K_LEFTBRACKET, pg.K_RIGHTBRACKET) and self.offers("model"):
                 act("model")(1 if ev.key == pg.K_RIGHTBRACKET else -1)
                 self._dirty = True
             else:
