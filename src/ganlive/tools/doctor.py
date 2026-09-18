@@ -60,6 +60,12 @@ def cmd_list(sd, pattern="rytm") -> int:
         print("  MIDI notes alone drive it -- so this is a finding, not a failure. A driver")
         print("  may also register stubs for machines that are not plugged in, so a name in")
         print("  the list above is not a connection either.")
+        # What this particular machine wants switched on, where the profile knows one. In the
+        # machine's own words, because `control.machine` is what holds them -- and `None` on a
+        # controller that has no per-voice audio, which says nothing rather than guessing.
+        known = profile(pattern)
+        if known.stems:
+            print(f"  For per-drum audio on {known.name}: {known.stems}.")
         return 0
     for i, d, api in hits:
         print(f"  {d['name']} on {api}: {d['max_input_channels']} in, "

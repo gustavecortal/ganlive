@@ -3,9 +3,17 @@ from __future__ import annotations
 
 import sys
 
+from ganlive.control.machine import RYTM
+
 #: The lowest-latency host API each platform offers, and the one a multi-channel interface
 #: appears on. PortAudio spells them exactly like this.
 HOSTAPI = {"win32": "ASIO", "darwin": "Core Audio"}.get(sys.platform, "ALSA")
+
+#: What `pick_input` looks for when a caller names nothing. **Taken from the profile rather
+#: than written here**: `control.machine` is the module that owns which machine is which, and
+#: this was the same four letters spelled a sixth time, in the module that claims to know
+#: about none of them.
+DEFAULT_MATCH = RYTM.port
 
 #: `hostapi=DEFAULT` means `HOSTAPI`; `hostapi=None` means any. Distinguishable, which a
 #: plain `None` default is not.
@@ -42,7 +50,7 @@ def starts(sd, device: int, channels: int, samplerate: int = 48000) -> str | Non
         stream.close()
 
 
-def pick_input(sd, device: int | None = None, pattern: str = "rytm",
+def pick_input(sd, device: int | None = None, pattern: str = DEFAULT_MATCH,
                channels: int | None = None, samplerate: int = 48000,
                hostapi: str | None = DEFAULT) -> tuple[int, dict, int]:
     """`(device index, its info, channel count)` for the input to open.
@@ -73,8 +81,8 @@ def pick_input(sd, device: int | None = None, pattern: str = "rytm",
     if not found:
         raise NoAudioDevice(
             f"no input named {pattern}" + (f" on {hostapi}" if hostapi else " on any host API")
-            + ". A name in the list is not a connection -- Elektron's Overbridge installer, "
-              "for one, registers a node for every product it knows. Run "
+            + ". A name in the list is not a connection: a driver may register a node for "
+              "every product its maker knows, whether or not one is plugged in. Run "
               "`ganlive doctor --list` to see what actually opens.")
     tried = []
     for candidate in found:
