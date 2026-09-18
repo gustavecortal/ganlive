@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import pathlib
-import sys
 import types
 
 import numpy as np
@@ -16,81 +14,17 @@ from ganlive.dials import table as _surface  # noqa: E402
 from ganlive.dials.table import (
     DIALS,
 )
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
+from ganlive.presets import Impulse, Macro, Preset
 from ganlive.walk import (
     SlerpWalk,
     WalkConfig,
 )
-
-NZ = 32
-STILL = Preset(
-    name="still",
-    blurb="test fixture",
+from tests.support import (
+    FIXTURES,
+    FakeKnobs,
+    _panel,
+    _StubModel,
 )
-BREATHE = Preset(
-    name="breathe",
-    blurb="test fixture",
-    dials={"spread": 0.12, "speed": 0.25},
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.10, 0.62, glide=1.6),
-        Macro("density", "se_512", 2.5, 9.5, 0.40, 0.68, glide=1.2),
-        Macro("density", "se_128", 2.5, 9.5, 0.42, 0.62, glide=1.4),
-    ],
-)
-PULSE = Preset(
-    name="pulse",
-    blurb="test fixture",
-    dials={"spread": 0.24},
-    impulses=[
-        Impulse("*", "dir1", amount=0.22, decay=0.13, velocity=0.0),
-        Impulse("*", "noise", amount=0.16, decay=0.10, velocity=0.0),
-    ],
-)
-VOICES = Preset(
-    name="voices",
-    blurb="test fixture",
-    dials={"spread": 0.22},
-    impulses=[
-        Impulse("BD", "se_128", amount=0.34, decay=0.17, velocity=0.8),
-        Impulse("CP", "se_512", amount=0.32, decay=0.16),
-        Impulse("SD", "se_512", amount=0.24, decay=0.12),
-        Impulse("OH", "se_256", amount=-0.30, decay=0.30),
-        Impulse("CH", "noise", amount=0.10, decay=0.07, velocity=0.9),
-        Impulse("CY", "noise", amount=0.30, decay=0.90),
-        Impulse("LT", "dir1", amount=0.20, decay=0.22),
-        Impulse("MT", "dir2", amount=0.18, decay=0.20),
-        Impulse("HT", "dir3", amount=0.16, decay=0.18),
-    ],
-)
-RELEASE = Preset(
-    name="release",
-    blurb="test fixture",
-    dials={"hold": 0.78, "late": 0.15, "spread": 0.42, "speed": 0.5},
-    impulses=[
-        # A short attack, because these move where the picture IS rather than how fast it is
-        # going, and shoving one instantly is a visible step. 60 ms is under four frames.
-        Impulse("BD", "hold", amount=-0.62, decay=0.34, velocity=0.6, attack=0.06),
-        Impulse("CP", "spread", amount=0.28, decay=0.45, attack=0.06),
-        Impulse("OH", "late", amount=0.25, decay=0.30, attack=0.06),
-    ],
-    macros=[Macro("density", "speed", 2.5, 9.5, 0.30, 0.62, glide=1.8)],
-)
-FULL = Preset(
-    name="full",
-    blurb="test fixture",
-    dials={"hold": 0.45, "late": 0.35, "spread": 0.20},
-    impulses=list(VOICES.impulses) + [
-        Impulse("BD", "hold", amount=-0.34, decay=0.30, velocity=0.6, attack=0.06),
-        Impulse("RS", "dir1", amount=0.20, decay=0.20),
-    ],
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.14, 0.55, glide=1.6),
-        Macro("density", "hold", 2.5, 9.5, 0.62, 0.20, glide=1.8),
-    ],
-)
-FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
-
-from tests.support import FakeKnobs, _panel, _StubModel  # noqa: E402
 
 
 def _travelled(walk, beats):
@@ -353,7 +287,7 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
         frame()
         assert {n for n, _t, _h in panel._rows} == set(fastgan), "the model it opened on"
 
-        # `rytm_live.switch_model`'s two statements, in its order.
+        # `play.switch_model`'s two statements, in its order.
         holder.current = _StubModel(layout=other, dials_live=frozenset(other))
         frame()                                  # the window's thread, in the gap between them
         runner.use_model(holder.current)
@@ -499,20 +433,18 @@ def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
 
 def test_the_window_actually_opens_with_the_strip_beside_it():
     """**Nothing opened a real window, and a one-line change to how one opens shipped.**"""
-    import sys
     import threading
 
     import pygame
 
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     threads = threading.active_count()
     try:
-        from ganlive import window as realtime_video
+        from ganlive import window
 
         panel = _panel(DIALS, levels=(100.0, 50.0))
-        display = realtime_video.Display((64, 96), title="test", overlay=panel,
+        display = window.Display((64, 96), title="test", overlay=panel,
                                          fullscreen=False)
         display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
         display.close()
@@ -529,7 +461,6 @@ def test_every_routing_column_label_fits_the_column_it_names():
     """The columns share what is left of the strip after the dial names, and a kit that puts two
     drums on one channel labels them `MT/HT`. Centring a label wider than its column pushes it
     into the next one: `MT/HT CH/OH CY/CB` rendered as a single run of characters."""
-    import sys
 
     import pygame
 
@@ -537,7 +468,6 @@ def test_every_routing_column_label_fits_the_column_it_names():
     from ganlive.presets import DEFAULT, PresetRunner
     from ganlive.strip import WIDTH, DialPanel, grid_columns
 
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     try:
@@ -573,7 +503,6 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
     means the dial is unreachable, which the strip already knows how to draw; and `Display`
     stops the session when its thread dies instead of leaving a frozen window up."""
     import inspect
-    import sys
     import types
 
     import pygame
@@ -594,7 +523,6 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
 
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     try:
         from pygame._sdl2.video import Renderer, Window
 
@@ -611,9 +539,9 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
         else:
             os.environ["SDL_VIDEODRIVER"] = before
 
-    from ganlive import window as realtime_video
+    from ganlive import window
 
-    source = inspect.getsource(realtime_video.Display._run)
+    source = inspect.getsource(window.Display._run)
     assert "self.stopped = True" in source and "except Exception" in source, (
         "a window thread that dies has to stop the session; a frozen window that still "
         "reports 60 fps is the one failure this whole path exists to prevent")
@@ -624,23 +552,21 @@ def test_a_thousand_gestures_across_model_switches_break_nothing():
     press `m`, and the paint one frame later looked the dial up in a layout that no longer
     had it. No test covered it because every test drives one layout, and the crash needs two.
 
-    `rytm_fuzz` drives the real paint path under SDL's dummy driver, switching models
+    `test_fuzz_surface` drives the real paint path under SDL's dummy driver, switching models
     mid-gesture and carrying the focus and the drag across. Seeded, so a fault here is
-    reproducible with `scripts/rytm_fuzz.py --seeds 1`."""
-    import sys
+    reproducible with `pytest tests/test_fuzz_surface.py --seeds 1`."""
 
     import pygame
 
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     try:
-        import test_fuzz_surface as rytm_fuzz
+        import test_fuzz_surface
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
-        window = Window("fuzz", size=(rytm_fuzz.WIDTH + 200, max(rytm_fuzz.HEIGHTS)))
-        faults, reached = rytm_fuzz.run(Renderer(window, vsync=False), 500, seed=0)
+        window = Window("fuzz", size=(test_fuzz_surface.WIDTH + 200, max(test_fuzz_surface.HEIGHTS)))
+        faults, reached = test_fuzz_surface.run(Renderer(window, vsync=False), 500, seed=0)
     finally:
         pygame.display.quit()
         if before is None:
@@ -648,7 +574,7 @@ def test_a_thousand_gestures_across_model_switches_break_nothing():
         else:
             os.environ["SDL_VIDEODRIVER"] = before
 
-    assert not faults, rytm_fuzz.report(faults) or [f[5] for f in faults]
+    assert not faults, test_fuzz_surface.report(faults) or [f[5] for f in faults]
     # A fuzzer that never reaches the state is a fuzzer that proves nothing, and this is the
     # state: the strip describing a dial the incoming model does not have.
     assert reached["stale focus"], dict(reached)
@@ -659,13 +585,12 @@ def test_the_window_opens_no_shorter_than_the_strip_needs():
     """The floor is a property of the window, not of how it happened to open: it is
     resizable, so a floor applied once at construction is not one."""
 
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
-    from ganlive import window as realtime_video
+    from ganlive import window
     from ganlive.strip import MIN_H, WIDTH
 
     panel = _panel(DIALS)
-    tall_screen = realtime_video.window_size(3072, 2048, 2560, 1440, panel)
-    short_screen = realtime_video.window_size(3072, 2048, 1280, 400, panel)
+    tall_screen = window.window_size(3072, 2048, 2560, 1440, panel)
+    short_screen = window.window_size(3072, 2048, 1280, 400, panel)
 
     assert tall_screen[0] > WIDTH, "the strip sits beside the picture, not over it"
     assert tall_screen[1] >= MIN_H, tall_screen
@@ -903,7 +828,7 @@ def test_what_p_prints_can_be_pasted_back_and_gives_the_same_setting():
     change which drum drives which dial now, so it prints the rules too, from the runner's own
     copy, which is what was playing rather than what the file said."""
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Impulse, Macro, Preset, PresetRunner
+    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
     runner = PresetRunner(FIXTURES["release"], INDEX, 60.0)
@@ -932,21 +857,15 @@ def test_what_p_prints_can_be_pasted_back_and_gives_the_same_setting():
     assert runner.surface.values == pytest.approx(again.surface.values)
 
 
-def test_the_channel_map_is_remembered_so_it_stops_living_in_a_document(tmp_path):
-    """**A missing --map is silent and looks exactly like a routing bug.** `rytm_map.py` discovers which drum
-    arrives on which Overbridge channel, prints it, and forgets it, so the working line lived in
-    docs/RESUME.md and had to be retyped. Launched without it the tool falls back to
-    `channel_map("tracks")` -- BD=0, SD=1, RS=2 -- while Overbridge starts the kit at 2, so every onset is
-    credited to the wrong drum and the four channels carrying a pair light two tracks for one hit. That is
-    what it looks like from the front, and it cost a 467-second session."""
-    import importlib.util
-    import pathlib
+def test_the_channel_map_is_remembered_so_it_stops_living_in_a_document(tmp_path, monkeypatch):
+    """**A missing --map is silent and looks exactly like a routing bug.** `ganlive learn`
+    discovers which drum arrives on which channel and prints it; without it the tool falls back
+    to `channel_map("tracks")` -- BD=0, SD=1, RS=2 -- while Overbridge starts the kit at 2, so
+    every onset is credited to the wrong drum and the four channels carrying a pair light two
+    tracks for one hit. That is what it looks like from the front, and it cost a session."""
+    from ganlive.tools import play as live
 
-    spec = importlib.util.spec_from_file_location("rytm_live_for_test",
-                                                  pathlib.Path("src/ganlive/tools/play.py"))
-    live = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(live)
-    live.CHANNELS = tmp_path / "channels.txt"
+    monkeypatch.setattr(live, "CHANNELS", tmp_path / "channels.txt")
 
     overbridge = "BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9"
 

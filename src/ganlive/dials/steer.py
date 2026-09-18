@@ -141,14 +141,21 @@ def install(net: nn.Module, device, dtype=torch.float16, wanted=None) -> Knobs:
     from ganlive.models.fastgan import SkipLayerExcitation
     from ganlive.models.graph import FoldedNoise
 
-    wanted = set(SETTINGS_WRITTEN if wanted is None else wanted)
     have = available(net)
-    missing = sorted(wanted - have)
-    if missing:
-        raise RuntimeError(
-            f"this checkpoint has no {', '.join(missing)}, and the control surface writes "
-            f"them. It is a different architecture from the one the dials were measured "
-            f"against; loading it would raise out of the frame loop instead of here.")
+    if wanted is None:
+        # What this architecture has, not what the table wants: a 256-pixel FastGAN has no
+        # 512 rungs and is a supported size. Asked for a name explicitly, we still refuse --
+        # that caller has a list, and a silently dropped name would be a dial that is not
+        # there. Anything absent is drawn dark by the dead-dial gate either way.
+        wanted = set(SETTINGS_WRITTEN) & have
+    else:
+        wanted = set(wanted)
+        missing = sorted(wanted - have)
+        if missing:
+            raise RuntimeError(
+                f"this checkpoint has no {', '.join(missing)}, and the control surface writes "
+                f"them. It is a different architecture from the one the dials were measured "
+                f"against; loading it would raise out of the frame loop instead of here.")
 
     knobs = Knobs(sorted(wanted), device, dtype)
     sites = {"noise": 0, "sle": 0}

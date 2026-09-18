@@ -22,81 +22,18 @@ from ganlive.dials.table import (
     clamp01,
     noise_for,
 )
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
+from ganlive.presets import Preset
 from ganlive.walk import (
     SlerpWalk,
     WalkConfig,
 )
-
-NZ = 32
-STILL = Preset(
-    name="still",
-    blurb="test fixture",
+from tests.support import (
+    FakeKnobs,
+    _applied,
+    _panel,
+    _step,
+    _StubModel,
 )
-BREATHE = Preset(
-    name="breathe",
-    blurb="test fixture",
-    dials={"spread": 0.12, "speed": 0.25},
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.10, 0.62, glide=1.6),
-        Macro("density", "se_512", 2.5, 9.5, 0.40, 0.68, glide=1.2),
-        Macro("density", "se_128", 2.5, 9.5, 0.42, 0.62, glide=1.4),
-    ],
-)
-PULSE = Preset(
-    name="pulse",
-    blurb="test fixture",
-    dials={"spread": 0.24},
-    impulses=[
-        Impulse("*", "dir1", amount=0.22, decay=0.13, velocity=0.0),
-        Impulse("*", "noise", amount=0.16, decay=0.10, velocity=0.0),
-    ],
-)
-VOICES = Preset(
-    name="voices",
-    blurb="test fixture",
-    dials={"spread": 0.22},
-    impulses=[
-        Impulse("BD", "se_128", amount=0.34, decay=0.17, velocity=0.8),
-        Impulse("CP", "se_512", amount=0.32, decay=0.16),
-        Impulse("SD", "se_512", amount=0.24, decay=0.12),
-        Impulse("OH", "se_256", amount=-0.30, decay=0.30),
-        Impulse("CH", "noise", amount=0.10, decay=0.07, velocity=0.9),
-        Impulse("CY", "noise", amount=0.30, decay=0.90),
-        Impulse("LT", "dir1", amount=0.20, decay=0.22),
-        Impulse("MT", "dir2", amount=0.18, decay=0.20),
-        Impulse("HT", "dir3", amount=0.16, decay=0.18),
-    ],
-)
-RELEASE = Preset(
-    name="release",
-    blurb="test fixture",
-    dials={"hold": 0.78, "late": 0.15, "spread": 0.42, "speed": 0.5},
-    impulses=[
-        # A short attack, because these move where the picture IS rather than how fast it is
-        # going, and shoving one instantly is a visible step. 60 ms is under four frames.
-        Impulse("BD", "hold", amount=-0.62, decay=0.34, velocity=0.6, attack=0.06),
-        Impulse("CP", "spread", amount=0.28, decay=0.45, attack=0.06),
-        Impulse("OH", "late", amount=0.25, decay=0.30, attack=0.06),
-    ],
-    macros=[Macro("density", "speed", 2.5, 9.5, 0.30, 0.62, glide=1.8)],
-)
-FULL = Preset(
-    name="full",
-    blurb="test fixture",
-    dials={"hold": 0.45, "late": 0.35, "spread": 0.20},
-    impulses=list(VOICES.impulses) + [
-        Impulse("BD", "hold", amount=-0.34, decay=0.30, velocity=0.6, attack=0.06),
-        Impulse("RS", "dir1", amount=0.20, decay=0.20),
-    ],
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.14, 0.55, glide=1.6),
-        Macro("density", "hold", 2.5, 9.5, 0.62, 0.20, glide=1.8),
-    ],
-)
-FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
-
-from tests.support import FakeKnobs, _applied, _panel, _step, _StubModel  # noqa: E402
 
 
 def _stub_net(gates=("se_64", "se_128", "se_256", "se_512"),
@@ -410,14 +347,28 @@ def test_the_grit_ladder_the_tests_read_is_the_one_the_frame_loop_runs():
         assert {b for b, _f, _s in NOISE_BANDS} <= set(written), "a band stopped being written"
 
 
-def test_a_checkpoint_missing_a_setting_the_dials_write_is_refused_at_set_up():
-    """A 1024-tall generator has no `feat_2048` rung, and the surface writes its names as
-    literals. Without this the mismatch surfaces as a `KeyError` out of `Knobs.set` -- inside
-    the frame loop, mid-performance, rather than before a note is played."""
+def test_a_smaller_generator_installs_the_rungs_it_has_and_no_others():
+    """A 256-pixel FastGAN has no 512 rungs, and it is a supported size. It used to be
+    refused outright, so the whole family below 512 could not be played at all.
+
+    The dials it does not have cannot reach the frame loop: `Knobs.set` drops a name it
+    does not carry, and `live_dials` reads the same index to draw the dial dark."""
+    from ganlive.dials.steer import install
+
+    knobs = install(_stub_net(gates=("se_64", "se_128", "se_256")), "cpu", torch.float32)
+    assert "sle.se_512" not in knobs.index
+    assert "sle.se_256" in knobs.index
+    knobs.set("sle.se_512", 2.0)          # dropped, not raised: no KeyError mid-performance
+
+
+def test_an_explicitly_named_setting_the_model_lacks_is_still_refused():
+    """A caller with a list -- the ONNX export names its graph inputs -- has to be told,
+    because a silently dropped name there is a dial that is not in the exported graph."""
     from ganlive.dials.steer import install
 
     with pytest.raises(RuntimeError, match="sle.se_512"):
-        install(_stub_net(gates=("se_64", "se_128", "se_256")), "cpu", torch.float32)
+        install(_stub_net(gates=("se_64", "se_128")), "cpu", torch.float32,
+                wanted={"sle.se_64", "sle.se_512"})
 
 
 def test_only_the_settings_something_can_write_are_installed():
@@ -572,7 +523,7 @@ def test_use_model_relayouts_at_startup_not_only_on_a_switch():
     import dataclasses
 
     from ganlive.dials import table as S
-    from ganlive.presets import Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     @dataclasses.dataclass
     class _Model:
@@ -617,12 +568,16 @@ def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
         "a mutable Load would let one model's settings follow the next one's")
 
     # Every load path takes the whole object, so none of them can take a subset of it.
+    # By annotation rather than by name: the parameter was called `load` until it shadowed
+    # `fastgan.load` inside `_prepare_fastgan` and broke every FastGAN load.
     for fn in (R._prepare, R._prepare_onnx, R._prepare_stylegan2, R._prepare_fastgan):
-        assert "load" in inspect.signature(fn).parameters, fn.__name__
+        taken = [p for p in inspect.signature(fn).parameters.values()
+                 if "LoadOptions" in str(p.annotation)]
+        assert taken, fn.__name__
 
     # The rig carries it, and `add` -- the shelf's path -- hands on that same object.
-    assert [f.name for f in dataclasses.fields(R.Bank) if f.type == "LoadOptions"] == ["load"]
-    assert "self.load" in inspect.getsource(R.Bank.add), (
+    assert [f.name for f in dataclasses.fields(R.Bank) if f.type == "LoadOptions"] == ["options"]
+    assert "self.options" in inspect.getsource(R.Bank.add), (
         "a model loaded from the shelf mid-session would get stock settings")
 
     # And no setting has been left behind as a loose parameter on the way down. Read off the

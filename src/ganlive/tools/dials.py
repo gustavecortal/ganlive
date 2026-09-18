@@ -25,7 +25,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", type=Path, help="a converted StyleGAN2 `.pt`")
-    ap.add_argument("--device", default="xpu")
+    ap.add_argument("--device", default=None, metavar="xpu|cuda|mps|cpu",
+                    help="default: whichever accelerator is there, else the CPU")
     ap.add_argument("--count", type=int, default=D.CANDIDATES, metavar="N",
                     help=f"candidates per style range, before measurement picks among them at "
                          f"load. Default {D.CANDIDATES}.")
@@ -45,20 +46,21 @@ def main(argv=None) -> int:
         print(f"{args.checkpoint} is not a converted StyleGAN2, and the banded derivation has "
               f"no style ranges to read on anything else", file=sys.stderr)
         return 2
-    if args.device.lower() != "cpu" and not dev.refuse_if_gpu_busy("derivation"):
+    device = args.device or dev.detect_backend()
+    if device.lower() != "cpu" and not dev.refuse_if_gpu_busy("derivation"):
         return 1
 
     # The same precision the instrument would open this model in on this device, or the basis
     # is derived on a model that is not the one that plays.
-    dtype = dev.playback_dtype(args.device)
-    net, _knobs, push, bands = open_stylegan2(args.checkpoint, args.device, dtype=dtype)
+    dtype = dev.playback_dtype(device)
+    net, _knobs, push, bands = open_stylegan2(args.checkpoint, device, dtype=dtype)
     names = [name for name, _weight in bands]
     print(f"{args.checkpoint.name}: {len(names)} style ranges, "
           f"{2 * push.shape[1] * args.latents} passes each", flush=True)
 
     started = time.perf_counter()
     found = D.active_banded(net, names, (args.count,) * len(names), net.cfg.z_dim,
-                            args.device, dtype, into=push, seeds=args.latents)
+                            device, dtype, into=push, seeds=args.latents)
     how = f"{args.count}/band over {args.latents} latent(s) at eps {D.PROBE_EPS:g}"
     where = D.save(found, args.checkpoint, net, how)
     print(f"{found.report()}\nwritten to {where} in {time.perf_counter() - started:.1f}s")

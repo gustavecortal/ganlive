@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
-import functools
 import os
-import platform
 import subprocess
 import sys
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Literal
 
 import torch
@@ -33,105 +28,6 @@ def detect_backend() -> Backend:
     if mps is not None and mps.is_available():
         return "mps"
     return "cpu"
-
-
-@dataclass(frozen=True)
-class DeviceCaps:
-    """What the accelerator can actually do, measured rather than assumed."""
-
-    backend: Backend
-    name: str
-    total_memory_gb: float
-    has_fp64: bool
-    supports_bf16: bool
-    supports_gradscaler: bool
-    autocast_dtype: torch.dtype | None
-    weight_dtype: torch.dtype
-    notes: tuple[str, ...] = field(default_factory=tuple)
-
-    @property
-    def device(self) -> torch.device:
-        return torch.device(self.backend)
-
-    @property
-    def is_xpu(self) -> bool:
-        return self.backend == "xpu"
-
-    def summary(self) -> str:
-        lines = [
-            f"backend          : {self.backend}",
-            f"device           : {self.name}",
-            f"memory           : {self.total_memory_gb:.1f} GB",
-            f"fp64             : {'yes' if self.has_fp64 else 'NO'}",
-            f"bf16             : {'yes' if self.supports_bf16 else 'no'}",
-            f"GradScaler (fp16): {'usable' if self.supports_gradscaler else 'UNUSABLE'}",
-            f"autocast dtype   : {self.autocast_dtype}",
-            f"weight dtype     : {self.weight_dtype}",
-        ]
-        lines += [f"note             : {n}" for n in self.notes]
-        return "\n".join(lines)
-
-
-@functools.lru_cache(maxsize=1)
-def get_caps() -> DeviceCaps:
-    """Probe the active accelerator once and cache the result."""
-    backend = detect_backend()
-    notes: list[str] = []
-
-    if backend == "xpu":
-        p = torch.xpu.get_device_properties(0)
-        has_fp64 = bool(getattr(p, "has_fp64", 0))
-        bf16 = bool(torch.xpu.is_bf16_supported())
-        if not has_fp64:
-            notes.append(
-                "No fp64 on this GPU -> torch.amp.GradScaler is unusable, so fp16 mixed "
-                "precision is not an option. Training runs bf16 autocast (needs no scaler)."
-            )
-        if not bf16:
-            notes.append("bf16 unsupported and fp16 unusable: falling back to fp32 (slow).")
-        return DeviceCaps(
-            backend=backend,
-            name=p.name,
-            total_memory_gb=p.total_memory / (1024**3),
-            has_fp64=has_fp64,
-            supports_bf16=bf16,
-            supports_gradscaler=has_fp64,
-            autocast_dtype=torch.bfloat16 if bf16 else None,
-            weight_dtype=torch.bfloat16 if bf16 else torch.float32,
-            notes=tuple(notes),
-        )
-
-    if backend == "cuda":
-        p = torch.cuda.get_device_properties(0)
-        bf16 = torch.cuda.is_bf16_supported()
-        if not bf16:
-            notes.append("Pre-Ampere GPU: bf16 unavailable, using fp16 + GradScaler.")
-        return DeviceCaps(
-            backend=backend,
-            name=p.name,
-            total_memory_gb=p.total_memory / (1024**3),
-            has_fp64=True,
-            supports_bf16=bf16,
-            supports_gradscaler=True,
-            autocast_dtype=torch.bfloat16 if bf16 else torch.float16,
-            weight_dtype=torch.bfloat16 if bf16 else torch.float16,
-            notes=tuple(notes),
-        )
-
-    if backend == "mps":
-        notes.append("MPS: bf16 coverage is patchy; running fp32 without autocast for safety.")
-        return DeviceCaps(
-            backend=backend, name="Apple MPS", total_memory_gb=0.0, has_fp64=False,
-            supports_bf16=False, supports_gradscaler=False,
-            autocast_dtype=None, weight_dtype=torch.float32, notes=tuple(notes),
-        )
-
-    notes.append("CPU only. Fine for curation and metrics; training will be impractically slow.")
-    return DeviceCaps(
-        backend="cpu", name=platform.processor() or "cpu", total_memory_gb=0.0,
-        has_fp64=True, supports_bf16=True, supports_gradscaler=False,
-        autocast_dtype=None, weight_dtype=torch.float32, notes=tuple(notes),
-    )
 
 
 def _mod(name: str | None = None):
@@ -180,12 +76,6 @@ def synchronize(name: str | None = None) -> None:
         m.synchronize()
 
 
-def empty_cache() -> None:
-    m = _mod()
-    if m is not None:
-        m.empty_cache()
-
-
 def reset_peak_memory() -> None:
     m = _mod()
     if m is not None and hasattr(m, "reset_peak_memory_stats"):
@@ -194,61 +84,6 @@ def reset_peak_memory() -> None:
 
 def peak_memory_gb() -> float:
     return (memory_report() or {}).get("max_allocated_gb", 0.0)
-
-
-def autocast(enabled: bool = True):
-    """Autocast context for the active backend in the only dtype that works."""
-    caps = get_caps()
-    if not enabled or caps.autocast_dtype is None:
-        return contextlib.nullcontext()
-    return torch.autocast(device_type=caps.backend, dtype=caps.autocast_dtype)
-
-
-def make_grad_scaler(enabled: bool = True):
-    """A GradScaler when one is both needed and usable, else a no-op stand-in."""
-    caps = get_caps()
-    needs_scaling = caps.autocast_dtype is torch.float16
-    if enabled and needs_scaling and caps.supports_gradscaler:
-        return torch.amp.GradScaler(caps.backend)
-    return _NullScaler()
-
-
-class _NullScaler:
-    """Duck-typed GradScaler that does nothing."""
-
-    def scale(self, loss):
-        return loss
-
-    def unscale_(self, optimizer):
-        return None
-
-    def step(self, optimizer):
-        optimizer.step()
-
-    def update(self, new_scale=None):
-        return None
-
-    def get_scale(self) -> float:
-        return 1.0
-
-    def state_dict(self) -> dict:
-        return {}
-
-    def load_state_dict(self, state_dict) -> None:
-        return None
-
-
-def seed_everything(seed: int) -> None:
-    import random
-
-    import numpy as np
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    m = _mod()
-    if m is not None and hasattr(m, "manual_seed_all"):
-        m.manual_seed_all(seed)
 
 
 _HIGH_PRIORITY_CLASS = 0x00000080
@@ -311,94 +146,6 @@ def prioritise_gpu_feeder(pin_p_cores: bool = True, verbose: bool = True,
     return result
 
 
-def use_stable_inductor_cache(root: str = "data/cache/inductor") -> str:
-    """Keep Inductor's compiled kernels somewhere that survives between sessions."""
-    existing = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-    if existing and not os.path.basename(existing).startswith("torchinductor_"):
-        return existing
-    path = os.path.abspath(root)
-    os.makedirs(path, exist_ok=True)
-    os.environ["TORCHINDUCTOR_CACHE_DIR"] = path
-    return path
-
-
-_LLVM_BIN = Path("C:/Program Files/LLVM/bin/clang.exe")
-
-
-def host_c_compiler() -> str | None:
-    """A host C compiler Triton can build launcher stubs with, or `None`."""
-    from shutil import which
-
-    for name in ("clang", "gcc", "cl"):
-        found = which(name)
-        if found:
-            return found
-    if _LLVM_BIN.exists():
-        return str(_LLVM_BIN)
-    from . import _msvc as msvc
-
-    return which("cl") if msvc.activate(verbose=False) else None
-
-
-def prepare_inductor(threads: int = 8, spawn_pool: bool = False) -> str:
-    """Everything that has to happen on this machine before `torch.compile` is called."""
-    from . import _msvc as msvc
-
-    msvc.activate(verbose=False)
-    use_parallel_inductor_compile(threads, spawn_pool)
-    return use_stable_inductor_cache()
-
-
-def use_parallel_inductor_compile(threads: int = 8, spawn_pool: bool = False) -> int:
-    """Compile Inductor's kernels on several cores."""
-    from torch._inductor import config as inductor_config
-
-    if sys.platform == "win32":
-        if not spawn_pool:
-            return inductor_config.compile_threads or 1
-        if compiler := host_c_compiler():
-            os.environ.setdefault("CC", compiler)
-        os.environ["TORCHINDUCTOR_WORKER_START"] = "spawn"
-        inductor_config.worker_start_method = "spawn"
-        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = str(threads)
-        inductor_config.compile_threads = threads
-        return threads
-    existing = os.environ.get("TORCHINDUCTOR_COMPILE_THREADS")
-    if existing:
-        threads = int(existing)
-    else:
-        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = str(threads)
-    inductor_config.compile_threads = threads
-    return threads
-
-
-def cpu_generator(seed: int | None = None) -> torch.Generator:
-    """A CPU generator for reproducible sampling."""
-    g = torch.Generator(device="cpu")
-    if seed is not None:
-        g.manual_seed(seed)
-    return g
-
-
-def flat_norm(tensors) -> torch.Tensor | None:
-    """The L2 norm over a list of tensors, as one 0-dim tensor left on their own device."""
-    if not tensors:
-        return None
-    per = [torch.linalg.vector_norm(t.detach(), 2) for t in tensors]
-    return torch.linalg.vector_norm(torch.stack(per), 2)
-
-
-def clip_grads(params, max_norm: float):
-    """Clip a parameter list in place. Returns the norm it had **before** clipping."""
-    live = [p for p in params if p.grad is not None]
-    if not live:
-        return None
-    total = flat_norm([p.grad for p in live])
-    if max_norm:
-        torch.nn.utils.clip_grads_with_norm_(live, max_norm, total)
-    return total
-
-
 def other_gpu_pythons() -> list[int]:
     """PIDs of `python.exe` processes that are not this one or one of its ancestors."""
     if sys.platform != "win32":
@@ -431,29 +178,3 @@ def refuse_if_gpu_busy(what: str) -> bool:
     return True
 
 
-def host_ram_free_gb() -> float:
-    """Free **host** RAM in GB, or NaN where it cannot be read."""
-    try:
-        import ctypes
-
-        class _MemoryStatus(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong),
-                        ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong),
-                        ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong),
-                        ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-        status = _MemoryStatus()
-        status.dwLength = ctypes.sizeof(_MemoryStatus)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-        return status.ullAvailPhys / 1e9
-    except Exception:  # noqa: BLE001 - no kernel32, or a ctypes ABI mismatch; fall through
-        try:
-            import psutil
-
-            return psutil.virtual_memory().available / 1e9
-        except Exception:  # noqa: BLE001 - free memory is a report, never a decision
-            return float("nan")

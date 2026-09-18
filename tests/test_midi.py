@@ -7,78 +7,11 @@ import time
 import pytest
 
 from ganlive.dials import table as _surface  # noqa: E402
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
+from ganlive.presets import Preset
 from ganlive.walk import (
     MusicalClock,
 )
-
-NZ = 32
-STILL = Preset(
-    name="still",
-    blurb="test fixture",
-)
-BREATHE = Preset(
-    name="breathe",
-    blurb="test fixture",
-    dials={"spread": 0.12, "speed": 0.25},
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.10, 0.62, glide=1.6),
-        Macro("density", "se_512", 2.5, 9.5, 0.40, 0.68, glide=1.2),
-        Macro("density", "se_128", 2.5, 9.5, 0.42, 0.62, glide=1.4),
-    ],
-)
-PULSE = Preset(
-    name="pulse",
-    blurb="test fixture",
-    dials={"spread": 0.24},
-    impulses=[
-        Impulse("*", "dir1", amount=0.22, decay=0.13, velocity=0.0),
-        Impulse("*", "noise", amount=0.16, decay=0.10, velocity=0.0),
-    ],
-)
-VOICES = Preset(
-    name="voices",
-    blurb="test fixture",
-    dials={"spread": 0.22},
-    impulses=[
-        Impulse("BD", "se_128", amount=0.34, decay=0.17, velocity=0.8),
-        Impulse("CP", "se_512", amount=0.32, decay=0.16),
-        Impulse("SD", "se_512", amount=0.24, decay=0.12),
-        Impulse("OH", "se_256", amount=-0.30, decay=0.30),
-        Impulse("CH", "noise", amount=0.10, decay=0.07, velocity=0.9),
-        Impulse("CY", "noise", amount=0.30, decay=0.90),
-        Impulse("LT", "dir1", amount=0.20, decay=0.22),
-        Impulse("MT", "dir2", amount=0.18, decay=0.20),
-        Impulse("HT", "dir3", amount=0.16, decay=0.18),
-    ],
-)
-RELEASE = Preset(
-    name="release",
-    blurb="test fixture",
-    dials={"hold": 0.78, "late": 0.15, "spread": 0.42, "speed": 0.5},
-    impulses=[
-        # A short attack, because these move where the picture IS rather than how fast it is
-        # going, and shoving one instantly is a visible step. 60 ms is under four frames.
-        Impulse("BD", "hold", amount=-0.62, decay=0.34, velocity=0.6, attack=0.06),
-        Impulse("CP", "spread", amount=0.28, decay=0.45, attack=0.06),
-        Impulse("OH", "late", amount=0.25, decay=0.30, attack=0.06),
-    ],
-    macros=[Macro("density", "speed", 2.5, 9.5, 0.30, 0.62, glide=1.8)],
-)
-FULL = Preset(
-    name="full",
-    blurb="test fixture",
-    dials={"hold": 0.45, "late": 0.35, "spread": 0.20},
-    impulses=list(VOICES.impulses) + [
-        Impulse("BD", "hold", amount=-0.34, decay=0.30, velocity=0.6, attack=0.06),
-        Impulse("RS", "dir1", amount=0.20, decay=0.20),
-    ],
-    macros=[
-        Macro("density", "spread", 2.5, 9.5, 0.14, 0.55, glide=1.6),
-        Macro("density", "hold", 2.5, 9.5, 0.62, 0.20, glide=1.8),
-    ],
-)
-FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
+from tests.support import FIXTURES
 
 
 def test_midi_pulses_take_over_from_the_internal_clock():
@@ -298,7 +231,7 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     Checking a mapping against this project's own `DIALS` refused every converted StyleGAN2's
     whole MODEL block from `--cc` and `--pressure` -- and did worse than refuse to a learned
     one. `l` on `w_fine` binds and `flush` writes `1:16=w_fine` in the flag's own words; the
-    next launch read it back, raised here, and `rytm_live.remembered` swallowed it. The learn
+    next launch read it back, raised here, and `play.remembered` swallowed it. The learn
     was undone and the only trace was one line about a file that "does not parse"."""
     from ganlive.control.midi import EncoderMap, format_controls, parse_controls
     from ganlive.control.tracks import INDEX
@@ -390,7 +323,7 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
     is `EncoderMap`'s code and is not copied."""
     from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
     from ganlive.control.tracks import INDEX
-    from ganlive.presets import Preset, PresetRunner
+    from ganlive.presets import PresetRunner
 
     runner = PresetRunner(Preset(name="t", blurb="", dials={"noise": 0.1, "se_256": 0.1}), INDEX,
                          60.0)

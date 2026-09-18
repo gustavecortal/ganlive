@@ -1,7 +1,7 @@
 """The clean StyleGAN2, checked without NVIDIA's code and without a 382 MB pickle.
 
 What cannot be checked here is exactness, because that needs the original to compare against.
-It is checked against `ffhq.pkl` and `afhqcat.pkl` on the card and recorded in `NOTES.md`:
+It is checked against `ffhq.pkl` and `afhqcat.pkl` on the card:
 0.000 8-bit levels in fp32, block by block, and bit-for-bit in fp16. What *can* be checked
 here is everything that made those two runs possible -- that the shapes NVIDIA's rules give
 are the shapes this builds, that a checkpoint loads under its own names, and that the whole

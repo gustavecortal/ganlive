@@ -11,7 +11,7 @@ those two finds faults the window cannot produce.
 eight directions, the next keeps three, a converted StyleGAN2 has no SLE gate at all -- while
 the focus, the drag and the mode carry across. That is the state that crashed the window.
 
-    .venv\\Scripts\\python.exe scripts\\rytm_fuzz.py --rounds 1200 --seeds 4
+    pytest tests/test_fuzz_surface.py -q
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def stub_model(layout, live):
 def switch(bank, runner, layout, live, between=None):
     """Play a different model behind whatever strip is already drawing this one.
 
-    **`rytm_live.switch_model`'s two statements, and the gap between them.** Building a fresh
+    **`play.switch_model`'s two statements, and the gap between them.** Building a fresh
     `DialPanel` per switch -- which is what this harness used to do -- cannot reach the state a
     switch leaves: one strip that is already laid out, for the model that has just left. A new
     strip lays itself out on its first paint and is therefore always right, so the defect where

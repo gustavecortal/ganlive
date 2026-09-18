@@ -22,6 +22,7 @@ def remove_spectral_norm(net: nn.Module) -> int:
             continue  # no spectral_norm on this module
     return removed
 
+
 _KR, _KB = 0.2126, 0.0722
 _KG = 1 - _KR - _KB
 
@@ -166,7 +167,7 @@ def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
     # frame in fp16. In eval nothing updates `u` and `v`, so sigma is a constant and baking it is exact:
     # measured at 0.00000 8-bit levels over three latents in fp32. Before the fold, not after.
     if spectral:
-            report["spectral_removed"] = remove_spectral_norm(net)
+        report["spectral_removed"] = remove_spectral_norm(net)
     if fold:
         report["folded"] = fold_norms(net)
         report["folded"]["free_noise"] = fold_free_noise(net)
@@ -329,7 +330,7 @@ def capture(net, nz: int, device, dtype=torch.float16, warmup: int = 3, feeds=()
     host = _pinned((1, nz), dtype)
     twins = [(t, _pinned(t.shape, t.dtype)) for t in feeds]
     # Seeded, so the verdict below cannot flake on two latents that happened to be alike, and
-    # so taking it does not disturb the global stream `pin_noise` was drawn from.
+    # so taking it does not disturb the global stream the frozen noise was drawn from.
     probes = [_latent(nz, seed, device, dtype) for seed in (0, 1)]
 
     def upload() -> None:
