@@ -785,3 +785,19 @@ def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
     assert "se_512" not in model.dials_live
     assert {"se_64", "se_128", "se_256"} & model.dials_live, "no gate reached the model"
     assert {"reaction", "speed", "spread"} <= model.dials_live, "the spine is always live"
+
+
+def test_the_shelf_is_empty_rather_than_a_crash_without_a_runs_directory(tmp_path):
+    """Playing a checkpoint that lives anywhere else is the ordinary first run.
+
+    Nothing creates `runs/` until a model is imported into it, and the picker -- and
+    `play`'s own opening line, which counts what is on disk -- both walked it unguarded."""
+    from ganlive.bank import Shelf
+
+    shelf = Shelf.__new__(Shelf)
+    shelf.root = tmp_path / "never-made"
+    shelf._cfgs, shelf._listing, shelf.pending, shelf.note = {}, None, None, ""
+    shelf.bank = type("B", (), {"models": []})()
+
+    assert shelf.count() == 0
+    assert shelf.entries() == []

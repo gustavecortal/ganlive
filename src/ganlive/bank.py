@@ -672,7 +672,13 @@ class Shelf:
         return sorted(out, key=lambda s: (not s.loaded, -s.path.stat().st_mtime))
 
     def _models(self) -> list[Path]:
-        """Every model file under `root`: one per run, and one per exported graph."""
+        """Every model file under `root`: one per run, and one per exported graph.
+
+        **Empty, not a crash, when there is no `root`.** Playing a checkpoint from anywhere
+        else is the ordinary first run -- nothing creates `runs/` until something is imported
+        into it -- and this raised out of `play`'s first screenful and out of the picker."""
+        if not self.root.is_dir():
+            return []
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
             # Every graph, plus the newest checkpoint. Both, not one or the other: a folder
