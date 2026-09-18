@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from collections import defaultdict
 
@@ -153,7 +154,11 @@ def report_recall(strikes, onsets, mapping, order):
 
 def main(argv=None) -> int:
     import pygame.midi
-    import sounddevice as sd
+    try:
+        import sounddevice as sd
+    except ModuleNotFoundError:
+        print("this needs an audio input: pip install 'ganlive[audio]'", file=sys.stderr)
+        return 2
 
     ap = argparse.ArgumentParser(prog="ganlive learn", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

@@ -120,8 +120,8 @@ SPANS: tuple[Span, ...] = (
     # with the sign flipped (|cos| 0.91 between their difference images).
     Span("se_64", "sle.se_64", 1.0, 1.85, 2.7),
     # No `z_scale`, and with it the `where` field and the walk-writing branch it was the only
-    # user of. Its up end moves 1.30x what a random direction moves on the shipping checkpoint
-    # and 1.53x on `gv-warm-lr3` -- under the bar every direction dial has to clear -- and its
+    # user of. Its up end moves 1.30x what a random direction moves on a fine-tuned FastGAN
+    # and 1.53x on another -- under the bar every direction dial has to clear -- and its
     # down end is the flat wash its own description used to advertise, measuring |cos| 0.95
     # against `dir5`. On a StyleGAN2 the mapping network's pixel norm cancelled it outright.
 )

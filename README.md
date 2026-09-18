@@ -13,25 +13,35 @@ measured before it is offered, so a dial that does nothing is never shown.
 ## Install
 
     uv venv
-    uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cu128
-    uv pip install --python .venv/bin/python -e ".[audio,record,onnx]"
+    uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+    uv pip install -e ".[audio,record,onnx,dev]"
 
 Swap `cu128` for your build — `xpu`, `rocm6.3`, or drop `--index-url` entirely for CPU and
-Apple silicon. The extras are optional: `audio` for audio-driven triggers, `record` for video,
-`onnx` for the third model family (`onnx-intel` instead, on an Intel GPU), `hub` for `adopt`.
+Apple silicon. Every extra is optional: `audio` for audio-driven triggers, `record` for
+video, `onnx` for the third model family (`onnx-intel` instead, on an Intel GPU), `hub` for
+`adopt`, `dev` for the tests.
 
 ## Play
 
-    ganlive play --checkpoint runs/my-model/checkpoints/0072000.pt --console
+**With no hardware at all.** Convert a public StyleGAN2, then play it against a built-in
+stand-in drum machine, with sliders you turn by mouse:
 
-It picks the accelerator, the MIDI ports and an audio input on its own. `--checkpoint` is
-repeatable and **any model can join any bank**: a StyleGAN2 at 1024×1024 with a 512-wide latent
-plays beside a FastGAN at 3072×2048 with a 256-wide one, switched with `[` and `]` on the beat.
+    ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
+    ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --simulate --monitor
+
+`--simulate` plays a twelve-voice pattern into the same path a real machine drives, and
+`--monitor` sends it to the speakers so there is a beat to judge against. Drop both once a
+controller is plugged in; it picks the accelerator, the MIDI ports and an audio input itself.
+
+`--checkpoint` is repeatable and **any model can join any bank**: a StyleGAN2 at 1024×1024
+with a 512-wide latent plays beside a FastGAN at 3072×2048 with a 256-wide one, switched with
+`[` and `]` on the beat. `m` opens the picker, `s` saves what you have set, `v` records, `n`
+takes a still.
 
     ganlive                     # the command list
     ganlive wire                # is the controller talking?
     ganlive latency --checkpoint ...   # what this machine does, drift included
-    ganlive adopt hf:someone/some-gan  # dial an unseen model and save it playable
+    ganlive adopt hf:owner/model       # dial an unseen model and save it playable
 
 ## The dials
 
@@ -94,22 +104,27 @@ afterwards knows nothing about the architecture. It refuses rather than guesses 
 places: code it will not import unasked, a module that never produced a picture, and a graph
 still non-deterministic after its random draws are frozen. Needs `.[hub]`.
 
-FastGAN checkpoints come from [smallgen](https://github.com/gustavecortal/smallgen), which is
-the training half of this project.
+FastGAN is this project's own architecture; `smallgen`, the training half of this project,
+is what produces those checkpoints. Nothing here needs it — `import-stylegan2` and `adopt`
+both reach a playable model without ever training one.
 
 ## Layout
 
 | | |
 |---|---|
-| `models/` | the three families, and the graph capture that makes them fast |
+| `models/` | the three families, the graph capture that makes them fast, the ONNX export |
 | `dials/` | where dials come from: SVD on the weights, the verification gate, the table |
 | `control/` | MIDI in, audio in, and the track vocabulary both speak |
+| `record/` | video, stills, and a guide track that lines a take up with a DAW |
 | `bank.py` | turning a checkpoint into something playable, and switching between several |
 | `walk.py` | the latent walk, measured in beats rather than frames |
-| `strip.py` | the sliders beside the picture |
-| `tools/` | one module per `ganlive` subcommand |
+| `presets.py` | a preset: the rules connecting what the drums do to what the picture does |
+| `strip.py`, `window.py` | the sliders, and the window both they and the picture live in |
+| `frame.py` | what crosses the bus each frame, and in which colour order |
+| `device.py`, `timing.py` | which accelerator, which precision; medians and drift |
+| `tools/`, `cli.py` | one module per `ganlive` subcommand, and the dispatcher |
 
-Tests run on the CPU and need no hardware:
+Tests run on the CPU and need no hardware (`.[dev]`):
 
     GANLIVE_DEVICE=cpu python -m pytest tests -q
 

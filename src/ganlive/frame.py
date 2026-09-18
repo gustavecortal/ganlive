@@ -38,7 +38,7 @@ class FrameStage:
 
     **All of it on the stage's own queue, never the generator's.** An eager op on a captured
     generator's queue between two replays makes every later replay slower, without bound --
-    see *Nothing between replays* in NOTES. So `step`, the first call after the generator,
+    see `models.graph.Replay`. So `step`, the first call after the generator,
     fences on its queue once and moves to this stage's; the conversions and the host copies
     follow it there, in order; and the frame's own wait for the card, `deferred` or
     `PinnedRing.take`, is a host wait that appends to neither queue."""

@@ -19,7 +19,7 @@ class GatedPair(nn.Module):
         # A banked rung stays live through the split: the coefficient halves are constants
         # either way, and the scalar that multiplies them is still a slice of input 1. A
         # noise dial that went dead here would be the inert knob the split exists to avoid.
-        self.rung = noise.rung if isinstance(noise, BankedNoise) else None
+        self.rung = noise.rung if isinstance(noise, ExportedNoise) else None
         if noise is not None:
             self.register_buffer("coeff_value", noise.coeff[:, :half].clone())
             self.register_buffer("coeff_gate", noise.coeff[:, half:].clone())
@@ -63,7 +63,7 @@ def split_gated_convs(net: nn.Module) -> int:
                 out.append(GatedPair(a))
                 replaced += 1
                 i += 2
-            elif (isinstance(a, nn.Conv2d) and isinstance(b, (FoldedNoise, BankedNoise))
+            elif (isinstance(a, nn.Conv2d) and isinstance(b, (FoldedNoise, ExportedNoise))
                   and isinstance(c, nn.GLU) and c.dim == 1):
                 out.append(GatedPair(a, b))
                 replaced += 1
@@ -95,7 +95,7 @@ def equivalent(before: nn.Module, after: nn.Module, nz: int, device="cpu",
     return worst
 
 
-class Bank(nn.Module):
+class SettingsVector(nn.Module):
     """The settings vector, for the duration of one forward."""
 
     vec: torch.Tensor | None = None
@@ -105,15 +105,15 @@ class Bank(nn.Module):
         refuses to copy -- so `equivalent()` taking a reference copy would raise, and only
         the order things happen in today keeps it from doing so. The copy's modules all
         share this one, because `memo` hands every reference the same object."""
-        fresh = Bank()
+        fresh = SettingsVector()
         memo[id(self)] = fresh
         return fresh
 
 
-class BankedSLE(nn.Module):
-    """`SteerableSLE` reading its blend from the bank instead of from a view."""
+class ExportedSLE(nn.Module):
+    """`ExportedSLE` reading its blend from the bank instead of from a view."""
 
-    def __init__(self, gate: nn.Module, bank: Bank, index: int) -> None:
+    def __init__(self, gate: nn.Module, bank: SettingsVector, index: int) -> None:
         super().__init__()
         self.gate, self.bank, self.index = gate, bank, index
 
@@ -122,11 +122,11 @@ class BankedSLE(nn.Module):
         return high * (1.0 + blend * (self.gate(low) - 1.0))
 
 
-class BankedNoise(nn.Module):
-    """`SteerableNoise` reading its rung from the bank."""
+class ExportedNoise(nn.Module):
+    """`ExportedNoise` reading its rung from the bank."""
 
     def __init__(self, coeff: torch.Tensor, noise: torch.Tensor,
-                 bank: Bank, index: int) -> None:
+                 bank: SettingsVector, index: int) -> None:
         super().__init__()
         self.register_buffer("coeff", coeff)
         self.register_buffer("noise", noise)
@@ -142,7 +142,7 @@ class BankedNoise(nn.Module):
 class Steerable(nn.Module):
     """The generator plus its settings, as a two-input graph: `forward(z, k)`."""
 
-    def __init__(self, net: nn.Module, bank: Bank, names: list[str]) -> None:
+    def __init__(self, net: nn.Module, bank: SettingsVector, names: list[str]) -> None:
         super().__init__()
         self.net, self.bank, self.names = net, bank, list(names)
 
@@ -155,16 +155,16 @@ def bank_the_knobs(net: nn.Module, knobs) -> Steerable:
     """Rewrite an installed net so its settings come from a second forward argument."""
     from ganlive.dials.steer import SteerableNoise, SteerableSLE
 
-    bank, reached, sites = Bank(), set(), 0
+    bank, reached, sites = SettingsVector(), set(), 0
     for parent in list(net.modules()):
         for child_name, child in list(parent.named_children()):
             if isinstance(child, SteerableSLE):
                 index = knobs.index[f"sle.{child_name}"]
-                setattr(parent, child_name, BankedSLE(child.gate, bank, index))
+                setattr(parent, child_name, ExportedSLE(child.gate, bank, index))
             elif isinstance(child, SteerableNoise):
                 index = _slot_of(knobs, child.rung)
                 setattr(parent, child_name,
-                        BankedNoise(child.coeff, child.noise, bank, index))
+                        ExportedNoise(child.coeff, child.noise, bank, index))
             else:
                 continue
             reached.add(index)

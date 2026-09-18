@@ -139,7 +139,7 @@ def main(argv=None) -> int:
     ap.add_argument("--height", type=bank.parse_height, default=0,
                     metavar="auto|native|PIXELS",
                     help="what the window is sent. 'native' (the default here, for comparison "
-                         "with every earlier reading in NOTES) is the generator's own size; "
+                         "with every published reading) is the generator's own size; "
                          "'auto' is what `ganlive play` uses -- the largest this screen can draw "
                          "the frame at, which at 3072x2048 is 12 MB a frame across the bus "
                          "instead of 25")

@@ -27,11 +27,11 @@ class LoadOptions:
     compile_net: bool = True
     #: Record the compiled forward as one device graph and replay it, instead of asking for a
     #: hundred-odd kernels a frame from Python. Exact -- 0.0000 8-bit levels against the
-    #: compiled net -- and worth 9.11 ms to 8.07 on ours, 14.80 to 11.57 on a StyleGAN2.
+    #: compiled net -- and worth 9.11 ms to 8.07 on a 2048px FastGAN, 14.80 to 11.57 on a StyleGAN2.
     capture: bool = True
     noise_seed: int = 0
     #: Measure each model's grain gains at load rather than using the table measured on
-    #: `gv-2048-ft`. Only the grain: the dial sweep and the dead-dial gate always run. Named
+    #: one checkpoint. Only the grain: the dial sweep and the dead-dial gate always run. Named
     #: for what it does after `--no-calibrate` was read as "show me none of this model's
     #: controls" and hid a whole StyleGAN2's MODEL block.
     measure_grain: bool = True
@@ -64,12 +64,12 @@ def run_step(path) -> tuple[str, str]:
 
 
 def label_for(path: Path) -> str:
-    """A checkpoint's short name, as `run step` -- `gv-2048-ft 72000`."""
+    """A checkpoint's short name, as `run step` -- `my-run 72000`."""
     return "{} {}".format(*run_step(path))
 
 
 def slug_for(path) -> str:
-    """The same identity as a filename and a JSON key -- `gv-2048-ft-72000`."""
+    """The same identity as a filename and a JSON key -- `my-run-72000`."""
     return "{}-{}".format(*run_step(path))
 
 

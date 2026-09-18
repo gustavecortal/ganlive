@@ -8,7 +8,8 @@ Runs once, offline, and needs their repository importable -- opening the pickle 
 their code, because `torch_utils.persistence` re-executes each class's pickled source. What it
 writes needs nothing but torch.
 
-`--check` is the claim this rests on: the same latent through both networks in full
+The check this rests on runs by default, and `--no-check` skips it: the same latent
+through both networks in full
 precision, reported in 8-bit levels. It measures 0.000 on `ffhq.pkl` and `afhqcat.pkl`.
 Anything else means the conversion is wrong -- fp32 against fp32 either agrees or does not.
 """

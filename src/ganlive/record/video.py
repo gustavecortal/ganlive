@@ -7,7 +7,11 @@ import time
 from fractions import Fraction
 from pathlib import Path
 
-DEFAULT_CODEC = "av1_qsv"
+#: Hardware encoders, in the order they are tried. The first that opens on this machine
+#: wins; `libx264` always does, on the CPU, and costs most of the frame rate at 4K.
+CODECS = ("av1_qsv", "hevc_qsv", "h264_nvenc", "hevc_nvenc", "hevc_videotoolbox",
+          "h264_amf", "libx264")
+DEFAULT_CODEC = "auto"
 
 POOL = 4
 
@@ -116,9 +120,10 @@ class Recorder:
         return self.report()
 
     def report(self) -> dict:
-        """What is in the file. `offered == frames + dropped` unless the writer failed, which"""
+        """What is in the file. `offered == frames + dropped` unless the writer failed."""
         mb = self.path.stat().st_size / 1e6 if self.path.exists() else 0.0
-        out = {"file": str(self.path), "mb": round(mb, 1), "frames": self.written,
+        out = {"file": str(self.path), "codec": self.codec,
+               "mb": round(mb, 1), "frames": self.written,
                "offered": self.offered,
                "dropped": self.dropped, "seconds": round(self.seconds, 1)}
         if self.failed:
@@ -134,7 +139,20 @@ class Recorder:
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         container = av.open(str(self.path), "w")
-        stream = container.add_stream(self.codec, rate=round(self.fps))
+        stream = None
+        # `auto` tries the hardware encoders in turn and keeps the first this machine has.
+        # `libx264` is last and always opens, on the CPU, which at 4K costs most of the frame
+        # rate -- so a machine with no hardware encoder records, slowly, rather than failing.
+        wanted = CODECS if self.codec == "auto" else (self.codec,)
+        for name in wanted:
+            try:
+                stream = container.add_stream(name, rate=round(self.fps))
+                self.codec = name
+                break
+            except Exception:                                        # noqa: BLE001
+                continue
+        if stream is None:
+            raise RuntimeError(f"no encoder opened, tried {', '.join(wanted)}")
         stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
         tb = Fraction(1, round(self.fps))
         pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]

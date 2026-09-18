@@ -167,9 +167,9 @@ def _parser() -> argparse.ArgumentParser:
     what = ap.add_argument_group("what to play")
     what.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
                       help="a checkpoint, a run directory for its newest, or an exported .onnx. "
-                           "Repeatable: `[` and `]` switch between them on the beat. They must "
-                           "agree on latent width and aspect; different native sizes are fine. "
-                           "An ONNX graph plays with the motion and latent dials only")
+                           "Repeatable: `[` and `]` switch between them on the beat, and they "
+                           "may differ in latent width, native size and aspect. An ONNX graph "
+                           "plays with the motion and latent dials only")
     what.add_argument("--runs", type=Path, default=Path("runs"),
                       help="where `m` looks for more models to load")
     what.add_argument("--no-shelf", action="store_true",
@@ -214,8 +214,8 @@ def _parser() -> argparse.ArgumentParser:
                             "because a collapse to a flat field also measures as a large change")
     dials.add_argument("--stock-grain", dest="measure_grain", action="store_false",
                        help="do not measure each model's noise gains at load (~0.5 s a model). "
-                            "The same gain buys very different grain on different checkpoints, "
-                            "so this makes the noise dial mean something per-model again")
+                            "The same gain buys very different grain on different models, so "
+                            "with this off the noise dial means something different on each")
 
     play = ap.add_argument_group("what plays it")
     play.add_argument("--triggers", choices=("auto", "both", "midi", "audio"), default="auto",
