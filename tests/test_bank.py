@@ -675,7 +675,7 @@ def test_the_worst_case_setting_turns_on_every_dial_that_costs_anything():
     from ganlive.dials.table import DIALS, SPANS
     from ganlive.tools import latency
 
-    worst = latency.WORST
+    worst = latency.worst_case()
     driven = {name for name, value in worst.dials.items() if value != DIALS[name][0]}
     driven |= {i.dial for i in worst.impulses} | {m.dial for m in worst.macros}
 
@@ -684,6 +684,17 @@ def test_the_worst_case_setting_turns_on_every_dial_that_costs_anything():
     assert not missing, (
         f"{sorted(missing)} cost something every frame and the worst case leaves them at "
         f"rest, so the frame-budget worst case is not the worst case")
+
+    # Given a model's own layout it prices that model's dials, not this project's.
+    from ganlive.dials import table as S
+
+    foreign = S.stylegan2(("w_coarse", "noise_32"), (0.5, 0.0),
+                          ((0.3, 1.0, 2.0), (0.0, 1.5, 3.0)), (25.0, 25.0))
+    theirs = latency.worst_case(foreign)
+    assert {"w_coarse", "noise_32"} <= set(theirs.dials)
+    assert not {s.dial for s in SPANS} & set(theirs.dials), (
+        "the budget named this project's gates at a model that does not have them, and "
+        "`use_model` dropped every one")
 
 
 def test_a_model_switch_moves_where_the_latent_goes_with_it():

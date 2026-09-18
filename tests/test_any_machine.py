@@ -116,3 +116,19 @@ def test_a_named_input_is_found_on_any_host_api_when_asked_and_a_rytm_only_on_as
         pick_input(sd)
     device, _info, nch = pick_input(sd, pattern="scarlett", hostapi=None)
     assert (device, nch) == (0, 2)
+
+
+def test_a_kit_only_advertises_the_tracks_it_can_actually_reach():
+    """The strip draws one drum light per entry here, and the end-of-run report names a
+    silent track per entry that never fired. On a five-pad General MIDI kit, returning all
+    twelve gave seven lights that could not light and seven faults that could not exist --
+    the same defect the audio half had fixed by deferring to the caller's map."""
+    notes = NoteFeatures(notes=parse_notes(GM))
+    assert notes.channel_of() == {"BD": 0, "SD": 1, "CH": 8, "OH": 9, "CY": 10}
+
+    # A Rytm's twelve consecutive pads still get twelve.
+    assert NoteFeatures().channel_of() == dict(INDEX)
+
+    # A machine identifying tracks by channel contributes those too.
+    both = NoteFeatures(notes=parse_notes(GM), channels=parse_track_channels("1=BT"))
+    assert "BT" in both.channel_of()
