@@ -488,7 +488,7 @@ class TorchProbe(_Probe):
     def frame(self, z, k=None) -> np.ndarray:
         import torch
 
-        from ganlive.models.fastgan import first_image
+        from ganlive.models.common import first_image
 
         if self.settings:
             self.knobs.write[:] = self.neutral() if k is None else k

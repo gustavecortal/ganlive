@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 import torch
 from torch import nn
 
-from ganlive.models.fastgan import first_image
+from ganlive.models.common import first_image
 from ganlive.models.graph import _levels
 
 #: The layer types that can be the first thing a latent meets.

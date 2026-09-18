@@ -328,7 +328,7 @@ def test_onnx_config_reports_a_foreign_size_instead_of_crashing():
     assert onnx_model.Ladder is models.Ladder
 
     # A size no generator here builds, which is the whole point of the backend.
-    ladder = onnx_model.Ladder(width=1536, height=1024, built_here=False)
+    ladder = onnx_model.Ladder(width=1536, height=1024)
     assert (ladder.height, ladder.width) == (1024, 1536)
 
     cfg = onnx_model.OnnxConfig(nz=256, ladder=ladder)

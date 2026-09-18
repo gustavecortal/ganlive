@@ -215,7 +215,7 @@ def install_stylegan2(net, device, dtype=torch.float32) -> Knobs:
 
 def _render(net: nn.Module, z: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     """One frame, in 0..1, with the generator's multi-output convention unwrapped once."""
-    from ganlive.models.fastgan import denormalise, first_image
+    from ganlive.models.common import denormalise, first_image
 
     return denormalise(first_image(net(z * scale)).float())
 

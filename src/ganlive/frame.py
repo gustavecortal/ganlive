@@ -6,7 +6,7 @@ import contextlib
 import torch
 import torch.nn.functional as F
 
-from ganlive.models.fastgan import first_image
+from ganlive.models.common import first_image
 from ganlive.models.graph import to_bgra as _eager_bgra
 from ganlive.models.graph import to_nv12
 from ganlive.models.graph import to_rgb as _eager_rgb

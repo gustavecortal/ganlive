@@ -102,10 +102,9 @@ class Config:
 
     @property
     def ladder(self):
-        from ganlive.models.fastgan import Ladder
+        from ganlive.models.common import Ladder
 
-        return Ladder(height=self.img_resolution, width=self.img_resolution,
-                      built_here=False)
+        return Ladder(height=self.img_resolution, width=self.img_resolution)
 
 
 def _open(path) -> dict:

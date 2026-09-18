@@ -309,7 +309,7 @@ def capture(net, nz: int, device, dtype=torch.float16, warmup: int = 3, feeds=()
     A capture that recorded nothing replays fast and paints a still picture, which is the one
     failure mode of this that no exception reports and no later measurement would question."""
     from ganlive.dials.derive import FLOOR_LEVELS, _latent
-    from ganlive.models.fastgan import first_image
+    from ganlive.models.common import first_image
 
     if not isinstance(net, nn.Module):
         return net, "not captured: this generator is not a torch module"

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ganlive.models.fastgan import Ladder
+from ganlive.models.common import Ladder
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ def config_of(path) -> OnnxConfig:
     said = dials_of(path)
     height, width = said["size"]
     return OnnxConfig(nz=said["nz"],
-                      ladder=Ladder(width=width, height=height, built_here=False))
+                      ladder=Ladder(width=width, height=height))
 
 
 def _dims(value) -> list[int]:
@@ -144,8 +144,7 @@ class OnnxGenerator:
         self.precision = self.runner.precision
         self.cfg = OnnxConfig(nz=self.runner.nz,
                               ladder=Ladder(width=self.runner.size[1],
-                                            height=self.runner.size[0],
-                                            built_here=False))
+                                            height=self.runner.size[0],))
         self.nz = self.cfg.nz
         self._z = np.zeros((1, self.nz), dtype=np.float32)
         # The generator owns its settings, so `net(z)` stays a one-argument call and nothing
