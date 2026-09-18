@@ -2,63 +2,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.nn.utils import spectral_norm
 
+from ganlive.models.common import BASE, Ladder
+
 G_WIDTH = {4: 16, 8: 8, 16: 4, 32: 2, 64: 2, 128: 1, 256: 0.5, 512: 0.25, 1024: 0.125,
            2048: 0.125}
 
 SUPPORTED_SIZES = (256, 512, 1024, 2048)
 
-BASE = 4
-
-@dataclass(frozen=True)
-class Ladder:
-    """The (height, width) the generator climbs — square or not."""
-
-    height: int
-    width: int
-    #: Whether this size has to be one *this project's* generator could build.
-    built_here: bool = field(default=True, compare=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if not self.built_here:
-            return
-        if self.height not in SUPPORTED_SIZES:
-            raise ValueError(f"height must be one of {SUPPORTED_SIZES}, got {self.height}")
-        step = self.height // BASE
-        if self.width <= 0 or self.width % step:
-            raise ValueError(
-                f"width must be a positive multiple of {step} for a {self.height}-tall "
-                f"ladder, so that every rung down to the {BASE}-high base block is a "
-                f"whole number of pixels. Got {self.width}; the nearest legal values "
-                f"are {self.width // step * step} and {(self.width // step + 1) * step}.")
-
-    @classmethod
-    def of(cls, height: int, width: int | None = None) -> Ladder:
-        """`width=None` means square, which is what every existing checkpoint is."""
-        return cls(height, height if width is None else width)
-
-    @property
-    def base_width(self) -> int:
-        """Width of the `BASE`-high bottom rung. 4 when square, 6 at 3:2."""
-        return BASE * self.width // self.height
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        return self.height, self.width
-
-    @property
-    def aspect(self) -> float:
-        return self.width / self.height
-
-    def at(self, rung: int) -> tuple[int, int]:
-        """The (height, width) of the ladder `rung` rows tall."""
-        return rung, rung * self.base_width // BASE
+def check_buildable(ladder: Ladder) -> Ladder:
+    """Refuse a size *this* generator cannot climb to. Only this family has the rule."""
+    if ladder.height not in SUPPORTED_SIZES:
+        raise ValueError(f"height must be one of {SUPPORTED_SIZES}, got {ladder.height}")
+    step = ladder.height // BASE
+    if ladder.width <= 0 or ladder.width % step:
+        raise ValueError(
+            f"width must be a positive multiple of {step} for a {ladder.height}-tall "
+            f"ladder, so that every rung down to the {BASE}-high base block is a "
+            f"whole number of pixels. Got {ladder.width}; the nearest legal values "
+            f"are {ladder.width // step * step} and {(ladder.width // step + 1) * step}.")
+    return ladder
 
 
 def _widths(table: dict[int, float], base: int) -> dict[int, int]:
@@ -198,7 +167,7 @@ class Generator(nn.Module):
                  im_width: int | None = None, pixelshuffle_from: int = 0,
                  mapping_depth: int = 0) -> None:
         super().__init__()
-        self.ladder = Ladder.of(im_size, im_width)
+        self.ladder = check_buildable(Ladder.of(im_size, im_width))
         w = _widths(G_WIDTH, ngf)
         self.mapping = MappingNetwork(nz, mapping_depth) if mapping_depth else None
 
@@ -265,16 +234,6 @@ def freeze_noise(net: nn.Module, freeze: bool = True, *,
     return net
 
 
-def denormalise(x: torch.Tensor) -> torch.Tensor:
-    """Generator output in [-1, 1] -> [0, 1], ready to save as an image."""
-    return x.float().add(1).mul(0.5).clamp(0, 1)
-
-
-def first_image(out):
-    """The image a generator returned, whichever calling convention it uses."""
-    return out[0] if isinstance(out, (list, tuple)) else out
-
-
 
 
 @dataclass(frozen=True)
@@ -290,7 +249,7 @@ class Config:
 
     @property
     def ladder(self) -> Ladder:
-        return Ladder.of(self.im_size, self.im_width)
+        return check_buildable(Ladder.of(self.im_size, self.im_width))
 
     @property
     def generator_kwargs(self) -> dict:
