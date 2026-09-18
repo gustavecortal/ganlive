@@ -220,9 +220,9 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float) -> int:
         every = sorted({n for notes in wire.notes.values() for n in notes})
         mode = output_mode(wire.notes)
         advice = {"auto": "the note is the track. Leave --midi-channels OFF.",
-                  "track": "the channel is the track. Run rytm_live with --midi-channels 1-12.",
+                  "track": "the channel is the track. Run `ganlive play --midi-channels 1-12`.",
                   "mixed": "sequencer on track channels, pads on the auto channel -- the "
-                           "machine's normal shape. Run rytm_live with --midi-channels 1-12; "
+                           "machine's normal shape. Run `ganlive play --midi-channels 1-12`. "
                            "the auto channel falls through to the note rule.",
                   None: "one channel of high notes is a single track in TRACK CH, or something "
                         "that is not the kit. Play more of the pattern."}[mode]

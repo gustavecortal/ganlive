@@ -139,7 +139,7 @@ def _prepare_onnx(path, device, dtype, conversions, load: LoadOptions):
 def open_stylegan2(path, device, exact: bool = False, dtype=None):
     """A converted StyleGAN2 with its seam installed, and the three things read off its tree.
 
-    Shared with `scripts/derive.py`, which has to open the model the same way the instrument
+    Shared with `ganlive dials`, which has to open the model the same way the instrument
     does or it derives a basis for a model that is not the one that plays. `dtype` is the
     precision the session plays in, defaulting to the device's; see `S2.half_from_for`."""
     from ganlive.device import playback_dtype
@@ -328,7 +328,7 @@ def directions_for(net, nz: int, device, dtype, read=None, into=None,
     """This model's principal latent directions, measured and ranked, at load.
 
     A basis derived beside the checkpoint wins over the family's own proposal when there is
-    one -- see `scripts/derive.py`, which reads the whole generator's Jacobian rather than its
+    one -- see `ganlive dials`, which reads the whole generator's Jacobian rather than its
     first affine and is far too slow to run with the picture stopped. Here rather than in one
     family's `read`, because nothing about a cached proposal is StyleGAN2's business."""
     from ganlive.dials import derive as D
@@ -393,7 +393,7 @@ def parse_height(text: str) -> int | None:
 def screen_size():
     """The desktop's size in pixels, or None if it cannot be asked.
 
-    Beside `fit_height`, which is the only thing that spends it. It lived in `rytm_live` while
+    Beside `fit_height`, which is the only thing that spends it. It lived in `tools.play` while
     the latency harness built its bank without a screen, so the harness sized frames natively
     and the tool sized them to the display -- and at 3072x2048 that is 25 MB a frame across the
     bus instead of 12, which is most of what the window costs."""

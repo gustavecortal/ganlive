@@ -47,14 +47,10 @@ def dispatch(clock: MusicalClock, status: int, data1: int = 0, data2: int = 0,
 def _dial_or_raise(name: str) -> str:
     """A dial name, checked for being one at all. **Not checked against a list of them.**
 
-    Which dials exist is a property of the loaded model, and this is parsed before any model is
-    opened: a converted StyleGAN2 offers `w_fine` and `noise_512`, an adopted graph `gain_512`,
-    and this project's own `DIALS` names none of them. Checking against that table refused
-    every foreign model's whole MODEL block from `--cc` and `--pressure` -- and did worse than
-    refuse to a learned one. `l` on a StyleGAN2's `w_fine` binds, and `flush` writes
-    `1:16=w_fine` in this flag's own words; the next launch read it back through here, raised,
-    and `rytm_live.remembered` swallowed it. The learn was undone, and the only trace was one
-    line about a settings file that "does not parse".
+    Which dials exist is a property of the loaded model, and this runs before any model is
+    open. Checking against a fixed table refused every foreign model's whole MODEL block --
+    and silently undid learned bindings, which are written in this flag's own words and read
+    back through here.
 
     A name no loaded model turns out to have is reported by `EncoderMap.unreachable`, beside
     the preset rules the same model cannot run."""

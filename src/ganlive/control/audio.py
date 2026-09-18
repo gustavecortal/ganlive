@@ -60,7 +60,7 @@ def pick_input(sd, device: int | None = None, pattern: str = "rytm",
         raise NoAudioDevice(
             f"no {pattern} on ASIO. Note the Overbridge installer registers a node for "
             f"every Elektron product, so a name in the list is not a connection -- run "
-            f"scripts/rytm_preflight.py --list to see what actually opens.")
+            f"`ganlive doctor --list` to see what actually opens.")
     tried = []
     for candidate in found:
         info = sd.query_devices(candidate)

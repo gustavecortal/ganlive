@@ -111,7 +111,7 @@ def _open(path) -> dict:
     blob = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     if blob.get("format") not in FORMATS:
         raise RuntimeError(f"{path} is not a {FORMAT} checkpoint. "
-                           f"scripts/stylegan2_import.py writes them.")
+                           f"`ganlive import-stylegan2` writes them.")
     return blob
 
 
@@ -519,7 +519,7 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
 
 
 def save(path, cfg: Config, state: dict, d_cfg=None, d_state=None) -> None:
-    """Write a checkpoint that this file alone can open. See `scripts/stylegan2_import.py`."""
+    """Write a checkpoint that this file alone can open. See `ganlive import-stylegan2`."""
     from dataclasses import asdict
 
     def keep(cfg_obj):

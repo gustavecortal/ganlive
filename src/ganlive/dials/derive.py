@@ -401,7 +401,7 @@ def saved(checkpoint, z_dim: int, push_shape, net: nn.Module) -> Directions | No
     mine = fingerprint(net)
     if mine and got.get("of") and got["of"] != mine:
         print(f"ignoring {path.name}: it was derived from different weights under this name. "
-              f"Run scripts/derive.py again if this checkpoint has been retrained.", flush=True)
+              f"Run `ganlive dials` again if this checkpoint has been retrained.", flush=True)
         return None
     return back
 
@@ -544,22 +544,17 @@ def equalise(net: nn.Module, dirs: Directions, device, dtype, amount: float,
              target: float, into=None) -> Directions:
     """Scale a whole basis so its median direction moves `target` 8-bit levels at full travel.
 
-    Over both halves: a lopsided row scaled by its strong half alone gets a dial whose useful
-    range is the top of one side.
+    Over both halves: a lopsided row scaled by its strong half alone gets a dial whose
+    useful range is the top of one side.
 
-    **The four latents are the expensive part and they are load-bearing.** This is 132 forward
-    passes -- `SEEDS` x (one reference + 16 rows x 2 signs), 4.7 s of an FFHQ-1024 load -- for
-    one scalar, which invites cutting. Measured over disjoint draws the scale spreads 3.37x on
-    one latent, 1.59x on two and 1.18x on four. The *verdict* survives that: the arm that
-    scaled by 0.75 and the arm that scaled by 1.12 kept the same eight rows in the same order,
-    because `random_like` draws its probes at the candidates' own norm and the bar moves with
-    them. What does not survive is the strength -- the same `w_fine` dial ships at 55 levels or
-    at 76 -- and that is the number the hand feels.
+    The four latents cost 132 forward passes and are load-bearing. The ranking survives
+    fewer -- the bar moves with the probes -- but the strength does not: over disjoint
+    draws the scale spreads 3.37x on one latent, 1.59x on two and 1.18x on four, and the
+    same dial then ships at 55 levels or at 76. That is the number the hand feels.
 
-    **A basis whose scale already means something is returned untouched**, and that test lives
-    here rather than in the caller: it is a property of the `Directions` handed in, and a second
-    pipeline that forgot to ask would rescale a `z` basis whose unit rows are already the unit
-    the model was trained on -- silently, since the result is a working strip of wrong strength.
+    A basis whose scale already means something is returned untouched, and that test lives
+    here rather than in the caller: rescaling a `z` basis whose rows are already the unit
+    the model was trained on gives a working strip of the wrong strength, silently.
     """
     if dirs.intrinsic_scale:
         return dirs

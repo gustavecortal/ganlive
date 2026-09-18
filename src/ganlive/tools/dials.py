@@ -1,22 +1,15 @@
-"""Read a checkpoint's latent directions off the whole generator, once, and save them beside it.
+"""Derive a checkpoint's latent directions from the whole generator and save them beside it.
 
-    .venv/Scripts/python.exe scripts/derive.py runs/stylegan2/ffhq.pt
+    ganlive dials runs/stylegan2/ffhq.pt
 
-The instrument's own derivation factorises the first affine each style range meets, which is
-free and is what SeFa prescribes. That affine turns out to be a poor proxy for the synthesis
-network behind it: reading the Jacobian of the *whole* generator instead takes FFHQ-1024's
-strongest fine dial from 52 8-bit levels to 76, and its three middle ones from 17/16/14 to
-20/20/17. See `directions.active_banded`.
+At load, directions come from SeFa: the SVD of the first affine each style range meets. That
+affine is a poor proxy for the synthesis network behind it -- reading the Jacobian of the
+whole generator instead took FFHQ-1024's strongest fine dial from 52 8-bit levels to 76. It
+costs about 100 seconds, which is too long for a load, so it runs here and writes
+`<checkpoint>.directions.pt`. The next load picks that up, or falls back to SeFa.
 
-It is not free -- 1,024 forward passes a style range, about 100 seconds for the three -- and a
-load happens on a shelf change with the picture stopped, so it runs here instead and writes
-`<checkpoint>.directions.pt`. The instrument picks that up on its next load and falls back to
-SeFa when it is not there.
-
-**What is saved is a proposal, not a verdict.** Every basis still goes through the same
-measurement at load: shortlisted, equalised, then ranked against random directions of the same
-length in the band it lives in. A stale or wrong file cannot put a dead dial on the strip; the
-worst it can do is offer sixteen candidates that lose to the ones SeFa would have offered.
+What is saved is a proposal, not a verdict: every basis still goes through the same
+measurement at load, so a stale file cannot put a dead dial on the strip.
 """
 from __future__ import annotations
 

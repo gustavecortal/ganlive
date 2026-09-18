@@ -2,17 +2,15 @@
 
     git clone --depth 1 https://github.com/NVlabs/stylegan2-ada-pytorch
     curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
-    .venv/Scripts/python.exe scripts/stylegan2_import.py ffhq.pkl --repo stylegan2-ada-pytorch
+    ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
 
 Runs once, offline, and needs their repository importable -- opening the pickle *is* running
 their code, because `torch_utils.persistence` re-executes each class's pickled source. What it
-writes needs nothing but torch, and `ganlive.models.stylegan2` renders it in one compiled graph
-at rather better than twice the speed of the original.
+writes needs nothing but torch.
 
-`--check` is the claim this rests on and it is cheap: the same latent through both networks,
-in full precision, reported in 8-bit levels. It has measured 0.000 on `ffhq.pkl` (1024px) and
-`afhqcat.pkl` (512px). Anything else means the conversion is wrong, and it is not a rounding
-argument -- fp32 against fp32 either agrees exactly or does not agree.
+`--check` is the claim this rests on: the same latent through both networks in full
+precision, reported in 8-bit levels. It measures 0.000 on `ffhq.pkl` and `afhqcat.pkl`.
+Anything else means the conversion is wrong -- fp32 against fp32 either agrees or does not.
 """
 from __future__ import annotations
 
