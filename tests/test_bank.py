@@ -801,3 +801,25 @@ def test_the_shelf_is_empty_rather_than_a_crash_without_a_runs_directory(tmp_pat
 
     assert shelf.count() == 0
     assert shelf.entries() == []
+
+
+def test_one_record_answers_every_question_about_a_model_file():
+    """Five places used to re-ask "is this ONNX? is this a StyleGAN2?" -- the config reader,
+    the dispatcher, the capture gate, the layout and the shelf. A fourth format meant five
+    edits, and any two of them disagreeing was a silent bug."""
+    import pathlib
+
+    from ganlive.bank import FAMILIES, family_of
+
+    assert [f.name for f in FAMILIES] == ["onnx", "stylegan2", "fastgan"], (
+        "order is load-bearing: suffix, then the file's own tag, then whatever is left")
+    assert family_of(pathlib.Path("anything.onnx")).name == "onnx"
+    assert family_of(pathlib.Path("no-such-file.pt")).name == "fastgan", (
+        "the tail takes anything, so this never returns None")
+
+    # Every field a caller reaches for, on every family, so adding one cannot half-land.
+    for family in FAMILIES:
+        for field in ("owns", "config_of", "prepare", "layout"):
+            assert callable(getattr(family, field)), f"{family.name}.{field}"
+    assert [f.name for f in FAMILIES if not f.capturable] == ["onnx"], (
+        "an ONNX graph runs under its own runtime, so a torch-stream recording holds nothing")
