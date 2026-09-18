@@ -103,7 +103,7 @@ class FeatureExtractor:
         self.env, self.since = env, since
 
     def played(self) -> int:
-        """How many tracks have fired at all. The one line that can say the drums are reaching"""
+        """How many tracks have fired at all: whether the drums are reaching the instrument."""
         return int((self.since < NEVER * 0.1).sum())
 
     @property

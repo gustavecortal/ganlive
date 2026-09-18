@@ -74,7 +74,7 @@ class MusicalClock:
 
     @property
     def bar_phase(self) -> float:
-        """Position within the current bar, 0 on the downbeat. For anything that wants to know"""
+        """Position within the current bar, 0 on the downbeat."""
         return (self._beats % BEATS_PER_BAR) / BEATS_PER_BAR
 
     @property
@@ -82,7 +82,7 @@ class MusicalClock:
         return "midi" if self._external else "internal"
 
     def advance(self, dt: float) -> None:
-        """Advance by `dt` wall-clock seconds. Ignored once MIDI clock is driving, so a driver"""
+        """Advance by `dt` wall-clock seconds. Ignored once MIDI clock is driving."""
         if self._external or not self.running:
             return
         self._beats += dt * self._bpm / 60.0
@@ -363,6 +363,6 @@ class BeatDriver:
         self.walk, self.clock, self.fps = walk, clock, float(fps)
 
     def next_z(self, _step: int):
-        """`_step` is ignored: this driver's position comes from the clock, not from a frame"""
+        """`_step` is ignored: this driver's position comes from the clock, not a frame count."""
         self.clock.advance(1.0 / self.fps)
         return self.walk.latent(self.clock.beats)

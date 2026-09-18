@@ -72,7 +72,7 @@ class Recorder:
 
     @property
     def seconds(self) -> float:
-        """How long this take has been running. 0 until the first frame is offered, so a"""
+        """How long this take has been running. 0 until the first frame is offered."""
         return 0.0 if self._t0 is None else time.perf_counter() - self._t0
 
     @property

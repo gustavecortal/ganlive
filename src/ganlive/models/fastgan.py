@@ -122,7 +122,7 @@ class SkipLayerExcitation(nn.Module):
 
 
 def pixel_norm(z: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Put every latent on the same shell, so the MLP is not also spending capacity"""
+    """Put every latent on the same shell, so the MLP spends no capacity on length."""
     return z / z.square().mean(dim=1, keepdim=True).add(eps).sqrt()
 
 
