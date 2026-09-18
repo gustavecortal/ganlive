@@ -264,7 +264,9 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="ganlive wire", description=__doc__.split("\n")[0])
     ap.add_argument("--seconds", type=float, default=20.0)
-    ap.add_argument("--port", default="rytm")
+    ap.add_argument("--port", default="rytm", metavar="TEXT",
+                    help="substring of the MIDI port to listen to. The default suits an "
+                         "Analog Rytm; pass your own, or '' for every port")
     ap.add_argument("--bpm", type=float, default=166.0)
     ap.add_argument("--drive", action="store_true",
                     help="be the clock master: Start, pulse, Stop, and certify against audio")

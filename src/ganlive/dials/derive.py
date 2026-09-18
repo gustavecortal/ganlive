@@ -570,9 +570,9 @@ FLOOR_LEVELS = 1.0
 
 #: Times what a random unit direction of the same length moves -- on the same latents, in the
 #: pipeline that plays -- for a direction to be a control rather than a walk. **Relative, and
-#: deliberately so**: `gv-warm-lr3` moves 70 levels along its best direction against this
+#: deliberately so**: one FastGAN moves 70 levels along its best direction against another's
 #: model's 44 for its worst kept one, and still keeps fewer, because everything on that
-#: checkpoint moves the picture that hard. See NOTES for how 2.5 became 2.0.
+#: checkpoint moves the picture that hard. 2.5 was tried first and kept too little.
 RANDOM_FLOOR = 2.0
 
 #: Latents a level is averaged over. One is not a measurement: the same random direction reads
@@ -597,7 +597,7 @@ def travel(net: nn.Module, dirs: Directions, device, dtype, amount: float,
 
     The strip's travel is symmetric, so the gate has to be. And the sign is arbitrary: `eigh`
     returns an eigenvector, not a ray, so which half got measured was whatever LAPACK handed
-    back. Measured, `gv-2048-ft` ships two half-dials -- `dir2` at 48.7 levels one way and 31.1
+    back. Measured, a 2048px FastGAN ships two half-dials -- `dir2` at 48.7 levels one way, 31.1
     the other, `dir3` at 47.0 and 34.5.
     """
     up, down = _measure(net, dirs, device, dtype, amount, into=into, seeds=seeds,

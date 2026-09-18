@@ -1,4 +1,4 @@
-"""Find out what an attached Analog Rytm actually gives this machine. Run it with the Rytm on."""
+"""What this machine's audio and MIDI actually offer. Run it with the controller on."""
 from __future__ import annotations
 
 import argparse
@@ -291,8 +291,7 @@ def main(argv=None) -> int:
     try:
         import sounddevice as sd
     except ImportError:
-        print("sounddevice is missing: uv pip install --python .venv\\Scripts\\python.exe "
-              "sounddevice")
+        print("this needs an audio input: pip install 'ganlive[audio]'")
         return 1
 
     if args.list:
