@@ -27,7 +27,8 @@ class Machine:
     notes: str = "its pad/note output setting"
     encoders: str = "its knob/CC output setting"
     #: How per-voice audio reaches the host, for kit whose drums can be heard separately.
-    #: `None` where that is not a thing it does, which is most of them.
+    #: `None` where that is not a thing it does, which is most of them -- and `doctor` then
+    #: says nothing about it rather than guessing that a controller has stems at all.
     stems: str | None = None
 
     def says(self, what: str) -> str:
