@@ -312,117 +312,36 @@ def test_the_push_lands_after_the_truncation_and_not_before_it():
                 f"multiplied by the truncation, and a dial whose strength depends on another "
                 f"dial gets blamed on the model")
 
+def test_a_saved_checkpoint_is_a_generator_and_nothing_else(tmp_path):
+    """This project plays models, so a generator is the whole of what it writes."""
+    cfg = tiny()
+    path = tmp_path / "g.pt"
+    S2.save(path, cfg, S2.Generator(cfg).state_dict())
 
-def test_the_precision_a_file_is_played_at_is_not_a_fact_about_the_file(tmp_path):
-    """`half_from` overrides NVIDIA's rule, and a saved checkpoint never remembers it."""
-    cfg = tiny(img_resolution=64, num_fp16_res=1)
-    assert cfg.fp16_from == 64, "their rule: the top resolution only"
-    assert dataclasses.replace(cfg, half_from=S2.HALF_EVERYWHERE).fp16_from == 8
-    assert [b.half for b in S2.Generator(dataclasses.replace(
-        cfg, half_from=S2.HALF_EVERYWHERE)).blocks] == [False, True, True, True, True], (
-        "8 is the floor NVIDIA's own formula clamps to, so the 4-pixel block stays fp32")
-
-    path = tmp_path / "m.pt"
-    net = S2.Generator(dataclasses.replace(cfg, half_from=8))
-    S2.save(path, net.cfg, net.state_dict())
-    assert "half_from" not in torch.load(path, weights_only=True)["config"]
-    assert S2.config_of(path).half_from is None
-    assert S2.config_of(path) == cfg, "a converted file says exactly what it said before"
-    assert S2.from_file(path).cfg.fp16_from == 64
-    assert S2.from_file(path, half_from=S2.HALF_EVERYWHERE).cfg.fp16_from == 8
+    blob = torch.load(path, weights_only=True)
+    assert set(blob) == {"format", "config", "state"}
+    assert S2.is_stylegan2(path) and S2.from_file(path).cfg == cfg
 
 
-def tiny_d(**over) -> S2.DConfig:
-    """The discriminator counterpart of `tiny`, at the same resolution."""
-    return dataclasses.replace(
-        S2.DConfig(img_resolution=32, channel_base=128, channel_max=32, num_fp16_res=0),
-        **over)
+def test_a_checkpoint_that_carries_more_than_a_generator_still_opens(tmp_path):
+    """A trainer writes a discriminator beside it. That is its business; this half reads past it."""
+    cfg = tiny()
+    path = tmp_path / "pair.pt"
+    S2.save(path, cfg, S2.Generator(cfg).state_dict())
+    blob = torch.load(path, weights_only=True)
+    blob["d_config"] = {"img_resolution": 32}
+    blob["d_state"] = {"b4.out.bias": torch.zeros(1)}
+    torch.save(blob, path)
+
+    assert S2.is_stylegan2(path), "an extra key is not a different format"
+    assert S2.from_file(path).cfg == cfg
 
 
-def test_the_discriminator_ladder_is_nvidias_ladder():
-    """Their formulas, and the parameter count their published FFHQ-1024 pickle carries."""
-    cfg = S2.DConfig()
-    assert cfg.block_resolutions == (1024, 512, 256, 128, 64, 32, 16, 8)
-    assert [cfg.channels(r) for r in cfg.block_resolutions] == [32, 64, 128, 256] + [512] * 4
-    assert cfg.fp16_from == 128
-    net = S2.Discriminator(cfg)
-    # 29.013M is what `ffhq.pkl` holds, counted from the pickle itself.
-    assert round(sum(p.numel() for p in net.parameters()) / 1e6, 3) == 29.013
-    assert net.b1024.fromrgb is not None and net.b512.fromrgb is None, (
-        "only the first block reads pixels; the rest read the block below")
+def test_this_repository_has_no_discriminator_at_all():
+    """It was 219 lines of training network in a package whose headline is playback.
 
-
-def test_a_downsampling_block_halves_the_picture_whatever_the_kernel():
-    """The two paths through `Conv2dLayer` -- 1x1 and 3x3 -- must land on the same grid."""
-    x = torch.randn(2, 8, 32, 32)
-    wide = S2.Conv2dLayer(8, 16, 3, down=2)
-    thin = S2.Conv2dLayer(8, 16, 1, bias=False, lrelu=False, down=2)
-    assert wide(x).shape == (2, 16, 16, 16)
-    assert thin(x).shape == wide(x).shape, (
-        "the skip and the residual branch are added together, so a half-pixel disagreement "
-        "between them is not a shape error, it is a wrong network that runs")
-
-
-def test_the_residual_branches_are_each_scaled_so_their_sum_is_not():
-    """`sqrt(0.5)` on both, and the clamp scaled by that but the activation gain by more."""
-    conv1 = S2.Conv2dLayer(8, 8, 3, down=2, gain=S2.SQRT_HALF, conv_clamp=256.0)
-    skip = S2.Conv2dLayer(8, 8, 1, bias=False, lrelu=False, down=2, gain=S2.SQRT_HALF)
-    conv0 = S2.Conv2dLayer(8, 8, 3, conv_clamp=256.0)
-
-    assert conv1.act_gain == pytest.approx(1.0), "sqrt(2) for the leaky ReLU times sqrt(0.5)"
-    assert skip.act_gain == pytest.approx(S2.SQRT_HALF), "no activation, so only the branch"
-    assert conv0.act_gain == pytest.approx(S2.LRELU_GAIN), "not on a branch, so unscaled"
-    assert conv1.clamp == pytest.approx(256.0 * S2.SQRT_HALF), (
-        "the clamp takes the branch scaling and not the activation's own gain; taking both "
-        "or neither is the quiet way to be wrong here")
-    assert skip.clamp is None, "the skip is never clamped in their code"
-
-
-def test_a_batch_of_one_leaves_the_minibatch_statistic_saying_nothing():
-    """It is the only defence against mode collapse, and at batch 1 it is exactly zero."""
-    net = S2.Discriminator(tiny_d())
-    x = torch.randn(1, net.cfg.channels(4), 4, 4)
-    added = net.b4._mbstd(x)[:, -1]
-    assert added.shape == (1, 4, 4)
-    assert float(added.abs().max()) == pytest.approx(1e-4, abs=1e-4), (
-        "the standard deviation of one sample is zero, so this channel is a constant and "
-        "training at batch 1 has no mode-collapse detector at all")
-
-    wider = S2.Discriminator(tiny_d(mbstd_group_size=4))
-    many = torch.randn(4, net.cfg.channels(4), 4, 4)
-    assert float(wider.b4._mbstd(many)[:, -1].abs().max()) > 0.1
-
-
-def test_a_checkpoint_carries_its_discriminator_and_files_without_one_still_open(tmp_path):
-    """The format did not change for it, which is what keeps the instrument out of this."""
-    g_cfg, d_cfg = tiny(), tiny_d()
-    g, d = S2.Generator(g_cfg), S2.Discriminator(d_cfg)
-
-    both, alone = tmp_path / "both.pt", tmp_path / "alone.pt"
-    S2.save(both, g_cfg, g.state_dict(), d_cfg, d.state_dict())
-    S2.save(alone, g_cfg, g.state_dict())
-
-    assert S2.is_stylegan2(both) and S2.is_stylegan2(alone)
-    assert S2.config_of(both) == S2.config_of(alone) == g_cfg
-    assert S2.discriminator_from_file(alone) is None, (
-        "every file converted before there was a discriminator is still a good generator")
-    back = S2.discriminator_from_file(both)
-    assert back is not None and back.cfg == d_cfg
-    for (k, a), (_k, b) in zip(sorted(back.state_dict().items()),
-                               sorted(d.state_dict().items()), strict=True):
-        assert torch.equal(a, b), f"{k} did not survive the round trip"
-
-
-def test_the_discriminator_refuses_what_it_has_not_been_written_for():
-    """A conditional pickle would otherwise load and score with a head that does nothing."""
-    with pytest.raises(ValueError, match="c_dim"):
-        S2.Discriminator(tiny_d(c_dim=10))
-    with pytest.raises(ValueError, match="resnet"):
-        S2.Discriminator(tiny_d(architecture="orig"))
-    full = S2.Discriminator(tiny_d()).state_dict()
-    with pytest.raises(RuntimeError, match="not the discriminator the weights describe"):
-        S2.load_d(tiny_d(), {k: v for k, v in full.items() if "b4.out" not in k})
-    # A different width raises `load_state_dict`'s own size-mismatch message rather than this
-    # one, which is why the test says so instead of asserting one wording covers both.
-    with pytest.raises(RuntimeError, match="size mismatch"):
-        S2.load_d(tiny_d(), S2.Discriminator(tiny_d(channel_max=16)).state_dict())
+    The two repositories do not rely on each other: the training half has its own converter
+    and its own discriminator, and needs nothing written here."""
+    for gone in ("Discriminator", "DConfig", "load_d", "d_config_from",
+                 "discriminator_from_file", "DBlock", "Epilogue"):
+        assert not hasattr(S2, gone), f"{gone} is training code"

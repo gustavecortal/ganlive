@@ -70,10 +70,14 @@ def test_nothing_points_at_a_file_or_tool_this_repository_does_not_have():
     the suite, which this missed for looking only at `src/`."""
     gone = ("scripts/", "rytm_live", "rytm_map", "rytm_preflight", "rytm_sysex",
             "rytm_wire", "rytm_fuzz", "realtime_video", "onnx_bench", "NOTES.md",
-            "PLAN.md", "smallgen", ".venv/Scripts", "\\Scripts", "in NOTES", "See NOTES")
+            "PLAN.md", ".venv/Scripts", "\\Scripts", "in NOTES", "See NOTES",
+            # `smallgen` as *code*. Naming the other repository in prose is deliberate -- it
+            # is where the discriminator and the trainer went -- but nothing here may import
+            # from it, and no path may point into it.
+            "smallgen.", "from smallgen", "import smallgen", "src/smallgen")
     #: The one place the old name is deliberate: graphs and checkpoints written before the
     #: rename still carry it, and both readers accept either spelling.
-    allowed = "before this project was named"
+    allowed = "earlier name"
     found = []
     here = pathlib.Path(__file__).resolve().parent
     # not this file: it names every stale spelling in order to look for them

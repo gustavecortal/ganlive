@@ -146,12 +146,16 @@ def prioritise_gpu_feeder(pin_p_cores: bool = True, verbose: bool = True,
     return result
 
 
-def other_gpu_pythons() -> list[int]:
+def other_gpu_pythons() -> list[int] | None:
     """PIDs of python processes that are not this one or one of its ancestors.
 
-    Another user's processes are invisible here, so this is "none found", not "none running"
-    -- a courtesy, not a lock."""
-    import psutil
+    `None` when `psutil` is not installed -- which a caller must report rather than read as
+    "nothing is running". Even with it this is "none found": another user's processes are
+    invisible, so it is a courtesy, not a lock."""
+    try:
+        import psutil
+    except ImportError:
+        return None
 
     parents = {}
     for p in psutil.process_iter(["name", "ppid"]):
@@ -169,14 +173,20 @@ def other_gpu_pythons() -> list[int]:
 
 def host_ram_free_gb() -> float:
     """Host RAM available right now, in GB, or `nan` where it cannot be asked."""
-    import psutil
-
+    try:
+        import psutil
+    except ImportError:
+        return float("nan")
     return round(psutil.virtual_memory().available / 1e9, 2)
 
 
 def refuse_if_gpu_busy(what: str) -> bool:
     """False, with an explanation, while anything else holds the card."""
     others = other_gpu_pythons()
+    if others is None:
+        print(f"cannot tell whether anything else holds the card (no psutil); "
+              f"{what} is going ahead. `pip install psutil` to have this checked.")
+        return True
     if others:
         print(f"REFUSING {what}: python already running (pids "
               f"{', '.join(str(p) for p in others)}). Stop them and let the driver release.")

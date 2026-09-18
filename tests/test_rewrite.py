@@ -211,7 +211,7 @@ def test_the_settings_names_travel_inside_the_graph(tmp_path):
 
     model = onnx.load(str(path), load_external_data=False)
     entry = model.metadata_props.add()
-    # The prefix graphs written before this project was named carry; readers accept both.
+    # The prefix a graph exported under this project's earlier name carries; both are read.
     entry.key, entry.value = "smallgen.settings", ",".join(names)
     onnx.save(model, str(path))
     assert settings_of(path) == names

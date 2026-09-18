@@ -143,18 +143,31 @@ def _noise(n: int, rng: np.random.Generator) -> np.ndarray:
     return rng.standard_normal(n).astype(np.float32)
 
 
-def _hp(x: np.ndarray, cutoff: float, sr: int, order: int = 2) -> np.ndarray:
-    from scipy.signal import butter, lfilter
+def _band(x: np.ndarray, lo: float, hi: float, sr: int) -> np.ndarray:
+    """Keep `lo`..`hi` Hz, with a soft edge. One numpy call, where scipy was a whole package.
 
-    b, a = butter(order, min(cutoff / (sr / 2), 0.99), btype="high")
-    return lfilter(b, a, x).astype(np.float32)
+    These shape the noise in the stand-in kit -- a hi-hat, a snare's snap. What matters is
+    which octaves survive, not the roll-off, so the exact shape of a Butterworth buys nothing
+    here and cost a dependency larger than everything else combined."""
+    n = x.size
+    if n == 0:
+        return x
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    # A raised-cosine edge an octave wide at each end, so a hit does not ring on a brick wall.
+    gain = np.ones_like(freqs)
+    if lo > 0:
+        gain *= np.clip(np.log2(np.maximum(freqs, 1e-6) / lo) + 1.0, 0.0, 1.0)
+    if hi < sr / 2:
+        gain *= np.clip(np.log2(hi / np.maximum(freqs, 1e-6)) + 1.0, 0.0, 1.0)
+    return np.fft.irfft(np.fft.rfft(x) * gain, n).astype(np.float32)
 
 
-def _bp(x: np.ndarray, lo: float, hi: float, sr: int, order: int = 2) -> np.ndarray:
-    from scipy.signal import butter, lfilter
+def _hp(x: np.ndarray, cutoff: float, sr: int) -> np.ndarray:
+    return _band(x, cutoff, sr / 2, sr)
 
-    b, a = butter(order, [max(lo / (sr / 2), 1e-4), min(hi / (sr / 2), 0.99)], btype="band")
-    return lfilter(b, a, x).astype(np.float32)
+
+def _bp(x: np.ndarray, lo: float, hi: float, sr: int) -> np.ndarray:
+    return _band(x, lo, hi, sr)
 
 
 def _swept_sine(n: int, f0: float, f1: float, sweep: float, sr: int) -> np.ndarray:
