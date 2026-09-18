@@ -262,7 +262,7 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="ganlive wire", description=__doc__.split("\n")[0])
     ap.add_argument("--seconds", type=float, default=20.0)
     ap.add_argument("--port", default="rytm")
     ap.add_argument("--bpm", type=float, default=166.0)

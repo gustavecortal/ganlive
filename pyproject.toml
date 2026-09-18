@@ -14,6 +14,8 @@ record = ["av>=13"]
 # OpenVINO build, which is the one the timings in the README were taken on.
 onnx = ["onnx>=1.17", "onnxruntime>=1.20"]
 onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6"]
+# `ganlive adopt hf:...` fetches a generator from the Hub before dialling it.
+hub = ["huggingface_hub>=0.25", "onnxscript>=0.7"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

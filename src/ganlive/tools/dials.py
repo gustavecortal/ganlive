@@ -22,7 +22,7 @@ from ganlive.dials import derive as D  # noqa: E402
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(prog="ganlive dials", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", type=Path, help="a converted StyleGAN2 `.pt`")
     ap.add_argument("--device", default=None, metavar="xpu|cuda|mps|cpu",

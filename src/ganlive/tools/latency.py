@@ -115,7 +115,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(prog="ganlive latency", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
                     help="repeatable. Several models are loaded into one bank, exactly as "

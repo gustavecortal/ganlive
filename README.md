@@ -18,7 +18,7 @@ measured before it is offered, so a dial that does nothing is never shown.
 
 Swap `cu128` for your build — `xpu`, `rocm6.3`, or drop `--index-url` entirely for CPU and
 Apple silicon. The extras are optional: `audio` for audio-driven triggers, `record` for video,
-`onnx` for the third model family (`onnx-intel` instead, on an Intel GPU).
+`onnx` for the third model family (`onnx-intel` instead, on an Intel GPU), `hub` for `adopt`.
 
 ## Play
 
@@ -31,6 +31,7 @@ plays beside a FastGAN at 3072×2048 with a 256-wide one, switched with `[` and 
     ganlive                     # the command list
     ganlive wire                # is the controller talking?
     ganlive latency --checkpoint ...   # what this machine does, drift included
+    ganlive adopt hf:someone/some-gan  # dial an unseen model and save it playable
 
 ## The dials
 
@@ -80,10 +81,18 @@ load and is exact to 0.0000 8-bit levels.
     ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
     ganlive export-onnx --checkpoint runs/my-model/checkpoints/0072000.pt
 
+    ganlive adopt hf:someone/some-gan --trust-remote-code
+
 StyleGAN2 is read through this project's own synthesis network, which loads NVIDIA's weights
 unchanged and compiles as one graph — their CUDA kernels are not needed and do not build on
 non-NVIDIA hardware. **StyleGAN3 is not supported**: it needs `affine_grid_generator`, which
 ONNX does not have.
+
+`adopt` is the general path: it fetches a generator, exports it, finds its dials, measures
+what each is worth, and writes all of that into the graph — so the instrument that opens it
+afterwards knows nothing about the architecture. It refuses rather than guesses in three
+places: code it will not import unasked, a module that never produced a picture, and a graph
+still non-deterministic after its random draws are frozen. Needs `.[hub]`.
 
 FastGAN checkpoints come from [smallgen](https://github.com/gustavecortal/smallgen), which is
 the training half of this project.

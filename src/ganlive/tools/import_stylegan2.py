@@ -85,7 +85,7 @@ def check_d(D, cfg: S2.DConfig, state: dict, seed: int) -> float:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__,
+    p = argparse.ArgumentParser(prog="ganlive import-stylegan2", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("pickle", type=Path, help="an NVIDIA StyleGAN2-ADA .pkl")
     p.add_argument("--repo", type=Path, default=Path("stylegan2-ada-pytorch"),

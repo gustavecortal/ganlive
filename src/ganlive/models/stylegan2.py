@@ -1,8 +1,10 @@
 """StyleGAN2 synthesis, written so that `torch.compile` can capture it in one graph."""
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -467,7 +469,20 @@ def save(path, cfg: Config, state: dict, d_cfg=None, d_state=None) -> None:
 
 
 def is_stylegan2(path) -> bool:
-    """Whether this `.pt` is one of these, without building anything."""
+    """Whether this `.pt` is one of these, without building anything.
+
+    Cached on the file's identity, like `onnx.dials_of`: the bank asks four times for
+    every model it loads -- the dispatcher, the layout, the capture gate, the shelf --
+    and each ask was opening the checkpoint again to read one string."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return False
+    return _is_stylegan2_cached(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@functools.lru_cache(maxsize=16)
+def _is_stylegan2_cached(path: str, _mtime: int, _size: int) -> bool:
     try:
         blob = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     except Exception:                                                        # noqa: BLE001
