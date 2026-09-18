@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Real-time latent-space exploration: any GAN, any accelerator, any MIDI controller."
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["numpy>=1.26", "pygame>=2.5", "python-rtmidi>=1.5"]
+dependencies = ["numpy>=1.26", "pygame>=2.5", "python-rtmidi>=1.5", "psutil>=6"]
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]

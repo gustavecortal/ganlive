@@ -12,7 +12,7 @@ os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 RATES = (48000, 44100, 96000)
 
-from ganlive.control.audio import NoAudioDevice, pick_input  # noqa: E402
+from ganlive.control.audio import HOSTAPI, NoAudioDevice, pick_input  # noqa: E402
 from ganlive.control.features import FeatureConfig  # noqa: E402
 from ganlive.control.midi import (  # noqa: E402
     dispatch,
@@ -32,31 +32,35 @@ def find_devices(sd, pattern="rytm"):
     return out
 
 
-def cmd_list(sd) -> int:
+def cmd_list(sd, pattern="rytm") -> int:
     apis = [ha["name"] for ha in sd.query_hostapis()]
     print(f"PortAudio : {sd.get_portaudio_version()[1]}")
     print(f"host APIs : {', '.join(apis)}")
-    if "ASIO" not in apis:
-        print("\n  ASIO IS MISSING. sounddevice ships an ASIO build behind SD_ENABLE_ASIO;")
-        print("  if it is absent here the wrong DLL was loaded. Nothing else will work.")
-        return 1
+    if HOSTAPI not in apis:
+        print(f"\n  {HOSTAPI} is missing, and it is this platform's multi-channel API.")
+        if HOSTAPI == "ASIO":
+            print("  sounddevice ships an ASIO build behind SD_ENABLE_ASIO; if it is absent")
+            print("  here the wrong DLL was loaded.")
+        print("  An interface on another API still works; pass --device with its index.")
 
     print("\ninput-capable devices:")
     for i, d in enumerate(sd.query_devices()):
         if d["max_input_channels"] <= 0:
             continue
         api = sd.query_hostapis(d["hostapi"])["name"]
-        mark = "  <--" if "rytm" in d["name"].lower() else ""
+        mark = "  <--" if pattern.lower() in d["name"].lower() else ""
         print(f"  {i:3} [{api:12}] in={d['max_input_channels']:3} "
               f"out={d['max_output_channels']:3} sr={d['default_samplerate']:6.0f}  "
               f"{d['name']}{mark}")
 
-    hits = find_devices(sd)
+    hits = find_devices(sd, pattern)
     print()
     if not hits:
-        print("  No Rytm found. With the machine off, the Overbridge installer's product")
-        print("  stubs still appear -- so seeing one here is not the same as it working.")
-        return 1
+        print(f"  Nothing named {pattern!r}. The instrument plays without any audio input --")
+        print("  MIDI notes alone drive it -- so this is a finding, not a failure. A driver")
+        print("  may also register stubs for machines that are not plugged in, so a name in")
+        print("  the list above is not a connection either.")
+        return 0
     for i, d, api in hits:
         print(f"  {d['name']} on {api}: {d['max_input_channels']} in, "
               f"{d['max_output_channels']} out")
@@ -70,7 +74,7 @@ def cmd_list(sd) -> int:
                 ok.append(sr)
             except Exception:                                     # noqa: BLE001
                 pass
-        print(", ".join(str(s) for s in ok) if ok else "NONE (is the Overbridge Engine up?)")
+        print(", ".join(str(s) for s in ok) if ok else "NONE (is the driver running?)")
         if d["max_input_channels"] < len(TRACKS):
             print(f"    NOTE: {d['max_input_channels']} channels against {len(TRACKS)} "
                   f"tracks, so this is not one channel per track. Tracks that share an")
@@ -83,12 +87,12 @@ FLOOR = FeatureConfig().floor
 HEADROOM = 8.0
 
 def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
-              blocksize: int, with_midi: bool) -> int:
+              blocksize: int, with_midi: bool, pattern: str = "rytm") -> int:
     """Live per-channel levels. Hit one pad at a time and read which channel moves."""
     import numpy as np
 
     try:
-        device, info, nch = pick_input(sd, device)
+        device, info, nch = pick_input(sd, device, pattern)
     except NoAudioDevice as exc:
         print(str(exc))
         return 1
@@ -98,8 +102,8 @@ def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
                      if _openable(sd, device, nch, sr)), None)
         if rate is None:
             print("Could not open the device at any sample rate.")
-            print("  ASIO is exclusive: a DAW or the Overbridge control panel holding the")
-            print("  device will lock this out. Close them and try again.")
+            print("  An exclusive API hands the device to one program at a time: a DAW or")
+            print("  a control panel holding it will lock this out. Close them and retry.")
             return 1
 
     peak = np.zeros(nch, dtype=np.float64)
@@ -138,8 +142,8 @@ def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
     except Exception as exc:                                      # noqa: BLE001
         print(f"\n\nstream failed: {type(exc).__name__}: {exc}")
         if isinstance(exc, sd.PortAudioError):
-            print("  ASIO is exclusive -- close any DAW or Overbridge control panel "
-                  "holding it.")
+            print("  The device may be held exclusively -- close any DAW or control panel "
+                  "using it.")
         return 1
 
     print("\n\npeak per channel over the whole run:")
@@ -188,7 +192,7 @@ def _bars(rms) -> str:
 
 
 class _MidiListener:
-    """Whether USB MIDI survives Overbridge holding the interface, and what it carries."""
+    """Whether MIDI survives an audio driver holding the interface, and what it carries."""
 
     def __init__(self) -> None:
         import pygame.midi
@@ -214,8 +218,8 @@ class _MidiListener:
 
     def describe(self) -> str:
         if not self.inputs:
-            return ("MIDI: NO INPUT PORTS. If the Rytm is in Overbridge mode this is the "
-                    "finding that matters -- the clock design needs another source.")
+            return ("MIDI: NO INPUT PORTS. If a machine is in a mode that claims its USB "
+                    "for audio, that is the finding -- the clock needs another source.")
         return "MIDI inputs: " + ", ".join(f"[{i}] {n}" for i, n, _ in self.inputs)
 
     def poll(self) -> None:
@@ -283,9 +287,12 @@ def main(argv=None) -> int:
     ap.add_argument("--midi", action="store_true",
                     help="listen for clock, transport and note-ons at the same time")
     ap.add_argument("--device", type=int, default=None)
+    ap.add_argument("--name", default="rytm", metavar="TEXT",
+                    help="substring of the input to look for. The default suits an Analog "
+                         "Rytm over Overbridge; pass your own interface's name")
     ap.add_argument("--rate", type=int, default=None)
     ap.add_argument("--blocksize", type=int, default=256,
-                    help="ASIO buffer in frames; 256 at 48 kHz is 5.3 ms")
+                    help="audio buffer in frames; 256 at 48 kHz is 5.3 ms")
     args = ap.parse_args(argv)
 
     try:
@@ -294,9 +301,8 @@ def main(argv=None) -> int:
         print("this needs an audio input: pip install 'ganlive[audio]'")
         return 1
 
-    if args.list:
-        return cmd_list(sd)
     if args.meter:
-        return cmd_meter(sd, args.meter, args.device, args.rate, args.blocksize, args.midi)
-    return cmd_list(sd)
+        return cmd_meter(sd, args.meter, args.device, args.rate, args.blocksize,
+                         args.midi, args.name)
+    return cmd_list(sd, args.name)
 

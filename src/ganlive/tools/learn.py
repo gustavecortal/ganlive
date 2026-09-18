@@ -30,13 +30,16 @@ DETECT_S = 0.075
 BUS = 0.75
 
 
-def open_midi(pygame_midi):
+def open_midi(pygame_midi, match: str = ""):
+    """The first input port whose name contains `match`; any input port if it is empty."""
+    want = match.lower().encode()
     port = next((i for i in range(pygame_midi.get_count())
                  if pygame_midi.get_device_info(i)[2] == 1
-                 and b"rytm" in pygame_midi.get_device_info(i)[1].lower()), None)
+                 and want in pygame_midi.get_device_info(i)[1].lower()), None)
     if port is None:
-        raise SystemExit("no Rytm MIDI input. This tool needs MIDI: the notes are what "
-                         "identify the pads, and nothing else can.")
+        raise SystemExit(f"no MIDI input matching {match!r}. This tool needs MIDI: the notes "
+                         f"are what identify the pads, and nothing else can. `ganlive doctor "
+                         f"--midi` lists the ports.")
     return pygame_midi.Input(port)
 
 
@@ -164,6 +167,8 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=75.0)
     ap.add_argument("--device", type=int, default=None)
+    ap.add_argument("--port", default="", metavar="TEXT",
+                    help="substring of the MIDI port carrying the pad notes; the default takes the first input port")
     ap.add_argument("--rate", type=int, default=48000)
     ap.add_argument("--blocksize", type=int, default=256)
     ap.add_argument("--order", default=",".join(TRACKS),
@@ -177,7 +182,7 @@ def main(argv=None) -> int:
         raise SystemExit(str(exc)) from exc
 
     pygame.midi.init()
-    midi_in = open_midi(pygame.midi)
+    midi_in = open_midi(pygame.midi, args.port)
     clock = MusicalClock(120.0)
 
     votes: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))

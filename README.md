@@ -6,7 +6,8 @@ The generator runs live at 60 fps. Its knobs are **derived from the weights at l
 per-architecture config file, no hand-written dial list — and every one is driven to both ends and
 measured before it is offered, so a dial that does nothing is never shown.
 
-- **Any accelerator.** CUDA, Intel XPU, Apple MPS, or the CPU. Detected, not configured.
+- **Any machine.** Windows, macOS or Linux; CUDA, Intel XPU, Apple MPS, or the CPU.
+  Detected, not configured -- including which audio API a multi-channel input lives on.
 - **Any GAN.** This project's FastGAN, NVIDIA's StyleGAN2 weights unchanged, or any ONNX graph.
 - **Any controller.** Anything that sends MIDI notes and CCs. `l` on a dial, turn a knob, bound.
 
