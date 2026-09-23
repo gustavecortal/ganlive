@@ -79,6 +79,18 @@ def open_graph(path, backend: str = "auto", device: str = "",
                        + survey().replace("\n", "\n  "))
 
 
+def measuring_on(device: str) -> tuple[str, str]:
+    """`adopt --device` as the `(backend, device)` every pass of an adoption opens.
+
+    `cpu` is ONNX Runtime; anything else names an OpenVINO device. **Asked once, by every pass.**
+    The precision check used to go through `auto` -- which ignores the device and takes the
+    first backend on `ORDER` that opens -- while the dials were calibrated on OpenVINO. On a
+    CUDA machine the verdict was measured on, and filed under, a runtime the dials never saw."""
+    if device.lower() == "cpu":
+        return "ort", "CPUExecutionProvider"
+    return "openvino", device
+
+
 def key_for(backend: str, device: str) -> str:
     """How a precision verdict is filed: the pair it was measured on."""
     return f"{backend}/{device}"

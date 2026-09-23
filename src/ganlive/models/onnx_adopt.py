@@ -321,9 +321,9 @@ def name_settings(model, names, curves=None, levels=None, rests=None,
         entry.key, entry.value = key, value
 
 
-def usable_precision(path, backend: str = "auto",
-                     device: str = "") -> tuple[str, str, float]:
-    """Whether this graph survives half precision, and on which backend and device."""
+def usable_precision(path, backend: str, device: str) -> tuple[str, str, float, object]:
+    """Whether this graph survives half precision on this backend and device: the key the
+    verdict is filed under, the verdict, the gap, and the FP16 runner it was measured with."""
     from ganlive.models.onnx import config_of
     from ganlive.models.runtime import key_for, open_graph
 
@@ -337,7 +337,7 @@ def usable_precision(path, backend: str = "auto",
     runner = open_graph(path, backend=runner.backend, device=runner.asked, precision="FP16")
     frames["FP16"] = np.asarray(runner.infer(z), np.float32)
     gap = levels(frames["FP16"], frames["FP32"])
-    return key, ("FP16" if gap < HALF_LEVELS else "FP32"), gap
+    return key, ("FP16" if gap < HALF_LEVELS else "FP32"), gap, runner
 
 
 def adopt(source, out, seed: int = 0, target: float = TARGET_LEVELS,
@@ -367,15 +367,19 @@ def adopt(source, out, seed: int = 0, target: float = TARGET_LEVELS,
     if measure:
         # Precision first, because everything after it is measured through the runtime and a
         # runtime that has quietly broken the picture measures its own damage.
-        cpu = device.lower() == "cpu"
-        backend = "ort" if cpu else "auto"
-        precision = "FP16"
-        if not cpu:
-            key, precision, gap = usable_precision(out, backend, device)
+        from ganlive.models.runtime import measuring_on
+
+        precision, runner = "FP16", None
+        if device.lower() != "cpu":
+            key, precision, gap, runner = usable_precision(out, *measuring_on(device))
             print(f"half precision moves this graph {gap:.3f} 8-bit levels on {key}; "
                   f"measuring in {precision}", flush=True)
             found.precision = {key: precision}
-        probe = Probe(out, device=device, precision=precision)
+            if precision != "FP16":
+                runner = None          # dropped before the FP32 one is compiled; see above
+        # The FP16 runner the verdict was measured on is the one the dials are measured on:
+        # the same backend and device by construction, and a six-megapixel compile saved.
+        probe = Probe(out, device=device, precision=precision, runner=runner)
         drift = deterministic(probe)
         if drift > 0.01:
             raise RuntimeError(
