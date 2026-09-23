@@ -801,7 +801,6 @@ def test_the_shelf_is_empty_rather_than_a_crash_without_a_runs_directory(tmp_pat
     shelf._cfgs, shelf._listing, shelf.pending, shelf.note = {}, None, None, ""
     shelf.bank = type("B", (), {"models": []})()
 
-    assert shelf.count() == 0
     assert shelf.entries() == []
 
 

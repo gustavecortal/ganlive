@@ -365,9 +365,23 @@ class DialPanel:
         return got
 
 
+    def _model(self):
+        """The model the strip draws: **the runner's**, not the bank's.
+
+        `Bank.use` and `PresetRunner.use_model` are consecutive statements on the frame loop's
+        thread, and the window paints between them. Reading the layout off the bank and the
+        values off the runner drew half of each for that frame. The runner takes its model as
+        the last thing a switch does, so one reference says which model this frame is. The
+        bank answers only before the runner has been handed one."""
+        model = self.runner.model
+        if model is None and self.bank is not None:
+            model = self.bank.current
+        return model
+
     def live_dials(self) -> frozenset | None:
         """The dials that reach the loaded model, or `None` when there is nothing to ask."""
-        return None if self.bank is None else self.bank.current.dials_live
+        model = self._model()
+        return None if model is None else model.dials_live
 
     @staticmethod
     def dead(name: str, live, live_dials) -> bool:
@@ -375,10 +389,8 @@ class DialPanel:
 
         **Both paint passes ask this, and they had disagreed.** The texture pass tested the
         runner's surface as well as the model's live set; the per-frame pass tested only the
-        live set, and then read `live[name]` for a row the surface did not carry. Those two
-        are one frame apart during a switch -- `Bank.use` and `PresetRunner.use_model` are
-        consecutive statements on the frame loop's thread, and nothing holds the window's
-        thread off between them."""
+        live set, and then read `live[name]` for a row the surface did not carry. A caller that
+        hands the runner a layout without a model can still put the two apart."""
         return name not in live or (live_dials is not None and name not in live_dials)
 
     @property
@@ -386,8 +398,8 @@ class DialPanel:
         """The loaded model's dials. **Not a module constant any more**: an adopted graph brings its own MODEL
         block, with its own count, and the strip's whole geometry -- row height, block tops, the shortest
         window it is whole in -- is a function of how many rows there are."""
-        owner = self.bank.current if self.bank is not None else self.runner.surface
-        return owner.layout
+        model = self._model()
+        return (self.runner.surface if model is None else model).layout
 
     @property
     def focus(self) -> str:
@@ -414,7 +426,8 @@ class DialPanel:
         return got
 
     def _directions(self):
-        return None if self.bank is None else self.bank.current.directions
+        model = self._model()
+        return None if model is None else model.directions
 
     def _right(self, surf, img, y: int) -> None:
         """Blit against the strip's right-hand edge."""

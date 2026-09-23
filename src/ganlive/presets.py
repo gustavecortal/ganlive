@@ -150,6 +150,9 @@ class PresetRunner:
         #: Dials this model can actually write, from `bank.live_dials`. Empty means no model
         #: has said -- every offline tool -- and then everything is playable.
         self.live: frozenset[str] = frozenset()
+        #: The model `use_model` last finished switching to, or `None` before the first. Written
+        #: last, so a reader on another thread sees the old model whole or the new one whole.
+        self.model = None
         #: Per dial: frames it moved, frames a hand held it, furthest it got from rest.
         self.usage: dict[str, list[float]] = {}
         self._last: dict[str, float] = {}
@@ -169,12 +172,13 @@ class PresetRunner:
                 f"with while the strip drew the loaded model's, and the two agreed again "
                 f"only after a switch away and back.")
         live = frozenset(model.dials_live)
-        if live == self.live and model.layout == self.surface.layout:
-            return
-        self.live = live
-        self.surface.relayout(model.layout)
-        self.load(self.preset)                    # re-reports the rules this model cannot run
-        self._replace(dict(self._sources))       # and lets go of any hand on a dead dial
+        if live != self.live or model.layout != self.surface.layout:
+            self.live = live
+            self.surface.relayout(model.layout)
+            self._last.clear()
+            self.load(self.preset)                # re-reports the rules this model cannot run
+            self._replace(dict(self._sources))   # and lets go of any hand on a dead dial
+        self.model = model
 
     def load(self, preset: Preset) -> None:
         """Swap in a different preset without rebuilding anything that addresses this runner."""
@@ -360,7 +364,9 @@ class PresetRunner:
             if name in held:
                 use[1] += 1
             use[2] = max(use[2], abs(value - rests.get(name, value)))
-        self._last = dict(self.surface.values)
+            # Written back in the loop that already visits every dial, not copied whole a
+            # frame. `use_model` clears it, so a dial the new model lacks leaves no stale value.
+            last[name] = value
 
     def usage_report(self) -> list[str]:
         """One line per dial that moved, most-moved first, then the dials nothing touched."""

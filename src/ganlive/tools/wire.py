@@ -9,7 +9,7 @@ from typing import NamedTuple
 import numpy as np
 
 from ganlive.control.kit import TRACKS, output_mode
-from ganlive.control.machine import RYTM
+from ganlive.control.machine import RYTM, Machine, profile
 from ganlive.control.midi import (
     AFTERTOUCH_POLY,
     CLOCK,
@@ -174,17 +174,19 @@ def run(seconds: float, port_match: str, drive: bool, bpm: float) -> int:
             out.close()
         pm.quit()
 
-    return report(wire, marks, drive, time.perf_counter() - started)
+    return report(wire, marks, drive, time.perf_counter() - started, profile(port_match))
 
 
-def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float) -> int:
+def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float,
+           machine: Machine) -> int:
     print(f"\n{'kind':<20}{'total':>8}   by phase")
     for kind in wire.kinds():
         where = " ".join(f"{p}={wire.by_phase[p][kind]}"
                          for p in ("listening", "driven", "after") if wire.by_phase[p][kind])
         print(f"{kind:<20}{wire.total(kind):>8}   {where}")
     if not wire.by_phase:
-        print("  NOTHING AT ALL -- the Control Panel is almost certainly closed.")
+        print(f"  NOTHING AT ALL -- is {machine.name} on this port? If it is, "
+              f"{machine.says('clock')} and {machine.transport}.")
     if drove:
         print("\n  Sent messages arrive back on the input port, so the transport counts above")
         print("  include this script's own Start, clock and Stop. Only note-ons are the")
@@ -244,8 +246,7 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float) -> int:
     if notes == 0:
         print(f"  Sequencer trigs send NO MIDI notes. {onsets} drum onsets were heard while it")
         print("  played, and not one note-on came with them.")
-        print("  This is a SETTING, not a hardware limit: OS 1.50 added a per-track MIDI send")
-        print("  to the MKI. Turn it on for each track and run this again.")
+        print(f"  On {machine.name}, {machine.says('notes')}, and run this again.")
         return 0
     print(f"  Sequencer trigs DO send MIDI notes: {notes} note-ons alongside {onsets} onsets.")
     print("  The instrument can be driven by MIDI alone -- all twelve tracks, BT and LT")

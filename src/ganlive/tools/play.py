@@ -564,7 +564,7 @@ def main(argv=None) -> int:
 
     shelf = None if args.no_shelf else bank.Shelf(r, args.runs)
     if shelf is not None:
-        print(f"models: {shelf.count()} on disk under {args.runs}", flush=True)
+        print(f"models: {len(shelf.entries())} on disk under {args.runs}", flush=True)
 
     runner = PresetRunner(preset, extractor.channel_of() or tracks, float(args.fps),
                          channels=extractor.n)

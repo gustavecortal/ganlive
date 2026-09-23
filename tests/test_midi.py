@@ -462,3 +462,19 @@ def test_every_silence_a_tool_reports_is_in_the_machines_own_words():
             _kind, fix = silence_words(notes, audio, GENERIC)
             for menu in menus:
                 assert menu not in fix, f"a named machine's words reached everyone: {fix}"
+
+
+def test_no_tool_spells_a_known_machines_menu_itself():
+    """`play` was held to that and `wire`, `learn` and `doctor` were not: each printed a Rytm's
+    menu paths and Overbridge's windows to whoever ran them. A menu is the profile's to say."""
+    import pathlib
+
+    import ganlive.tools
+    from ganlive.control.machine import KNOWN
+
+    words = {"MIDI CONFIG", "TRANSPORT SEND", "CLOCK SEND", "ENCODER DEST", "TRK SEND"}
+    words |= {w for m in KNOWN for w in (m.clock, m.transport, m.notes, m.encoders, m.stems) if w}
+    for source in pathlib.Path(ganlive.tools.__file__).parent.glob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        leaked = sorted(w for w in words if w in text)
+        assert not leaked, f"{source.name} spells {leaked} itself"
