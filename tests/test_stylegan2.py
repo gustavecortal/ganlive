@@ -54,6 +54,57 @@ def test_weights_load_under_their_own_names():
     assert torch.equal(want, got)
 
 
+def _fused(layer, x, w):
+    """The modulated convolution as NVIDIA's `fused_modconv=True` writes it, one image at a time:
+    the styles folded into a copy of the weight, which is then demodulated."""
+    import torch.nn.functional as F
+
+    styles = layer.affine(w)
+    out = []
+    for i in range(x.shape[0]):
+        m = layer.weight * styles[i].reshape(1, -1, 1, 1)
+        m = m * (m.square().sum(dim=[1, 2, 3], keepdim=True) + 1e-8).rsqrt()
+        if layer.up > 1:
+            y = F.conv_transpose2d(x[i:i + 1], m.transpose(0, 1), stride=layer.up,
+                                   padding=layer.tpad)
+            out.append(S2._fir(y, layer.upfir, layer.fpad))
+        else:
+            out.append(F.conv2d(x[i:i + 1], m, padding=layer.pad))
+    return F.leaky_relu(torch.cat(out) + layer.bias.reshape(1, -1, 1, 1), 0.2) * S2.LRELU_GAIN
+
+
+@pytest.mark.parametrize("up", [1, 2])
+@pytest.mark.parametrize("frozen", [False, True])
+def test_the_styles_scale_the_activations_and_it_is_the_same_convolution(up, frozen):
+    """What plays scales the input channels by the styles and demodulates the output, where the
+    reference modulates the weight -- the same arithmetic in another order, per image, so a
+    batch of two with different styles has to come out as two separate frames would."""
+    torch.manual_seed(0)
+    layer = S2.SynthesisLayer(8, 6, w_dim=16, resolution=16 if up > 1 else 8, up=up).eval()
+    with torch.no_grad():
+        layer.bias.normal_()
+        if frozen:
+            layer.freeze()
+            layer.affine.freeze()
+        x, w = torch.randn(2, 8, 8, 8), torch.randn(2, 16)
+        got, want = layer(x, w), _fused(layer, x, w)
+    assert got.shape == want.shape
+    assert (got - want).abs().max() < 1e-5
+
+
+def test_a_frozen_net_is_the_net_it_was_frozen_from():
+    """`load` freezes every derived weight; the frame must not know it happened."""
+    torch.manual_seed(1)
+    cfg = tiny(num_fp16_res=0)
+    made = S2.Generator(cfg)
+    frozen = S2.load(cfg, made.state_dict())
+    assert all(m.played is not None for m in frozen.modules()
+               if isinstance(m, S2.SynthesisLayer))
+    z = torch.randn(2, cfg.z_dim)
+    with torch.no_grad():
+        assert torch.equal(made(z), frozen(z))
+
+
 def test_the_filters_are_not_in_the_file():
     """NVIDIA ships `resample_filter` buffers; they are derived here, and ignored on load."""
     cfg = tiny()

@@ -142,12 +142,23 @@ class Dense(nn.Linear):
         self.weight_gain = float(lr_multiplier / math.sqrt(n_in))
         self.bias_gain = float(lr_multiplier)
         self.lrelu = activation == "lrelu"
+        #: `weight * weight_gain` and `bias * bias_gain` once the weights are final -- see
+        #: `freeze`. `None` scales them every forward, for a net built without `load`.
+        self.register_buffer("scaled", None, persistent=False)
+        self.register_buffer("scaled_bias", None, persistent=False)
+
+    @torch.no_grad()
+    def freeze(self) -> None:
+        """Scale the weights once. Inside the captured graph the two multiplies ran every
+        frame, over every affine: 26 of them on FFHQ-1024, each a 512x512 read and write."""
+        self.scaled, self.scaled_bias = self._scaled()
+
+    def _scaled(self) -> tuple[torch.Tensor, torch.Tensor]:
+        b = self.bias if self.bias_gain == 1.0 else self.bias * self.bias_gain
+        return self.weight * self.weight_gain, b
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w = self.weight * self.weight_gain
-        b = self.bias
-        if self.bias_gain != 1.0:
-            b = b * self.bias_gain
+        w, b = (self.scaled, self.scaled_bias) if self.scaled is not None else self._scaled()
         if not self.lrelu:
             return torch.addmm(b.unsqueeze(0), x, w.t())
         return F.leaky_relu(x.matmul(w.t()) + b, LRELU_SLOPE) * LRELU_GAIN
@@ -172,6 +183,11 @@ def _pads(kernel: int, up: int, taps: int, padding: int) -> tuple[int, ...]:
 def _fir(x: torch.Tensor, f: torch.Tensor, pad: tuple[int, int, int, int]) -> torch.Tensor:
     """`upfirdn2d` with the zero-insertion already done and the filter already prepared."""
     x0, x1, y0, y1 = pad
+    if x0 == x1 >= 0 and y0 == y1 >= 0:
+        # The convolution's own zero padding, rather than `F.pad` writing a padded copy of the
+        # whole feature map first -- 0.3 ms a frame at 1024 for the same zeros. Every
+        # StyleGAN2 upsample is this case; see `_pads`.
+        return F.conv2d(x, f, padding=(y0, x0), groups=x.shape[1])
     x = F.pad(x, [max(x0, 0), max(x1, 0), max(y0, 0), max(y1, 0)])
     if min(x0, x1, y0, y1) < 0:
         x = x[:, :, max(-y0, 0):x.shape[2] - max(-y1, 0),
@@ -200,9 +216,12 @@ class SynthesisLayer(nn.Module):
         # neither overflows. Demodulation divides any such scaling straight back out, so this
         # buys range and changes no result -- and it runs only where it is needed.
         self.prenorm = float(1.0 / math.sqrt(in_ch * kernel * kernel)) if half else 0.0
-        #: `prenorm` over the weight's per-channel inf-norm, once the weights are final -- see
-        #: `freeze_scale`. `None` recomputes it every forward, for a net built without `load`.
-        self.register_buffer("wscale", None, persistent=False)
+        self.dtype = dtype
+        #: The weight as every frame convolves with it, and its squared sum per `(out, in)` pair,
+        #: once the weights are final -- see `freeze`. `None` derives both every forward, for a
+        #: net built without `load`.
+        self.register_buffer("played", None, persistent=False)
+        self.register_buffer("energy", None, persistent=False)
         self.pad = kernel // 2
         self.clamp = None if conv_clamp is None else float(conv_clamp)
         if up > 1:
@@ -213,42 +232,49 @@ class SynthesisLayer(nn.Module):
                                  persistent=False)
 
     @torch.no_grad()
-    def freeze_scale(self) -> None:
-        """Compute the half-precision weight renormalisation once. It is a reduction over a
-        constant weight, and inside the captured graph it ran every frame: every conv weight
-        but the 4-pixel block's read a second time, ~85 MB a frame on FFHQ-1024."""
+    def freeze(self) -> None:
+        """Derive the played weight once. It is a function of constants alone, and inside the
+        captured graph it was being recomputed every frame -- see `_weights`."""
+        self.played, self.energy = self._weights()
+
+    def _weights(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """The weight the convolution reads, in the precision it runs in, and `energy`, the
+        squared weight summed over the kernel: what demodulation needs of it, `(out, in)`. A
+        half-precision weight is renormalised first; see `prenorm`."""
+        weight = self.weight
         if self.half:
-            self.wscale = self.prenorm / self.weight.norm(float("inf"), dim=[1, 2, 3],
-                                                          keepdim=True)
+            weight = weight * (self.prenorm / weight.norm(float("inf"), dim=[1, 2, 3],
+                                                          keepdim=True))
+        energy = weight.square().sum(dim=[2, 3])
+        if self.up > 1:
+            weight = weight.transpose(0, 1)             # `conv_transpose2d` wants `(in, out)`
+        return weight.to(self.dtype).contiguous(), energy
 
     def forward(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         styles = self.affine(w)
-        weight = self.weight
         if self.half:
-            scale = self.wscale
-            if scale is None:
-                scale = self.prenorm / weight.norm(float("inf"), dim=[1, 2, 3], keepdim=True)
-            weight = weight * scale
             styles = styles / styles.norm(float("inf"), dim=1, keepdim=True)
+        weight, energy = ((self.played, self.energy) if self.played is not None
+                          else self._weights())
 
-        # `weight` and not `self.weight`: with a low-rank adapter attached, `.weight` is a parametrisation
-        # that recomputes `B @ A` and materialises the whole tensor on every access --
-        # `torch.nn.utils.parametrize` caches nothing outside a `cached()` block.
-        n, out_ch, in_ch, kh, kw = x.shape[0], *weight.shape
-        m = weight.unsqueeze(0) * styles.reshape(n, 1, -1, 1, 1)
-        dcoefs = (m.square().sum(dim=[2, 3, 4]) + 1e-8).rsqrt()
-        m = (m * dcoefs.reshape(n, -1, 1, 1, 1)).to(x.dtype)
-
-        # One image per group, which for the one frame this renders is one group and a plain
-        # convolution: every reshape here is a view.
-        x = x.reshape(1, -1, *x.shape[2:])
+        # **The styles scale the activations, not the weight** -- NVIDIA's own
+        # `fused_modconv=False`, which is the same arithmetic in another order: the input
+        # channels scaled before a plain convolution, the output channels demodulated after it.
+        # Modulating the weight instead wrote a styled copy of every conv weight every frame,
+        # and read it back, which on a 512-channel layer is 9 MB for a 32 KB activation; here
+        # the weight stays a constant, both scalings fuse into the elementwise work either side
+        # of the convolution, and demodulation is a `(n, in) @ (in, out)` product.
+        # Both scalings stay in float32 and round once, into the dtype the convolution reads or
+        # the store at the end of this layer: cast to half first, each rounded twice, and the
+        # frame drifted 30% further from full precision than the fused modulation's did.
+        dcoefs = (styles.square() @ energy.t() + 1e-8).rsqrt()
+        x = (x * styles[:, :, None, None]).to(self.dtype)
         if self.up > 1:
-            m = m.transpose(1, 2).reshape(n * in_ch, out_ch, kh, kw)
-            x = F.conv_transpose2d(x, m, stride=self.up, padding=self.tpad, groups=n)
-            x = _fir(x, self.upfir.repeat(n, 1, 1, 1) if n > 1 else self.upfir, self.fpad)
+            x = F.conv_transpose2d(x, weight, stride=self.up, padding=self.tpad)
+            x = _fir(x, self.upfir, self.fpad)
         else:
-            x = F.conv2d(x, m.reshape(n * out_ch, in_ch, kh, kw), padding=self.pad, groups=n)
-        x = x.reshape(n, -1, *x.shape[2:])
+            x = F.conv2d(x, weight, padding=self.pad)
+        x = x * dcoefs[:, :, None, None]
 
         # The two scalars multiply each other rather than the pattern, so a live gain costs one broadcast
         # and not two.
@@ -256,7 +282,8 @@ class SynthesisLayer(nn.Module):
         x = x.add_(self.noise_const * strength)
         x = F.leaky_relu(x + self.bias.to(x.dtype).reshape(1, -1, 1, 1), LRELU_SLOPE)
         x = x * LRELU_GAIN
-        return x if self.clamp is None else x.clamp(-self.clamp, self.clamp)
+        x = x if self.clamp is None else x.clamp(-self.clamp, self.clamp)
+        return x.to(self.dtype)
 
 
 class ToRGB(nn.Module):
@@ -443,8 +470,8 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
             f"file has and the network does not ({unexpected[:4]}).")
     net = net.to(device)
     for module in net.modules():
-        if isinstance(module, SynthesisLayer):
-            module.freeze_scale()
+        if isinstance(module, (SynthesisLayer, Dense)):
+            module.freeze()
     return net
 
 

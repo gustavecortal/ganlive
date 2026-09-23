@@ -83,7 +83,8 @@ the notes against audio. Nothing else assumes it.
 
 On the reference machine — Intel Arc A770, torch 2.13+xpu — a FastGAN at 3072×2048 shown at
 1620×1080 runs **9.4 ms a frame as played**, window open, strip drawn, sound thread running, and
-flat over a run. FFHQ-1024 StyleGAN2 is 12.25 ms generating.
+flat over a run. FFHQ-1024 StyleGAN2 is 10.1 ms generating, and the same model adopted as an
+ONNX graph 13.9 ms through OpenVINO in half precision.
 
 **Only that machine has been measured.** `ganlive latency` reports yours in a few minutes, and
 prints a drift line beside the median, because a median hides a slope: a graph replay here was

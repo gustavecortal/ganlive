@@ -41,6 +41,13 @@ class Runner:
     #: The precision this graph is actually being run in, resolved from what was measured.
     precision: str
     _run: Callable[..., np.ndarray] = dataclasses.field(repr=False, compare=False)
+    #: Hand the runtime a host array of the first output's shape to write every frame into,
+    #: or `None` where it only returns its own. See `OnnxGenerator`, which lands frames in
+    #: pinned memory so the upload to the card is a DMA and not a staged copy.
+    land: Callable[[np.ndarray], None] | None = dataclasses.field(default=None, repr=False,
+                                                                  compare=False)
+    #: The element type the first output arrives in.
+    dtype: type = np.float32
 
     @property
     def outputs(self) -> int:
@@ -151,12 +158,19 @@ def _openvino(path: Path, device: str, precision: str) -> Runner:
         request.wait()
         return request.get_output_tensor(0).data
 
+    def land(host):
+        import openvino as ov
+
+        request.set_output_tensor(0, ov.Tensor(host, shared_memory=True))
+
     return Runner(backend="openvino", device=f"{device} ({full_name})", asked=device,
                   nz=int(compiled.inputs[0].partial_shape[-1].get_length()),
                   size=(int(height), int(width)), settings=settings,
                   shapes=tuple(tuple(d.get_length() for d in out.partial_shape)
                                for out in compiled.outputs),
-                  precision=precision, _run=run)
+                  precision=precision, _run=run, land=land,
+                  # `compile_ov` declares half-precision outputs for an FP16 graph.
+                  dtype=np.float16 if precision == "FP16" else np.float32)
 
 
 def _ort(path: Path, device: str, precision: str = "") -> Runner:
