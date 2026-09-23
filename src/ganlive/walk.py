@@ -352,18 +352,3 @@ class SlerpWalk:
             self._offset_vec = np.asarray(amounts[:n], dtype=np.float32) @ rows[:n]
             self._offset_key, self._offset_rows = amounts, rows
         return self._offset_vec
-
-    def seconds_per_segment(self, bpm: float) -> float:
-        return self.cfg.beats_per_segment * 60.0 / max(bpm, 1e-6)
-
-
-class BeatDriver:
-    """Adapts the beat-locked walk to the frame-counted seam the recorder already has."""
-
-    def __init__(self, walk: SlerpWalk, clock: MusicalClock, fps: float) -> None:
-        self.walk, self.clock, self.fps = walk, clock, float(fps)
-
-    def next_z(self, _step: int):
-        """`_step` is ignored: this driver's position comes from the clock, not a frame count."""
-        self.clock.advance(1.0 / self.fps)
-        return self.walk.latent(self.clock.beats)

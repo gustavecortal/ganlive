@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 
+from ganlive.control.kit import by_channel
 from ganlive.dials.table import clamp01, direction_index, readout
 from ganlive.presets import AMOUNT_MAX
 from ganlive.walk import position
@@ -302,9 +303,7 @@ class DialPanel:
         self.encoders = encoders
         self._shelf_rows: list[tuple[object, int, int]] = []
         self._shelf_top = 0
-        shared: dict[int, list[str]] = {}
-        for track, channel in runner.channel_of.items():
-            shared.setdefault(channel, []).append(track)
+        shared = by_channel(runner.channel_of)
         self.kit = [(channel, "/".join(names)) for channel, names in sorted(shared.items())]
         self.tracks_on = [names for _channel, names in sorted(shared.items())]
         self.mode = MODE_DIALS
@@ -546,11 +545,10 @@ class DialPanel:
 
         self._draw_lights(ren, x0, y0, since)
 
-    def _follow_the_hand(self, layout=None) -> None:
+    def _follow_the_hand(self, layout) -> None:
         """Describe whatever was just grabbed, whoever grabbed it."""
         held = self.runner.hands
-        names = self.dials if layout is None else layout
-        grabbed = [n for n in names if n in held and n not in self._was_held]
+        grabbed = [n for n in layout if n in held and n not in self._was_held]
         self._was_held = set(held)
         if grabbed:
             self._focus = grabbed[0]

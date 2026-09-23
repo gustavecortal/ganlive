@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import types
 
 import numpy as np
@@ -20,9 +19,12 @@ from ganlive.walk import (
 )
 from tests.support import (
     FIXTURES,
+    OVERBRIDGE,
     FakeKnobs,
     _panel,
+    _runner,
     _StubModel,
+    dummy_display,
 )
 
 #: The most crowded surface here -- this project's own FastGAN -- as the geometry these
@@ -59,7 +61,6 @@ def test_every_dial_gets_a_row_and_no_row_gets_two():
 def test_the_rows_stay_clickable_on_a_short_window_and_stop_sprawling_on_a_tall_one():
     """A row too short to hit is a control that cannot be turned, and one that grows without
     limit is twenty-one sliders spread down a 1440-pixel screen."""
-    pass
     from ganlive.strip import rows as dial_rows
 
     for height in (420, 700, 1080, 2160):
@@ -89,11 +90,9 @@ def test_a_click_lands_on_the_dial_it_looks_like_it_lands_on():
 
 def test_the_panel_publishes_a_new_dict_rather_than_editing_the_loops_one():
     """The seam between the mouse and the render loop, and the reason it needs no lock."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     panel = DialPanel(runner)
     first = runner.hands
     panel.set("noise", 0.4)
@@ -115,10 +114,9 @@ def test_the_panel_reports_only_what_is_off_its_resting_value():
     """`p` prints something to paste into a preset, and a preset that restated all fifteen
     resting values would say nothing about what was actually found."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     panel = DialPanel(runner)
     panel.set("hold", 0.72)
     runner.apply([1e6] * len(INDEX), {}, FakeKnobs())
@@ -132,7 +130,7 @@ def test_a_shared_voice_gets_one_light_and_says_so():
     from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    per_track = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
+    per_track = DialPanel(_runner())
     assert [label for _ch, label in per_track.kit] == list(INDEX)
 
     shared = DialPanel(PresetRunner(FIXTURES["still"], channel_map("voices"), 60.0, layout=fastgan()))
@@ -164,10 +162,9 @@ def test_what_p_prints_is_what_you_set_not_what_the_patch_already_rested_at():
     printed `release`'s own four dials straight back as if they had been found, and sampling
     the live values baked a decaying hit into the number."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0, layout=fastgan())
+    runner = _runner("release")
     panel = DialPanel(runner)
     runner.apply([1e6] * len(INDEX), {"density": 5.0}, FakeKnobs())
     assert panel.settings() == {}, "a preset's own resting values are not discoveries"
@@ -186,11 +183,9 @@ def test_dragging_a_slider_does_not_repaint_the_strip():
     eighteen text runs and re-uploaded 1.79 MB at 60 Hz for the length of every drag -- 1.38 ms
     against 0.14 on the display thread, during the one activity the panel exists for. What a
     drag has to show is the bar and the marker, and both are rectangles drawn every frame."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
+    panel = DialPanel(_runner())
     panel.set("spread", 0.2)                               # a grab: the held text changes
     assert panel._dirty
     panel._dirty = False
@@ -204,14 +199,12 @@ def test_dragging_a_slider_does_not_repaint_the_strip():
 def test_a_dial_the_model_does_not_have_is_drawn_dark_and_cannot_be_grabbed():
     """**The failure this project keeps paying for, in the one place it is still visible.**"""
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
     from ganlive.strip import rows as console_rows
 
     live = frozenset({"reaction", "speed", "spread", "hold", "late", "grid",
                       "dir1", "dir2"})
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
+    panel = DialPanel(_runner(),
                       bank=types.SimpleNamespace(current=_StubModel(dials_live=live),
                                                 models=[1], index=0, name="stub"))
     panel._size = (400, 900)
@@ -258,8 +251,6 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
 
     import pygame
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
     ours = _fastgan.fastgan()
@@ -268,14 +259,12 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
     assert len(ours.knobs) == len(other.knobs), (
         "this test needs two layouts the window cannot tell apart by height")
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     current = _StubModel(layout=ours, dials_live=frozenset(ours))
     holder = types.SimpleNamespace(current=current, models=[1], index=0, name="stub")
     runner.use_model(current)
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
-    try:
+    with dummy_display():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
@@ -299,12 +288,6 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
         frame()                                  # the window's thread, in the gap between them
         runner.use_model(holder.current)
         frame()
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
 
     assert {n for n, _t, _h in panel._rows} == set(other), (
         "the rows must follow the model even when the window has no reason to move")
@@ -318,12 +301,10 @@ def test_a_direction_says_what_it_measured_on_this_model():
     leading direction from a tail one at the controls, so it belongs where the player is
     already looking: the description under the dial they just grabbed."""
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
     dirs = types.SimpleNamespace(levels=(88.0, 41.0))
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
+    panel = DialPanel(_runner(),
                       bank=types.SimpleNamespace(
                           current=_StubModel(dials_live=frozenset(DIALS), directions=dirs),
                           models=[1], index=0, name="stub"))
@@ -337,11 +318,9 @@ def test_a_direction_says_what_it_measured_on_this_model():
 
 def test_with_no_rig_every_dial_is_live():
     """Every offline tool builds a panel without one, and a strip of dark dials would be a"""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
+    panel = DialPanel(_runner())
     assert panel.live_dials() is None, "nothing has said, so nothing is dark"
 
 
@@ -417,19 +396,19 @@ def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
     def wires(entry):
         return [(imp.track, ch, imp.amount) for imp, ch in entry[0]]
 
-    got = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0, layout=fastgan()))
+    got = driven_by(_runner("voices"))
     assert wires(got["se_128"]) == [("BD", INDEX["BD"], 0.34)]
     assert wires(got["se_512"]) == [("CP", INDEX["CP"], 0.32), ("SD", INDEX["SD"], 0.24)]
     assert "reaction" not in got, "nothing drives the master in this preset"
 
-    slow = driven_by(PresetRunner(FIXTURES["breathe"], INDEX, 60.0, layout=fastgan()))
+    slow = driven_by(_runner("breathe"))
     assert slow["spread"] == ([], ["density"]), "a slow rule is not a hit"
 
-    both = driven_by(PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan()))
+    both = driven_by(_runner("full"))
     assert wires(both["hold"]) == [("BD", INDEX["BD"], -0.34)], "a pull keeps its sign"
     assert both["hold"][1] == ["density"]
 
-    kit = driven_by(PresetRunner(FIXTURES["pulse"], INDEX, 60.0, layout=fastgan()))
+    kit = driven_by(_runner("pulse"))
     assert wires(kit["dir1"]) == [("*", -1, 0.22)], kit
 
     narrow = driven_by(PresetRunner(FIXTURES["voices"], INDEX, 60.0, channels=8, layout=fastgan()))
@@ -442,12 +421,9 @@ def test_the_window_actually_opens_with_the_strip_beside_it():
     """**Nothing opened a real window, and a one-line change to how one opens shipped.**"""
     import threading
 
-    import pygame
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
     threads = threading.active_count()
-    try:
+    with dummy_display():
         from ganlive import window
 
         panel = _panel(DIALS, levels=(100.0, 50.0))
@@ -455,12 +431,6 @@ def test_the_window_actually_opens_with_the_strip_beside_it():
                                          fullscreen=False)
         display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
         display.close()
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
     assert threading.active_count() <= threads + 1, "the window thread outlived the window"
 
 
@@ -475,9 +445,7 @@ def test_every_routing_column_label_fits_the_column_it_names():
     from ganlive.presets import DEFAULT, PresetRunner
     from ganlive.strip import WIDTH, DialPanel, grid_columns
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
-    try:
+    with dummy_display():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
@@ -487,12 +455,6 @@ def test_every_routing_column_label_fits_the_column_it_names():
         too_wide = [(label, panel._micro.size(label)[0], cw)
                     for (_channel, label), (_cx, cw) in zip(panel.kit, columns, strict=True)
                     if panel._micro.size(label)[0] > cw]
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
 
     assert not too_wide, f"label, width, column: {too_wide}"
 
@@ -514,9 +476,7 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
 
     import pygame
 
-    from ganlive.control.kit import INDEX
     from ganlive.dials import table as S
-    from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
     # A rig holding a StyleGAN2's dials behind a runner still holding the FastGAN's -- exactly
@@ -524,13 +484,11 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
     names = ("w_coarse", "w_mid", "w_fine")
     stub = _StubModel(layout=S.stylegan2(names, (0.5,) * 3, ((),) * 3, (25.0,) * 3),
                       dials_live=frozenset({"w_coarse"}))
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     foreign = set(stub.layout.rests) - set(runner.surface.values)
     assert foreign, "this test needs the two layouts to actually disagree"
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
-    try:
+    with dummy_display():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
@@ -539,12 +497,6 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
         panel.attach(Renderer(Window("dark", size=(WIDTH, 900)), vsync=False))
         panel._resize(WIDTH, 900)
         panel._paint(panel.live())                  # used to raise KeyError here
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
 
     from ganlive import window
 
@@ -565,21 +517,14 @@ def test_a_thousand_gestures_across_model_switches_break_nothing():
 
     import pygame
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
-    try:
-        import test_fuzz_surface
+    with dummy_display():
         from pygame._sdl2.video import Renderer, Window
+
+        from tests import test_fuzz_surface
 
         pygame.init()
         window = Window("fuzz", size=(test_fuzz_surface.WIDTH + 200, max(test_fuzz_surface.HEIGHTS)))
         faults, reached = test_fuzz_surface.run(Renderer(window, vsync=False), 500, seed=0)
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
 
     assert not faults, test_fuzz_surface.report(faults) or [f[5] for f in faults]
     # A fuzzer that never reaches the state is a fuzzer that proves nothing, and this is the
@@ -629,17 +574,13 @@ def test_the_help_line_only_names_keys_the_strip_itself_handles():
     import pygame
 
     from ganlive import strip as console
-    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()),
+    panel = DialPanel(_runner(),
                       actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object(), encoders=EncoderMap({}))
-    panel._pg = pygame
-    pygame.font.init()
-    panel._small = pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13)
+    panel.attach(None)
     panel._size = (400, 900)
     offered = " ".join(panel._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -663,14 +604,10 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     import pygame
 
     from ganlive import strip as console
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import DialPanel
 
-    bare = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
-    bare._pg = pygame
-    pygame.font.init()
-    bare._small = pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13)
+    bare = DialPanel(_runner())
+    bare.attach(None)
     bare._size = (400, 900)
     offered = " ".join(bare._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -686,7 +623,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     import pytest
 
     with pytest.raises(KeyError, match="recrd"):
-        DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()), actions={"recrd": lambda: None})
+        DialPanel(_runner(), actions={"recrd": lambda: None})
 
 
 def test_the_window_conversion_is_the_same_picture_in_the_texture_s_own_order():
@@ -761,17 +698,13 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
 
     import pygame
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import TEXT_CACHE, WIDTH, DialPanel, wrap
 
-    before = os.environ.get("SDL_VIDEODRIVER")
-    os.environ["SDL_VIDEODRIVER"] = "dummy"
-    try:
+    with dummy_display():
         from pygame._sdl2.video import Renderer, Window
 
         pygame.init()
-        panel = DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()))
+        panel = DialPanel(_runner())
         panel.attach(Renderer(Window("text", size=(WIDTH, 400)), vsync=False))
 
         once = panel._say(panel._small, "se_256", (1, 2, 3))
@@ -787,22 +720,14 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
         panel._said = dict.fromkeys(range(TEXT_CACHE), None)
         panel._say(panel._small, "after the bound", (1, 2, 3))
         assert len(panel._said) == 1, "bounded by starting again, which costs one repaint"
-    finally:
-        pygame.display.quit()
-        if before is None:
-            os.environ.pop("SDL_VIDEODRIVER", None)
-        else:
-            os.environ["SDL_VIDEODRIVER"] = before
 
 
 def test_a_hand_on_the_strip_outranks_an_encoder_parked_on_the_same_dial():
     """Which writer wins used to be dict insertion order -- whoever touched any dial first this
     session, an arbitrary fact about the past rather than a decision."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold("encoder", {"noise": 0.2})
     runner.hold(SOURCE, {"noise": 0.8}, PRIORITY)
     assert runner.hands["noise"] == pytest.approx(0.8), runner.hands
@@ -814,12 +739,10 @@ def test_a_hand_on_the_strip_outranks_an_encoder_parked_on_the_same_dial():
 def test_a_hand_on_the_strip_beats_a_knob_parked_on_the_same_dial():
     """Reaching for a control on screen means to override whatever the hardware is parked on,
     and that is a decision rather than a consequence of who moved first."""
-    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.presets import PresetRunner
     from ganlive.strip import PRIORITY, SOURCE
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     knobs = EncoderMap(parse_controls("16=noise"))
     knobs.apply(runner, 0, 16, 127)
     runner.hold(SOURCE, {"noise": 0.25}, PRIORITY)
@@ -839,15 +762,14 @@ def test_the_channel_map_is_remembered_so_it_stops_living_in_a_document(tmp_path
 
     monkeypatch.setattr(live, "CHANNELS", tmp_path / "channels.txt")
 
-    overbridge = "BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9"
 
     guessed, note = live.resolve_map("", "tracks")
     assert guessed["BD"] == 0, "the default layout starts the kit at 0"
     assert "GUESS" in note, note
 
-    given, note = live.resolve_map(overbridge, "tracks")
+    given, note = live.resolve_map(OVERBRIDGE, "tracks")
     assert given["BD"] == 2 and given["CH"] == given["OH"] == 8
-    assert live.CHANNELS.read_text(encoding="utf-8").strip() == overbridge
+    assert live.CHANNELS.read_text(encoding="utf-8").strip() == OVERBRIDGE
 
     recalled, note = live.resolve_map("", "tracks")
     assert recalled == given, "the remembered map did not come back the same"
@@ -863,15 +785,13 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
     and the key list was the only part measured. The preset line beside it was short enough to get away with
     until it started naming which hands are holding a dial, at which point `drag to set` ran off the right-
     hand edge and nothing said so."""
-    import pygame
 
     from ganlive import strip as console
     from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
-    from ganlive.presets import PresetRunner
     from ganlive.strip import WIDTH, DialPanel
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold(console.SOURCE, {"dir1": 0.5}, console.PRIORITY)
     EncoderMap({(-1, 35): "noise"}).apply(runner, 13, 35, 90)
     PressureMap(parse_pressure("BD=se_256")).apply(runner, 13, INDEX["BD"], 110)
@@ -879,9 +799,7 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
 
     panel = DialPanel(runner, actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object())
-    panel._pg = pygame
-    pygame.font.init()
-    panel._small = pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13)
+    panel.attach(None)
     panel._size = (WIDTH, 900)
     room = WIDTH - 2 * console.PAD
 
@@ -937,17 +855,16 @@ def test_the_strip_offers_l_only_when_there_are_knobs_to_learn():
 def test_a_model_s_own_dials_come_back_where_the_hand_left_them(tmp_path):
     """The spine is shared and stays under the hand; the MODEL block and the directions mean
     something different on every model, so they go with it and come back with it."""
-    from ganlive.control.kit import INDEX
     from ganlive.dials.fastgan_dials import fastgan
     from ganlive.dials.table import per_model
-    from ganlive.presets import Positions, PresetRunner
+    from ganlive.presets import Positions
     from ganlive.strip import PRIORITY, SOURCE
 
     names = per_model(fastgan())
     assert {"se_256", "noise", "dir1", "dir8"} <= set(names)
     assert {"speed", "grid", "reaction"}.isdisjoint(names)
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold(SOURCE, {"se_256": 0.9, "dir1": 0.1, "speed": 0.7}, PRIORITY)
     store = Positions(tmp_path / "positions.json")
     assert store.stash("a-1", runner, SOURCE, names) == {"se_256": 0.9, "dir1": 0.1}

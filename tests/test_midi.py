@@ -12,7 +12,7 @@ from ganlive.presets import Preset
 from ganlive.walk import (
     MusicalClock,
 )
-from tests.support import FIXTURES
+from tests.support import _runner
 
 
 def test_midi_pulses_take_over_from_the_internal_clock():
@@ -199,11 +199,9 @@ def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
     """The last piece of "the Rytm controls the knobs": no hole is cut in the frame loop for
     the hardware, and everything the strip already shows about a held dial shows an encoder's
     holds for free."""
-    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     knobs = EncoderMap(parse_controls("16=noise, 2:17=se_256"))
 
     assert knobs.apply(runner, 5, 16, 0) == "noise"
@@ -234,9 +232,7 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     one. `l` on `w_fine` binds and `flush` writes `1:16=w_fine` in the flag's own words; the
     next launch read it back, raised here, and `play.remembered` swallowed it. The learn
     was undone and the only trace was one line about a file that "does not parse"."""
-    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, format_controls, parse_controls
-    from ganlive.presets import PresetRunner
 
     assert parse_controls("") == {}
     assert parse_controls("16=noise") == {(-1, 16): "noise"}
@@ -249,7 +245,7 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     # The whole round trip a learn takes: bound on the strip, written down, read back.
     knobs = EncoderMap({})
     knobs.learning = "w_fine"
-    knobs.apply(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan()), 0, 16, 64)
+    knobs.apply(_runner(), 0, 16, 64)
     assert parse_controls(format_controls(knobs.controls)) == knobs.controls
 
     # And the check that used to live here, moved to where the model is known.
@@ -406,11 +402,9 @@ def test_the_knob_map_reads_nrpns_and_writes_itself_back_in_the_same_words():
 
 def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp_path):
     """Click a dial, turn a knob: the pair is the map now, on disk, in `--cc`'s own words."""
-    from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, parse_controls
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     saved = tmp_path / "cc.txt"
     knobs = EncoderMap({(-1, 16): "noise"}, remember=saved)
 

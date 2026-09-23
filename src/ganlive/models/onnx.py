@@ -152,27 +152,25 @@ class OnnxGenerator:
         # above here learns there are two backends. On the host in f32, because that is what
         # the graph takes and where the values already live.
         self.knobs = Knobs(self.settings if self.steerable else [], "cpu", torch.float32)
+        # The graph is handed `committed()`, never `vec`, so a commit that also copied into
+        # `vec` was paying `copy_`'s GIL release for a tensor nothing reads. Fed from itself,
+        # a commit is the host write alone.
+        self.knobs.feed_from(self.knobs.vec)
 
     def __call__(self, z) -> list[torch.Tensor]:
         """One frame, on `device`, as a torch generator would return it."""
         return [torch.from_numpy(self.infer(z)).to(self.device)]
 
-    def infer(self, z, k=None) -> np.ndarray:
+    def infer(self, z) -> np.ndarray:
         """One frame as OpenVINO left it: a view into host-visible memory."""
-        if z is None:
-            self._z[:] = 0.0
-        elif isinstance(z, np.ndarray):
+        if isinstance(z, np.ndarray):
             self._z[:] = z.reshape(1, self.nz)
         else:
             # The graph takes f32 whatever it computes in, and the walk hands over f16 on the
             # card. One 1 KB download, against 37 MB coming the other way.
             self._z[:] = z.detach().to("cpu", torch.float32).reshape(1, self.nz).numpy()
 
-        # `k` for a caller that owns its own settings -- the calibration probe drives one slot at a time and
-        # has no `Knobs` behind it. Otherwise the generator's own.
-        return self.runner.infer(self._z,
-                                 (self.knobs.committed() if k is None else k)
-                                 if self.steerable else None)
+        return self.runner.infer(self._z, self.knobs.committed() if self.steerable else None)
 
     def eval(self):
         return self

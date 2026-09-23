@@ -28,6 +28,7 @@ from ganlive.models.onnx_rewrite import (
     equivalent,
     split_gated_convs,
 )
+from ganlive.timing import write_metrics
 
 
 def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
@@ -36,8 +37,7 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
 
     net, cfg = load(checkpoint, "cpu")
     freeze_noise(net, seed=noise_seed)
-    report = prepare_for_inference(net, cfg.nz, "cpu", half=False, fold=True,
-                                   compile_yuv=False)
+    report = prepare_for_inference(net, cfg.nz, "cpu", half=False, fold=True)
     net = report["net"].eval()
 
     # **The settings, as a second graph input.** `steer.install` hands each steerable module a view into one
@@ -168,6 +168,6 @@ def main(argv=None) -> int:
                     split_glu=not args.no_split_glu,
                     steerable=not args.frozen_settings)
     print(json.dumps(report, indent=2))
-    (out.with_suffix(".json")).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_metrics(out.with_suffix(".json"), report)
     return 0
 

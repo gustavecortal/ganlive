@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from ganlive.timing import stat_ms
-from tests.support import _drained
+from tests.support import OVERBRIDGE, _drained
 
 
 def test_hit_detection_is_scored_against_the_simulator_rather_than_asserted():
@@ -364,7 +364,7 @@ def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
     from ganlive.control.features import BothFeatures, FeatureExtractor
     from ganlive.control.kit import INDEX, parse_channel_map
 
-    tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
+    tracks = parse_channel_map(OVERBRIDGE)
     both = BothFeatures(FeatureExtractor(10, 48000), tracks)
     assert both.n == 12, "the space is the channel map's ten, not the twelve tracks"
     assert both.channel_of() == dict(INDEX)
@@ -390,7 +390,7 @@ def test_every_source_answers_everything_the_end_of_run_report_asks_it():
     from ganlive.control.features import BothFeatures, FeatureExtractor, NoteFeatures
     from ganlive.control.kit import parse_channel_map
 
-    tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
+    tracks = parse_channel_map(OVERBRIDGE)
     sources = {
         "audio": FeatureExtractor(10, 48000),
         "midi": NoteFeatures(12),
@@ -414,7 +414,7 @@ def test_a_pad_that_is_heard_as_well_as_read_counts_once():
     from ganlive.control.features import PAIRED_S, BothFeatures, FeatureExtractor
     from ganlive.control.kit import INDEX, parse_channel_map
 
-    tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
+    tracks = parse_channel_map(OVERBRIDGE)
     both = BothFeatures(FeatureExtractor(10, 48000), tracks)
 
     both.on_note(13, INDEX["CH"], 100, when=5.0)          # the note, first
@@ -435,7 +435,7 @@ def test_the_combined_source_answers_everything_a_source_is_asked():
     from ganlive.control.features import BothFeatures, FeatureExtractor
     from ganlive.control.kit import parse_channel_map
 
-    tracks = parse_channel_map("BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9")
+    tracks = parse_channel_map(OVERBRIDGE)
     audio = FeatureExtractor(10, 48000)
     both = BothFeatures(audio, tracks)
 

@@ -10,7 +10,7 @@ import numpy as np
 
 from ganlive.control.audio import NoAudioDevice, pick_input
 from ganlive.control.features import FeatureExtractor
-from ganlive.control.kit import TRACKS
+from ganlive.control.kit import TRACKS, by_channel
 from ganlive.control.machine import profile
 from ganlive.control.midi import dispatch, open_inputs
 from ganlive.walk import MusicalClock
@@ -87,10 +87,7 @@ def report(seen, votes, levels, struck, silent, order):
     if buses:
         print(f"mix bus (answers {BUS:.0%}+ of all drums, set aside): "
               + ", ".join(f"ch {c}" for c in buses))
-    shared: dict[int, list[str]] = defaultdict(list)
-    for name, ch in mapping.items():
-        shared[ch].append(name)
-    pairs = {ch: names for ch, names in shared.items() if len(names) > 1}
+    pairs = {ch: names for ch, names in by_channel(mapping).items() if len(names) > 1}
     print(f"{len(set(mapping.values()))} separate channels for {len(mapping)} of "
           f"{len(by_note)} tracks")
     if pairs:

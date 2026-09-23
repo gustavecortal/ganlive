@@ -18,14 +18,12 @@ def window_size(w: int, h: int, screen_w: int, screen_h: int, overlay=None) -> t
 
 
 class Display:
-    """Native-window presentation: the frame goes to a streaming texture, never to JPEG."""
-
-    PIXELS = "bgra"
+    """Native-window presentation: the frame goes to a streaming texture, never to JPEG. Fed
+    `FrameStage.bgra_bytes`, which is what an SDL texture already is."""
 
     def __init__(self, size, title: str = "ganlive", overlay=None, fullscreen: bool = True):
         self.size = size                      # (h, w) of the frames it will be given
         self.stopped = False
-        self.viewers = 1                      # a window is its own viewer
         self.overlay = overlay
         self.fullscreen = fullscreen
         self._frame = None
@@ -103,7 +101,7 @@ class Display:
                     w, h = fw, fh
                     tex = Texture(ren, (w, h), depth=32, streaming=True)
                 surf = pygame.image.frombuffer(memoryview(frame).cast("B"), (w, h),
-                                               self.PIXELS.upper())
+                                               "BGRA")
                 tex.update(surf)
                 ren.draw_color = (0, 0, 0, 255)
                 ren.clear()

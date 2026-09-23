@@ -221,13 +221,12 @@ class Generator(nn.Module):
         return [torch.tanh(self.to_big(feat)), torch.tanh(self.to_small(f128))]
 
 
-def freeze_noise(net: nn.Module, freeze: bool = True, *,
-                 seed: int | None = None) -> nn.Module:
+def freeze_noise(net: nn.Module, *, seed: int | None = None) -> nn.Module:
     """Pin every `NoiseInjection` layer, so the same `z` gives the same pixels."""
     generator = None if seed is None else torch.Generator(device="cpu").manual_seed(seed)
     for m in net.modules():
         if isinstance(m, NoiseInjection):
-            m.freeze = freeze
+            m.freeze = True
             m.generator = generator
             m.frozen = None
     return net

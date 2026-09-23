@@ -15,17 +15,6 @@ from torch import nn
 from ganlive.pixels import EXACT_LEVELS, FLOOR_LEVELS, levels, pinned
 
 
-def warm(fns, probe: torch.Tensor) -> int:
-    """Compile the conversions now, **on a frame the real shape**, and report the graph count."""
-    from torch._dynamo.utils import counters
-
-    before = counters["frames"]["ok"]
-    with torch.no_grad():
-        for fn in fns:
-            fn(probe)
-    return counters["frames"]["ok"] - before
-
-
 def compile_and_count(net, nz: int, device, dtype=torch.float16,
                       warmup: int = 3) -> tuple[object, int, float]:
     """Compile a generator, warm it up, and report how many graphs came out.

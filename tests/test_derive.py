@@ -103,13 +103,10 @@ def test_the_basis_is_a_property_of_the_weights_and_not_of_a_sample(net):
 
 def _sg2(**over):
     """A StyleGAN2 small enough for a test, with all three style ranges non-empty."""
-    import dataclasses
-
     from ganlive.models import stylegan2 as S2
+    from tests.support import tiny_stylegan2
 
-    cfg = dataclasses.replace(
-        S2.Config(z_dim=16, w_dim=16, img_resolution=64, channel_base=128, channel_max=32,
-                  num_layers=2, num_fp16_res=0), **over)
+    cfg = tiny_stylegan2(**{"img_resolution": 64, **over})
     torch.manual_seed(3)
     return S2.Generator(cfg).eval().requires_grad_(False)
 
@@ -347,8 +344,8 @@ def test_the_seam_is_empty_before_every_reference_image_and_not_just_the_first()
 
     seen = []
     forward = net.mapping.forward
-    net.mapping.forward = lambda z, truncation=1.0: (
-        seen.append(float(net.mapping.push.abs().max())) or forward(z, truncation))
+    net.mapping.forward = lambda z: (
+        seen.append(float(net.mapping.push.abs().max())) or forward(z))
     try:
         verify(net, d, "cpu", dtype=torch.float32, amount=2.0, seeds=4,
                into=net.mapping.push)

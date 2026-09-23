@@ -26,10 +26,6 @@ from pathlib import Path
 
 from ganlive.models import stylegan2 as S2
 
-#: A `half_from` above any resolution, so every block runs fp32. The comparison against the
-#: original is the one thing here that must not have a rounding argument available to it.
-FULL_PRECISION = 1 << 30
-
 
 def open_pickle(pkl: Path, repo: Path):
     """Their loader, with the one thing this card cannot survive taken out of the result."""
@@ -66,7 +62,7 @@ def check(G, cfg: S2.Config, state: dict, seed: int) -> tuple[float, float]:
                          .standard_normal((1, cfg.z_dim)).astype(np.float32))
     # `half_from` and not `num_fp16_res=0`: one spelling of "run this in full precision",
     # and it is the one both configs share.
-    ours = S2.load(dataclasses.replace(cfg, half_from=FULL_PRECISION), state)
+    ours = S2.load(dataclasses.replace(cfg, half_from=S2.SINGLE_EVERYWHERE), state)
     with torch.no_grad():
         gap = (ours(z) - G(z, None, noise_mode="const", force_fp32=True)).abs() * 127.5
     return float(gap.mean()), float(gap.max())

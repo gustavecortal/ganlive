@@ -5,6 +5,7 @@ import threading
 import time
 from typing import NamedTuple
 
+from ganlive.control.kit import pairs
 from ganlive.dials.table import clamp01
 from ganlive.files import remember
 from ganlive.walk import MusicalClock
@@ -143,11 +144,7 @@ def parse_number(text: str) -> int:
 def parse_controls(text: str) -> dict[tuple[int, int], str]:
     """`"16=noise,2:17=se_256,n1.3=dir1"` to `{(channel, number): dial}`. `-1` is any channel."""
     out: dict[tuple[int, int], str] = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        where, _, dial = part.partition("=")
+    for where, dial in pairs(text):
         channel, _, number = where.strip().rpartition(":")
         out[(int(channel) - 1 if channel else -1, parse_number(number))] = _dial_or_raise(dial)
     return out
@@ -320,11 +317,7 @@ def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple
 
     note_of = {} if notes is None else {track: note for note, track in notes.items()}
     out: dict[tuple[int, int], str] = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        name, _, dial = part.partition("=")
+    for name, dial in pairs(text):
         track = track_index(name)
         out[(-1, note_of.get(track, track))] = _dial_or_raise(dial)
     return out

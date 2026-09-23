@@ -12,6 +12,17 @@ from ganlive.pixels import to_nv12
 from ganlive.pixels import to_rgb as _eager_rgb
 
 
+def warm(fns, probe: torch.Tensor) -> int:
+    """Compile the conversions now, **on a frame the real shape**, and report the graph count."""
+    from torch._dynamo.utils import counters
+
+    before = counters["frames"]["ok"]
+    with torch.no_grad():
+        for fn in fns:
+            fn(probe)
+    return counters["frames"]["ok"] - before
+
+
 class _Deferred:
     """The window inside which a stage's downloads do not each wait for the card."""
 
@@ -75,8 +86,6 @@ class FrameStage:
         Never fatal, on the same rule as `capture.compile_and_count`: the conversions are the
         one compile that would otherwise fail at the first *frame*, with the window open, so a
         machine Inductor cannot build them on gets them in eager and a line saying so."""
-        from ganlive.models.capture import warm
-
         try:
             return warm([self.to_yuv, self.to_rgb, self.to_bgra], staged)
         except Exception as exc:  # noqa: BLE001 -- see `compile_and_count`

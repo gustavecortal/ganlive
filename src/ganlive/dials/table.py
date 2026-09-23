@@ -235,8 +235,8 @@ class Surface:
             for write in knob.writes:
                 knobs.set(write.setting, at(write.points, v[knob.name]))
 
-        walk_cfg.amounts = [at(DIRECTION_POINTS, v[name]) if name in v else 0.0
-                            for name in DIRECTION_DIALS]
+        walk_cfg.amounts = tuple(at(DIRECTION_POINTS, v[name]) if name in v else 0.0
+                                 for name in DIRECTION_DIALS)
 
 
 

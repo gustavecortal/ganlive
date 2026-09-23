@@ -23,7 +23,25 @@ class FeatureConfig:
     energy_window: float = 1.85
 
 
-class FeatureExtractor:
+class _Source:
+    """What both per-track sources answer the same way, from `since`, `pending` and the three
+    whole-kit measurements each keeps up to date."""
+
+    def played(self) -> int:
+        """How many tracks have fired at all: whether the drums are reaching the instrument."""
+        return int((self.since < NEVER * 0.1).sum())
+
+    def features(self) -> dict[str, float]:
+        """The whole-kit measurements a slow rule can be driven from."""
+        return {"density": self.density, "energy": self.energy, "active": self.active}
+
+    def drain(self) -> list[tuple[int, float, float]]:
+        """Take every onset since the last call. Draining, not sampling: see the module note."""
+        out, self.pending = self.pending, []
+        return out
+
+
+class FeatureExtractor(_Source):
     """Per-channel envelope, latched onsets, and a slow global energy."""
 
     def __init__(self, channels: int, samplerate: int,
@@ -102,10 +120,6 @@ class FeatureExtractor:
             self.hops += 1
         self.env, self.since = env, since
 
-    def played(self) -> int:
-        """How many tracks have fired at all: whether the drums are reaching the instrument."""
-        return int((self.since < NEVER * 0.1).sum())
-
     @property
     def floor(self) -> float:
         """The absolute level a hit must clear. Read beside `loudest`; see there."""
@@ -122,15 +136,6 @@ class FeatureExtractor:
     def channel_of(self) -> dict[str, int] | None:
         """`track -> index into `since``, or None to mean "the caller's map is right"."""
         return None
-
-    def features(self) -> dict[str, float]:
-        """The whole-kit measurements a slow rule can be driven from."""
-        return {"density": self.density, "energy": self.energy, "active": self.active}
-
-    def drain(self) -> list[tuple[int, float, float]]:
-        """Take every onset since the last call. Draining, not sampling: see the module note."""
-        out, self.pending = self.pending, []
-        return out
 
 
 def offline(audio: np.ndarray, samplerate: int, fps: float,
@@ -189,7 +194,7 @@ def score_onsets(detected: list[list[tuple[int, float, float]]], fps: float,
     }
 
 
-class NoteFeatures:
+class NoteFeatures(_Source):
     """The same per-track features, from MIDI note-ons instead of from audio."""
 
     def __init__(self, tracks: int = 12, base_note: int = 0,
@@ -260,10 +265,6 @@ class NoteFeatures:
                        if self._recent else 0.0)
         self.active = float((self.since <= window).sum()) / max(1, self.n)
 
-    def played(self) -> int:
-        """How many tracks have fired at all. Same meaning as the audio source's."""
-        return int((self.since < NEVER * 0.1).sum())
-
     def channel_of(self) -> dict[str, int]:
         """`track -> index into `since``, for the tracks this kit can actually reach.
 
@@ -277,15 +278,6 @@ class NoteFeatures:
         if self.channels is not None:
             reached |= set(self.channels.values())
         return {TRACKS[i]: i for i in sorted(reached) if i < len(TRACKS)}
-
-    def features(self) -> dict[str, float]:
-        """The whole-kit measurements a slow rule can be driven from."""
-        return {"density": self.density, "energy": self.energy, "active": self.active}
-
-    def drain(self) -> list[tuple[int, float, float]]:
-        """Take every hit since the last call. Draining, not sampling."""
-        out, self.pending = self.pending, []
-        return out
 
 
 PAIRED_S = 0.075

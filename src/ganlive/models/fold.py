@@ -12,7 +12,6 @@ from torch import nn
 
 from ganlive.models.fastgan import NoiseInjection
 from ganlive.models.surgery import rewrite_sequential
-from ganlive.pixels import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb, to_bgra, to_nv12, to_rgb
 
 
 def remove_spectral_norm(net: nn.Module) -> int:
@@ -95,8 +94,8 @@ def fold_free_noise(net: nn.Module) -> int:
 # ORDER MATTERS BOTH WAYS. The fold must come AFTER a forward pass -- it reads running statistics, so
 # folding a cold net silently folds nothing in the blocks that matter most -- and BEFORE compile.
 def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
-                          fold: bool = True, compile_yuv: bool = True) -> dict:
-    """Fold, cast, and hand back the colour conversion to use. Reports what was applied.
+                          fold: bool = True) -> dict:
+    """Fold and cast. Reports what was applied, and the net under `"net"`.
 
     **It does not compile.** It took a `compile_net` flag that every caller passed `False` --
     the bank compiles through `bank._compiled`, which is the one place that knows what this
@@ -118,11 +117,4 @@ def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
     if half:
         net = net.to(torch.float16).to(memory_format=torch.channels_last)
     report["net"] = net
-    report["yuv"] = to_nv12
-    report["rgb"] = to_rgb
-    report["bgra"] = to_bgra
-    if compile_yuv:
-        report["yuv"] = compiled_to_nv12()
-        report["rgb"] = compiled_to_rgb()
-        report["bgra"] = compiled_to_bgra()
     return report

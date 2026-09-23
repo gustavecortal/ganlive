@@ -9,7 +9,7 @@ import pytest
 
 from ganlive.dials.fastgan_dials import DIALS, fastgan
 from ganlive.presets import Impulse, Macro, Preset
-from tests.support import FIXTURES, FakeKnobs
+from tests.support import FIXTURES, FakeKnobs, _runner
 
 
 def test_a_hit_cannot_push_a_dial_off_its_scale():
@@ -207,9 +207,8 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
     holds `walk_cfg`, so rebuilding either would leave something driving an object nothing
     reads -- silently, which is the failure this project keeps paying for."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     cfg = runner.walk_cfg
     runner.hold("test", {"noise": 0.5})
     runner.load(FIXTURES["release"])
@@ -245,10 +244,8 @@ def test_two_sources_can_hold_different_dials_without_dropping_each_other():
     would need the merge moved inside. Two writers already existed: the console read-merged-wrote
     at the call site and the sweep renderer replaced the whole dict, which would have dropped
     every console-held dial the moment they met."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold("console", {"noise": 0.6})
     runner.hold("encoder", {"se_256": 0.2})
     assert runner.hands == {"noise": 0.6, "se_256": 0.2}
@@ -265,10 +262,8 @@ def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
     """The render loop iterates `hands` while the window thread writes it. Inserting into a
     dict that is being iterated is a `RuntimeError` that could only ever fire mid-performance,
     so every writer has to rebind -- one level up as well, or the merge itself is the race."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold("a", {"noise": 0.5})
     before = runner.hands
     runner.hold("b", {"se_256": 0.5})
@@ -297,9 +292,8 @@ def test_a_drum_can_be_wired_to_a_dial_while_it_runs():
     """The thing this whole layer was heading toward: which drum drives which dial was data on
     the preset already, and what was missing was a way to change it without editing a file."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     assert runner.routing() == {}
 
     assert runner.route("BD", "noise") is True
@@ -318,10 +312,10 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     rule already and only the interface could not reach it -- so the failure this guards is a
     grid that can only wire at one fixed strength."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import AMOUNT_MAX, PresetRunner
+    from ganlive.presets import AMOUNT_MAX
 
     bd = INDEX["BD"]
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     assert runner.amount_on("noise", bd) is None, "nothing is wired yet"
     assert runner.set_amount_on("noise", bd, 0.5) is None, "an unwired cell is not created"
 
@@ -332,7 +326,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     assert [(i.track, i.amount) for i, _ch in runner.routing()["noise"]] == [("BD", 0.08)]
 
     def push(dial, amount):
-        r = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+        r = _runner()
         r.route("BD", dial)
         r.set_amount_on(dial, INDEX["BD"], amount)
         since = np.full(len(INDEX), 1e6, dtype=np.float32)
@@ -403,9 +397,8 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
     every slow rule's glide -- a move nobody asked for, from the event thread, while the render
     thread was inside `apply`."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
+    runner = _runner("full")
     since = np.full(len(INDEX), 1e6, dtype=np.float32)
     runner.apply(since, {"density": 0.8, "energy": 0.5, "active": 0.4},
                  FakeKnobs())
@@ -427,9 +420,9 @@ def test_a_strength_set_by_hand_survives_being_saved_and_read_back():
     """A setting is saved as JSON and picked up next time. A strength that did not round-trip
     would silently revert to the default push, which looks like the interface forgetting."""
     from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner, from_dict, to_dict
+    from ganlive.presets import from_dict, to_dict
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.route("BD", "noise")
     runner.set_amount_on("noise", INDEX["BD"], -0.11)
 
@@ -442,11 +435,9 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
     """A `Preset` outlives the runner holding it -- the library keeps every one it loaded.
     Editing it in place would mean tabbing away and back did not undo a hand-made rule, with
     nothing to say why."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
     before = list(FIXTURES["voices"].impulses)
-    runner = PresetRunner(FIXTURES["voices"], INDEX, 60.0, layout=fastgan())
+    runner = _runner("voices")
     runner.route("BD", "se_64")
     assert FIXTURES["voices"].impulses == before, "the loaded setting must be untouched"
     assert runner.preset.impulses != before
@@ -458,10 +449,8 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
 def test_the_default_push_points_away_from_where_the_dial_is_parked():
     """A dial parked near the top of its travel has nowhere to go upward, so a rule that pushes
     it up does nothing visible from where it already is."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["release"], INDEX, 60.0, layout=fastgan())
+    runner = _runner("release")
     assert runner._base["hold"] > 0.6, "the fixture needs a dial parked high"
     runner.route("CP", "hold")
     pushed = [i for i in runner.preset.impulses if i.track == "CP" and i.dial == "hold"]
@@ -479,10 +468,8 @@ def test_writes_from_two_threads_do_not_lose_a_source():
     the mouse moves, so a dropped dial would have been dropped for good."""
     import threading
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     done = threading.Barrier(3)
 
     def writer(source, dial):
@@ -512,10 +499,9 @@ def test_every_shipped_setting_survives_being_written_down_and_read_back():
 def test_a_saved_setting_is_in_the_rotation_the_next_time_it_starts(tmp_path):
     from dataclasses import replace
 
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import Library, PresetRunner
+    from ganlive.presets import Library
 
-    runner = PresetRunner(FIXTURES["full"], INDEX, 60.0, layout=fastgan())
+    runner = _runner("full")
     runner.hold("console", {"noise": 0.62, "hold": 0.81})
     runner.route("BD", "se_256")
 
@@ -570,10 +556,9 @@ def test_the_hand_positions_are_not_read_as_a_setting(tmp_path):
     """`Positions` writes into the folder `Library` scans by extension, so every launch
     reported the hand positions as a setting that would not load -- one line of known noise
     in the one place a genuinely broken setting announces itself."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
+    from ganlive.presets import POSITIONS_NAME, Library, Positions
 
-    runner = PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=fastgan())
+    runner = _runner()
     runner.hold("hand", {"noise": 0.6})
     positions = Positions(tmp_path / POSITIONS_NAME)
     positions.stash("gv-2048-ft-72000", runner, "hand", ["noise"])

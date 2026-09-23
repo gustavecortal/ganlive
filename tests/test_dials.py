@@ -172,7 +172,7 @@ def test_every_dial_is_accounted_for_on_a_fully_featured_model():
     from ganlive.settings import Knobs
 
     full = Knobs(sorted(SETTINGS_WRITTEN), "cpu", torch.float32)
-    live = live_dials(full, directions=range(DIRECTIONS))    # `len()` is all it asks of them
+    live = live_dials(full, range(DIRECTIONS), fastgan())    # `len()` is all it asks of them
     missing = set(DIALS) - live
     assert not missing, (
         f"{sorted(missing)} can be turned on the strip and reach nothing on any model; "
@@ -222,7 +222,7 @@ def test_an_onnx_model_offers_no_settings_it_cannot_write(tmp_path):
     from ganlive.settings import Knobs
 
     knobs = Knobs([], "cpu", torch.float32)
-    live = live_dials(knobs, directions=None)
+    live = live_dials(knobs, None, fastgan())
 
     assert not (set(MODEL) & live), "an ONNX model has none of these"
     assert set(MOTION) <= live, "and all of these, on every model"

@@ -57,13 +57,13 @@ class Runner:
 
 
 def open_graph(path, backend: str = "auto", device: str = "",
-               precision: str = "", options=None) -> Runner:
+               precision: str = "") -> Runner:
     """The best runtime on this machine that will actually run this graph."""
     path = Path(path)
     said = None if precision else _said(path)
     if backend != "auto":
         return _open(path, backend, device,
-                     precision or precision_for(said, backend, device), options)
+                     precision or precision_for(said, backend, device))
 
     tried = []
     for name, want in ORDER:
@@ -102,12 +102,11 @@ def precision_for(said, backend: str, device: str, default: str = "FP16") -> str
     return "FP32" if any(v == "FP32" for v in said.values()) else default
 
 
-def _open(path: Path, backend: str, device: str, precision: str,
-          options=None) -> Runner:
+def _open(path: Path, backend: str, device: str, precision: str) -> Runner:
     if backend == "openvino":
         return _openvino(path, device or "GPU", precision)
     if backend == "ort":
-        return _ort(path, device or "gpu", precision, options)
+        return _ort(path, device or "gpu", precision)
     raise ValueError(f"{backend!r} is not a backend; have openvino, ort, auto")
 
 
@@ -148,7 +147,7 @@ def _openvino(path: Path, device: str, precision: str) -> Runner:
                   precision=precision, _run=run)
 
 
-def _ort(path: Path, device: str, precision: str = "", options=None) -> Runner:
+def _ort(path: Path, device: str, precision: str = "") -> Runner:
     """ONNX Runtime, which is what reaches everything that is not an Intel GPU."""
     try:
         import onnxruntime as ort
@@ -167,8 +166,7 @@ def _ort(path: Path, device: str, precision: str = "", options=None) -> Runner:
 
     settings_for = ort.SessionOptions()
     settings_for.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session = ort.InferenceSession(str(path), settings_for, providers=[wanted],
-                                   provider_options=[options] if options else None)
+    session = ort.InferenceSession(str(path), settings_for, providers=[wanted])
 
     # **The load-bearing check, and the reason this function exists.** A provider that cannot load, or that
     # refuses the graph, is a warning on stderr -- not an exception -- and the session then runs on the CPU

@@ -16,16 +16,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ganlive.control.kit import INDEX, TRACKS, VOICE_GROUPS
+from ganlive.control.kit import INDEX, TRACKS, VOICE_GROUPS, channel_map
 
 STEPS_PER_BAR = 16
 
 
 LONGEST_VOICE_S = 2.0
-
-
-def _LONGEST_VOICE_SAMPLES(sr: int) -> int:
-    return int(LONGEST_VOICE_S * sr)
 
 
 def _env(n: int, decay: float, sr: int, hold: float = 0.0) -> np.ndarray:
@@ -62,10 +58,6 @@ def _hp(x: np.ndarray, cutoff: float, sr: int) -> np.ndarray:
     return _band(x, cutoff, sr / 2, sr)
 
 
-def _bp(x: np.ndarray, lo: float, hi: float, sr: int) -> np.ndarray:
-    return _band(x, lo, hi, sr)
-
-
 def _swept_sine(n: int, f0: float, f1: float, sweep: float, sr: int) -> np.ndarray:
     """A sine whose pitch falls from `f0` to `f1` with time constant `sweep`."""
     t = np.arange(n) / sr
@@ -73,34 +65,34 @@ def _swept_sine(n: int, f0: float, f1: float, sweep: float, sr: int) -> np.ndarr
     return np.sin(2 * np.pi * np.cumsum(f) / sr).astype(np.float32)
 
 
-def _kick(v, sr, rng):
+def _kick(v, sr, rng, _track):
     n = int(0.45 * sr)
     body = _swept_sine(n, 190.0, 47.0, 0.022, sr) * _env(n, 0.16, sr, hold=0.01)
     click = _hp(_noise(n, rng), 1200, sr) * _env(n, 0.0016, sr) * 0.5
     return (body * 0.95 + click) * v
 
 
-def _snare(v, sr, rng):
+def _snare(v, sr, rng, _track):
     n = int(0.30 * sr)
     tone = (np.sin(2 * np.pi * 186 * np.arange(n) / sr)
             + 0.7 * np.sin(2 * np.pi * 331 * np.arange(n) / sr)).astype(np.float32)
     tone *= _env(n, 0.075, sr)
-    snap = _bp(_noise(n, rng), 900, 9000, sr) * _env(n, 0.085, sr)
+    snap = _band(_noise(n, rng), 900, 9000, sr) * _env(n, 0.085, sr)
     return (0.55 * tone + 0.75 * snap) * v
 
 
-def _rim(v, sr, rng):
+def _rim(v, sr, rng, _track):
     n = int(0.08 * sr)
-    return (_bp(_noise(n, rng), 1400, 3200, sr) * _env(n, 0.012, sr)
+    return (_band(_noise(n, rng), 1400, 3200, sr) * _env(n, 0.012, sr)
             + 0.4 * np.sin(2 * np.pi * 1720 * np.arange(n) / sr).astype(np.float32)
             * _env(n, 0.010, sr)) * v
 
 
-def _clap(v, sr, rng):
+def _clap(v, sr, rng, _track):
     """Three flams into one tail, which is what makes a clap sound like hands."""
     n = int(0.42 * sr)
     out = np.zeros(n, dtype=np.float32)
-    src = _bp(_noise(n, rng), 700, 5200, sr)
+    src = _band(_noise(n, rng), 700, 5200, sr)
     for k, off in enumerate((0.0, 0.0095, 0.019)):
         i = int(off * sr)
         seg = src[: n - i] * _env(n - i, 0.0055, sr) * (1.0 - 0.18 * k)
@@ -142,27 +134,27 @@ CYMBAL_PARTIALS = (1180.0, 1670.0, 2410.0, 3320.0, 4710.0, 6180.0, 8330.0)
 def _hat(v, sr, rng, track):
     dec = 0.032 if track == "CH" else 0.34
     n = int(max(0.12, dec * 4.5) * sr)
-    metal = _bp(_metal(n, sr, HAT_PARTIALS), 5800, 13000, sr)
+    metal = _band(_metal(n, sr, HAT_PARTIALS), 5800, 13000, sr)
     return metal * _env(n, dec, sr) * 0.85 * v
 
 
-def _cymbal(v, sr, rng):
+def _cymbal(v, sr, rng, _track):
     n = int(1.5 * sr)
-    body = _bp(_metal(n, sr, CYMBAL_PARTIALS), 2600, 12000, sr) * _env(n, 0.62, sr)
+    body = _band(_metal(n, sr, CYMBAL_PARTIALS), 2600, 12000, sr) * _env(n, 0.62, sr)
     wash = _hp(_noise(n, rng), 4000, sr) * _env(n, 0.34, sr) * 0.35
     return (body + wash) * 0.7 * v
 
 
-def _cowbell(v, sr, rng):
+def _cowbell(v, sr, rng, _track):
     n = int(0.34 * sr)
     t = np.arange(n) / sr
     tone = (np.sign(np.sin(2 * np.pi * 541 * t))
             + 0.8 * np.sign(np.sin(2 * np.pi * 812 * t))).astype(np.float32)
-    return _bp(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8 * v
+    return _band(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8 * v
 
 
 #: One recipe per track. The four toms share one and the two hats share another, and they are
-#: the two that take the track name, because that is the only thing they read it for.
+#: the two that read the track name they are handed.
 VOICES = {
     "BD": _kick, "SD": _snare, "RS": _rim, "CP": _clap,
     **dict.fromkeys(TOMS, _tom),
@@ -170,17 +162,13 @@ VOICES = {
     "CY": _cymbal, "CB": _cowbell,
 }
 
-#: The recipes that need to know which of the tracks they serve they are being asked for.
-BY_NAME = (_tom, _hat)
-
-
 def _voice(track: str, vel: float, sr: int, rng: np.random.Generator) -> np.ndarray:
     """One hit, as a mono float32 array. Amplitudes are rough but the shapes are the point."""
     make = VOICES.get(track)
     if make is None:
         raise ValueError(f"unknown track {track!r}; have {', '.join(VOICES)}")
     v = 0.2 + 0.8 * vel
-    return make(v, sr, rng, track) if make in BY_NAME else make(v, sr, rng)
+    return make(v, sr, rng, track)
 
 
 @dataclass
@@ -381,7 +369,7 @@ class MachineSim:
         events: list[tuple[float, str, float]] = []
 
         fired: set[int] = set()
-        group_of = {t: i for i, g in enumerate(VOICE_GROUPS) for t in g}
+        group_of = channel_map("voices")
 
         bar = 0
         for section in self.sections:
@@ -402,7 +390,7 @@ class MachineSim:
                         vel = float(np.clip(vel * self.rng.normal(1.0, 0.06), 0.05, 1.0))
                         g = group_of[track]
                         if g in fired:
-                            stop = min(n, i0 + _LONGEST_VOICE_SAMPLES(self.sr))
+                            stop = min(n, i0 + int(LONGEST_VOICE_S * self.sr))
                             for other in VOICE_GROUPS[g]:
                                 stems[INDEX[other], i0:stop] = 0.0
                         fired.add(g)

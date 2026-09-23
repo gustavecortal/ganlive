@@ -33,10 +33,7 @@ import numpy as np  # noqa: E402
 import pygame  # noqa: E402
 from pygame._sdl2.video import Renderer, Window  # noqa: E402
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-
 from ganlive.control.kit import INDEX  # noqa: E402
-from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials import table as S  # noqa: E402
 from ganlive.dials.fastgan_dials import fastgan  # noqa: E402
 from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
@@ -45,9 +42,9 @@ from ganlive.strip import WIDTH, DialPanel, floor_height  # noqa: E402
 #: The layouts a bank can hold at once, including the awkward ones: a single direction, and a
 #: family whose MODEL block shares no dial name with this one.
 LAYOUTS = {
-    "fastgan 8 dirs": _fastgan.fastgan(),
-    "fastgan 4 dirs": _fastgan.fastgan(directions=4),
-    "fastgan 1 dir": _fastgan.fastgan(directions=1),
+    "fastgan 8 dirs": fastgan(),
+    "fastgan 4 dirs": fastgan(directions=4),
+    "fastgan 1 dir": fastgan(directions=1),
     "stylegan2": S.stylegan2(),
 }
 #: What a model reports as live. `none` is the model whose every dial measured under the floor;

@@ -11,7 +11,7 @@ from ganlive.dials import fastgan_dials as F
 from ganlive.dials import steer as K
 from ganlive.dials import table as S
 from ganlive.frame import FrameStage
-from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR
+from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, compiled_conversions
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ def config_of(path):
 
 def admit(models, path) -> None:
     """Refuse, with a `ValueError` saying why, a checkpoint that may not join this bank."""
-    if models and index_of(models, path) is not None:
+    if index_of(models, path) is not None:
         raise ValueError(f"{label_for(path)} is already in this bank")
 
 
@@ -103,13 +103,6 @@ def frame_size(cfg, want: int | None, screen=None) -> tuple[int, int]:
     lad = cfg.ladder
     h = fit_height(lad.height, lad.width, want, screen)
     return h, max(2, round(lad.width * h / lad.height) // 2 * 2)
-
-
-def _conversions():
-    """The three host conversions, compiled. They are functions of a frame, not of a net."""
-    from ganlive.pixels import compiled_to_bgra, compiled_to_nv12, compiled_to_rgb
-
-    return compiled_to_nv12(), compiled_to_rgb(), compiled_to_bgra()
 
 
 def _onnx_config(path):
@@ -130,19 +123,17 @@ def _fastgan_config(path):
     return said(path)
 
 
-def _prepare_onnx(path, device, dtype, conversions, options: LoadOptions):
+def _prepare_onnx(path, device, dtype, options: LoadOptions):
     """One exported graph made ready to play, with whatever settings it carries."""
     from ganlive.dials import derive as D
     from ganlive.models.onnx import OnnxGenerator
 
     net = OnnxGenerator(path, device=device)
     print(net.report(), flush=True)
-    if options.measure_grain and net.steerable:
-        net.knobs.noise_gains = K.calibrate_noise(net, net.knobs, net.cfg.nz, device, dtype)
     found = directions_for(net, net.cfg.nz, device, dtype, floor=options.direction_floor,
                            path=path,
                            read=lambda _net, nz: D.sefa_onnx(path, nz, count=D.CANDIDATES))
-    return dict(net=net, cfg=net.cfg, knobs=net.knobs, directions=found), conversions
+    return dict(net=net, cfg=net.cfg, knobs=net.knobs, directions=found)
 
 
 def open_stylegan2(path, device, exact: bool = False, dtype=None):
@@ -173,7 +164,7 @@ def _compiled(net, nz: int, device, dtype, options: LoadOptions):
     return compile_and_count(net, nz, device, dtype)
 
 
-def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
+def _prepare_stylegan2(path, device, dtype, options: LoadOptions):
     """A converted StyleGAN2 made ready to play, dials measured rather than remembered."""
     from ganlive.dials import derive as D
     from ganlive.models import calibrate as A
@@ -196,7 +187,7 @@ def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
     # all -- a derived dial's curve *is* its measurement -- so skipping it left the strip with a
     # spine and an empty MODEL block while twelve working dials sat on the model unreachable.
     # That gate asks for stock grain gains, which is a question about strength on a family that
-    # has `noise_gains`; it never meant "show me none of this model's controls".
+    # has grain gains; it never meant "show me none of this model's controls".
     found = A.measured(A.TorchProbe(net, knobs, cfg.nz, device, dtype), knobs.names,
                        size=(cfg.ladder.height, cfg.ladder.width))
     print(found.report(), flush=True)
@@ -204,30 +195,26 @@ def _prepare_stylegan2(path, device, dtype, conversions, options: LoadOptions):
                          [d.curve for d in found.dials],
                          [d.moved for d in found.dials], ranges)
     return dict(net=net, cfg=cfg, knobs=knobs, graphs=graphs, compile_s=secs, layout=layout,
-                push=push, directions=found_dirs), conversions
+                push=push, directions=found_dirs)
 
 
-def _prepare_fastgan(path, device, dtype, conversions, options: LoadOptions):
+def _prepare_fastgan(path, device, dtype, options: LoadOptions):
     """This project's own generator made ready to play."""
     from ganlive.models.fastgan import freeze_noise, load
     from ganlive.models.fold import prepare_for_inference
 
     net, cfg = load(path, device)
     freeze_noise(net, seed=options.noise_seed)
-    prep = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16, fold=True,
-                                 compile_yuv=conversions is None)
-    if conversions is None:
-        conversions = (prep["yuv"], prep["rgb"], prep["bgra"])
-    net = prep["net"]
+    net = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16,
+                                fold=True)["net"]
 
     knobs = K.install(net, device, dtype)
     net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
-    if options.measure_grain:
-        knobs.noise_gains = K.calibrate_noise(net, knobs, cfg.nz, device, dtype)
-    return (dict(net=net, cfg=cfg, knobs=knobs, graphs=graphs, compile_s=secs,
-                 directions=directions_for(net, cfg.nz, device, dtype, path=path,
-                                           floor=options.direction_floor)),
-            conversions)
+    gains = K.calibrate_noise(net, knobs, cfg.nz, device, dtype) if options.measure_grain else None
+    return dict(net=net, cfg=cfg, knobs=knobs, graphs=graphs, compile_s=secs,
+                layout=F.fastgan(noise_gains=gains),
+                directions=directions_for(net, cfg.nz, device, dtype, path=path,
+                                          floor=options.direction_floor))
 
 
 @dataclass(frozen=True)
@@ -244,7 +231,7 @@ class Family:
     owns: object
     #: Latent width and output size, without building the generator.
     config_of: object
-    #: `(what the `Model` needs, the conversions this compiled)`.
+    #: The fields of the `Model` it knows, as a dict.
     prepare: object
     #: The dials it offers, given a path and whatever knobs are already installed.
     layout: object
@@ -252,14 +239,14 @@ class Family:
     capturable: bool = True
 
 
-def _prepare(path, device, dtype, conversions, options: LoadOptions | None = None):
-    """One model made ready to play, its dials verified, and the conversions the bank shares.
+def _prepare(path, device, dtype, options: LoadOptions | None = None) -> Model:
+    """One model made ready to play, its dials verified.
 
-    Each family returns what differs -- the `Model` fields it knows -- and the conversions it
-    compiled, if it compiled any; the `Model` is built once, here."""
+    Each family returns what differs -- the `Model` fields it knows; the `Model` is built once,
+    here."""
     options = options or LoadOptions()
     family = family_of(path)
-    found, conversions = family.prepare(path, device, dtype, conversions, options)
+    found = family.prepare(path, device, dtype, options)
     # Last, because every sweep above reads the module tree or holds two frames side by side to
     # difference them, and a capture offers one output buffer and bakes in the addresses it
     # recorded. Before the gate below, though, so the gate runs *through* the capture: the
@@ -285,8 +272,7 @@ def _prepare(path, device, dtype, conversions, options: LoadOptions | None = Non
     # Also not gated: this is the gate that draws a dial that reaches nothing dark rather than
     # offering it, and an inert knob that looks live is the one failure this whole path exists
     # to prevent. It drives each unmeasured MODEL dial to both ends -- ten forwards on ours.
-    model = verified(Model(path=Path(path), **found), device, dtype)
-    return model, conversions or _conversions()
+    return verified(Model(path=Path(path), **found), device, dtype)
 
 
 @torch.no_grad()
@@ -369,8 +355,8 @@ def _stylegan2_layout(_knobs, _path):
     return S.stylegan2()
 
 
-def _fastgan_layout(knobs, _path):
-    return F.fastgan(noise_gains=getattr(knobs, "noise_gains", None))
+def _fastgan_layout(_knobs, _path):
+    return F.fastgan()
 
 
 #: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
@@ -387,9 +373,8 @@ def family_of(path) -> Family:
     return next(f for f in FAMILIES if f.owns(path))
 
 
-def live_dials(knobs, directions, layout=None) -> frozenset:
+def live_dials(knobs, directions, layout) -> frozenset:
     """Which dials actually reach this model. Derived, never listed."""
-    layout = layout if layout is not None else F.fastgan()
     have = set(getattr(knobs, "index", ()) or ())
     count = 0 if directions is None else len(directions)
     live = set()
@@ -453,10 +438,9 @@ def directions_for(net, nz: int, device, dtype, read=None, into=None,
 
 # Warm at the REAL size. A small dummy builds a second graph on the first real frame --
 # 381 ms, inside the loop, with nothing to name it.
-def _warm(stage: FrameStage, model: Model, device, dtype, size=None) -> int:
+def _warm(stage: FrameStage, model: Model, device, dtype, size) -> int:
     """One warm-up frame through the whole after-generator path. Returns graphs built."""
-    if size is not None:
-        stage.resize(*size)
+    stage.resize(*size)
     with torch.no_grad():
         probe = model.net(torch.zeros(1, model.cfg.nz, device=device, dtype=dtype))
         return stage.warm(stage.step(probe))
@@ -667,8 +651,7 @@ class Bank:
         path = checkpoint_for(Path(target))
         admit(self.models, path)
         stage = self.stage
-        model, _ = _prepare(path, self.device, self.dtype,
-                            (stage.to_yuv, stage.to_rgb, stage.to_bgra), self.options)
+        model = _prepare(path, self.device, self.dtype, self.options)
         self.models.append(model)
         self.graphs += model.graphs
         self.compile_s += model.compile_s
@@ -823,16 +806,15 @@ def build(checkpoint, device: str | None = None, height: int | None = 0, dtype=N
     paths = [checkpoint_for(Path(t)) for t in targets]
 
     models: list[Model] = []
-    conversions = None
     t_all = time.perf_counter()
     for path in paths:
         admit(models, path)
-        model, conversions = _prepare(path, device, dtype, conversions, options)
-        models.append(model)
+        models.append(_prepare(path, device, dtype, options))
 
     out_height, out_width = frame_size(models[0].cfg, height, screen)
-    stage = FrameStage(out_height, out_width, conversions[0], to_rgb=conversions[1],
-                       to_bgra=conversions[2], device=device)
+    to_yuv, to_rgb, to_bgra = compiled_conversions()
+    stage = FrameStage(out_height, out_width, to_yuv, to_rgb=to_rgb, to_bgra=to_bgra,
+                       device=device)
 
     # Each at its own size, then the stage left on the model that will play -- `models[0]`,
     # which is why it is warmed last rather than first.

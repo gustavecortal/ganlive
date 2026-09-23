@@ -15,13 +15,7 @@ import pytest
 import torch
 
 from ganlive.models import stylegan2 as S2
-
-
-def tiny(**over) -> S2.Config:
-    """Small enough to run in a pre-commit loop, and the same shape as the real thing."""
-    return dataclasses.replace(
-        S2.Config(z_dim=16, w_dim=16, img_resolution=32, channel_base=128, channel_max=32,
-                  num_layers=2, num_fp16_res=0), **over)
+from tests.support import tiny_stylegan2 as tiny
 
 
 def test_the_ladder_is_nvidias_ladder():
@@ -99,10 +93,10 @@ def test_a_neutral_dial_is_the_network_as_trained():
     cfg = tiny()
     net = S2.Generator(cfg)
     # NVIDIA initialises `noise_strength` at zero, so an untrained net has no noise to gain.
-    for layer in (layer for block in net.blocks
-                  for layer in (block.conv0, block.conv1) if layer is not None):
-        with torch.no_grad():
-            layer.noise_strength.fill_(0.3)
+    for layers in S2.noise_sites(net).values():
+        for layer in layers:
+            with torch.no_grad():
+                layer.noise_strength.fill_(0.3)
 
     z = torch.randn(1, cfg.z_dim)
     with torch.no_grad():
@@ -164,16 +158,15 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     torch.manual_seed(0)
     cfg = tiny()
     net = S2.Generator(cfg)
-    for block in net.blocks:
-        for layer in (block.conv0, block.conv1):
-            if layer is not None:
-                with torch.no_grad():
-                    layer.noise_strength.fill_(0.3)
+    for layers in S2.noise_sites(net).values():
+        for layer in layers:
+            with torch.no_grad():
+                layer.noise_strength.fill_(0.3)
     path = tmp_path / "tiny.pt"
     S2.save(path, cfg, net.state_dict())
 
-    model, _ = bank._prepare(path, "cpu", torch.float32, (None, None, None),
-                            bank.LoadOptions(compile_net=False))
+    model = bank._prepare(path, "cpu", torch.float32,
+                         bank.LoadOptions(compile_net=False))
     assert model.knobs.names[:3] == ["w_coarse", "w_mid", "w_fine"]
     assert model.knobs.names[3:] == ["noise_4", "noise_8", "noise_16", "noise_32"]
     block = [k for k in model.layout.knobs if k.group == "MODEL"]
@@ -187,9 +180,9 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     # used to skip this family's sweep too -- under the name `--no-calibrate`, which is what
     # made that read plausible -- and since a derived dial's curve *is* its measurement, the
     # strip came up with a spine and an empty MODEL block while all twelve dials sat live on
-    # the model. Same surface either way; only `noise_gains` is at stake.
-    bare, _ = bank._prepare(path, "cpu", torch.float32, (None, None, None),
-                           bank.LoadOptions(compile_net=False, measure_grain=False))
+    # the model. Same surface either way; only the grain gains are at stake.
+    bare = bank._prepare(path, "cpu", torch.float32,
+                        bank.LoadOptions(compile_net=False, measure_grain=False))
     assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.knobs.names
     assert all(k.measured is not None
                for k in bare.layout.knobs if k.group == "MODEL")
