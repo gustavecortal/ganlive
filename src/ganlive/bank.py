@@ -720,12 +720,13 @@ class Shelf:
             self._cfgs[path] = config_of(path)
         return self._cfgs[path]
 
-    def count(self) -> int:
-        """How many models are on disk, without opening any of them."""
-        return len(self._models())
-
     def entries(self) -> list[Shelved]:
-        """Every run under `root` that has a checkpoint. Scanned once; see the class note."""
+        """Every run under `root` that has a checkpoint, scanned once.
+
+        **Scan it before the window opens.** Reading a file's config unpickles it, which holds
+        the GIL: left for the first `m`, a full `runs/` froze the picture and the frame loop for
+        as long as the paint on the window thread took to open every checkpoint. `play` asks
+        at startup, and `service` rescans on the thread that has already stopped the picture."""
         if self._listing is None:
             self._listing = self._scan()
         return self._listing
@@ -784,7 +785,7 @@ class Shelf:
         except Exception as exc:                  # noqa: BLE001  reported, never raised at the
             self.note = f"{label_for(want)}: {exc}"                 # frame loop
             return None
-        self._listing = None
+        self._listing = self._scan()
         self.note = f"loaded {model.name} in {model.compile_s:.1f}s"
         return model
 

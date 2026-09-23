@@ -200,6 +200,9 @@ class SynthesisLayer(nn.Module):
         # neither overflows. Demodulation divides any such scaling straight back out, so this
         # buys range and changes no result -- and it runs only where it is needed.
         self.prenorm = float(1.0 / math.sqrt(in_ch * kernel * kernel)) if half else 0.0
+        #: `prenorm` over the weight's per-channel inf-norm, once the weights are final -- see
+        #: `freeze_scale`. `None` recomputes it every forward, for a net built without `load`.
+        self.register_buffer("wscale", None, persistent=False)
         self.pad = kernel // 2
         self.clamp = None if conv_clamp is None else float(conv_clamp)
         if up > 1:
@@ -209,12 +212,23 @@ class SynthesisLayer(nn.Module):
             self.register_buffer("upfir", f[None, None].repeat(out_ch, 1, 1, 1),
                                  persistent=False)
 
+    @torch.no_grad()
+    def freeze_scale(self) -> None:
+        """Compute the half-precision weight renormalisation once. It is a reduction over a
+        constant weight, and inside the captured graph it ran every frame: every conv weight
+        but the 4-pixel block's read a second time, ~85 MB a frame on FFHQ-1024."""
+        if self.half:
+            self.wscale = self.prenorm / self.weight.norm(float("inf"), dim=[1, 2, 3],
+                                                          keepdim=True)
+
     def forward(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         styles = self.affine(w)
         weight = self.weight
         if self.half:
-            weight = weight * (self.prenorm
-                               / weight.norm(float("inf"), dim=[1, 2, 3], keepdim=True))
+            scale = self.wscale
+            if scale is None:
+                scale = self.prenorm / weight.norm(float("inf"), dim=[1, 2, 3], keepdim=True)
+            weight = weight * scale
             styles = styles / styles.norm(float("inf"), dim=1, keepdim=True)
 
         # `weight` and not `self.weight`: with a low-rank adapter attached, `.weight` is a parametrisation
@@ -427,7 +441,11 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
             f"this is not the architecture the weights describe: {len(missing)} parameter(s) "
             f"the network wants and the file has not ({missing[:4]}), {len(unexpected)} the "
             f"file has and the network does not ({unexpected[:4]}).")
-    return net.to(device)
+    net = net.to(device)
+    for module in net.modules():
+        if isinstance(module, SynthesisLayer):
+            module.freeze_scale()
+    return net
 
 
 def save(path, cfg: Config, state: dict) -> None:

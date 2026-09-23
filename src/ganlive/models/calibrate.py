@@ -116,6 +116,10 @@ class _Probe:
     def frame(self, z, k=None) -> np.ndarray:
         raise NotImplementedError
 
+    def levels(self, a, b) -> float:
+        """Two of this probe's own frames compared, in 8-bit levels, wherever they live."""
+        return levels(a, b)
+
 
 class Probe(_Probe):
     """The adopted graph, runnable on the host, so a dial can be asked what it does."""
@@ -144,7 +148,7 @@ def levels(a, b) -> float:
 def deterministic(probe: Probe, seed: int = 0) -> float:
     """8-bit levels between two answers to the same question. Zero, or the graph is unusable."""
     z = probe.latent(seed)
-    return levels(probe.frame(z), probe.frame(z))
+    return probe.levels(probe.frame(z), probe.frame(z))
 
 
 def _sweep(probe: Probe, z, base, slot: int, limit: float,
@@ -164,7 +168,7 @@ def _sweep(probe: Probe, z, base, slot: int, limit: float,
     k = probe.neutral()
     for value in np.exp(np.linspace(0.0, math.log(limit), samples))[1:]:
         k[slot] = value
-        out.append((float(value), levels(probe.frame(z, k), base)))
+        out.append((float(value), probe.levels(probe.frame(z, k), base)))
         if stop is not None and out[-1][1] >= stop:
             break
     k[slot] = 1.0
@@ -206,7 +210,9 @@ class TorchProbe(_Probe):
         self.dtype = dtype
         self.settings = len(getattr(knobs, "names", ()) or ())
 
-    def frame(self, z, k=None) -> np.ndarray:
+    def frame(self, z, k=None):
+        """The frame **left on the card**, as an owned float32 copy. Downloading it to diff on
+        the host moved 12 MB a probe at 1024px -- and a sweep is up to 46 probes a dial."""
         import torch
 
         from ganlive.models.common import first_image
@@ -216,8 +222,13 @@ class TorchProbe(_Probe):
             self.knobs.commit()
         latent = torch.from_numpy(z).to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
-            out = first_image(self.net(latent))
-        return out.cpu().float().numpy()
+            return first_image(self.net(latent)).to(torch.float32, copy=True)
+
+    def levels(self, a, b) -> float:
+        """On the card: one scalar crosses the bus, not two frames."""
+        from ganlive.pixels import levels as on_card
+
+        return on_card(a, b)
 
 
 def measured(probe, names, size=(0, 0), **kw) -> Adopted:

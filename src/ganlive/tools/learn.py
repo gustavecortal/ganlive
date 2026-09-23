@@ -202,9 +202,11 @@ def main(argv=None) -> int:
         midi_in.close()
         pygame.midi.quit()
         print(f"could not start the input: {exc}")
-        print("  ASIO gives the device to ONE program at a time. Close the Overbridge "
-              "Control Panel window (the Engine can stay), and any DAW holding the Rytm, "
-              "then run this again.")
+        print("  An exclusive audio API (ASIO, or WASAPI in exclusive mode) gives the device "
+              "to ONE program at a time: close any DAW or control panel holding it, then run "
+              "this again.")
+        if machine.stems:
+            print(f"  On {machine.name}: {machine.stems}.")
         raise SystemExit(1) from exc
     print(f"device {device}: {info['name']}  {nch} ch @ {args.rate} Hz")
     print(f"Hit every pad several times, in ANY order, for {args.seconds:g} s.")

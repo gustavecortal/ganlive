@@ -246,7 +246,7 @@ class _MidiListener:
             print(f"  NO CLOCK. On {self.machine.name}, {self.machine.says('clock')}, and")
             print("  make sure it sends over USB. Without it the picture runs at its own")
             print("  internal tempo and will look entirely plausible while doing so.")
-        print(f"transport events  : {self.transport or 'NONE -- set TRANSPORT SEND = ON'}")
+        print(f"transport events  : {self.transport or 'NONE -- ' + self.machine.says('transport')}")
         if self.notes:
             print("note-ons per MIDI channel (channel -> note: count):")
             for ch in sorted(self.notes):

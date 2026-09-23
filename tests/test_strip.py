@@ -286,6 +286,9 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
         # `play.switch_model`'s two statements, in its order.
         holder.current = _StubModel(layout=other, dials_live=frozenset(other))
         frame()                                  # the window's thread, in the gap between them
+        assert {n for n, _t, _h in panel._rows} == set(ours), (
+            "in the gap the strip draws the outgoing model whole, not its values under the "
+            "incoming one's layout")
         runner.use_model(holder.current)
         frame()
 
