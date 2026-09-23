@@ -113,6 +113,9 @@ def resolve_map(explicit: str, layout: str) -> tuple[dict[str, int], str]:
 SAMPLE_CAP = 110_000
 
 TAKE_DEPTH = 2
+#: Host buffers a take's frames cycle through: the recorder's queue, the frame being encoded,
+#: and the one still downloading behind the next frame's generation -- see `--no-pipeline`.
+TAKE_RING = TAKE_DEPTH + 3
 
 
 def per_model_lines(by_model, budget_ms: float) -> list[str]:
@@ -196,6 +199,11 @@ def _parser() -> argparse.ArgumentParser:
                      help="run a converted StyleGAN2 in the precision its own file describes, "
                           "rather than half wherever NVIDIA's rule allows. ~13%% slower, for "
                           "when a frame is being compared against the original")
+    how.add_argument("--no-pipeline", dest="pipeline", action="store_false",
+                     help="finish every frame before starting the next. By default a frame that "
+                          "has missed its slot leaves its download running behind the next "
+                          "frame's generation and is shown once that is under way; a frame on "
+                          "time is shown at once either way")
     how.add_argument("--headless", action="store_true",
                      help="no window: run the loop and report the timing")
     how.add_argument("--console", action="store_true",
@@ -607,6 +615,7 @@ def main(argv=None) -> int:
 
     def switch_model(delta):
         """Play a different loaded generator. One integer assignment; see `Bank.current`."""
+        land()
         want = r.models[(r.index + delta) % len(r.models)]
         # A take is one size for its whole length, and models in a bank no longer are. The encoder
         # was opened at the outgoing model's shape; refused as the shelf refuses a load mid-take.
@@ -676,10 +685,26 @@ def main(argv=None) -> int:
 
     rec = None
     stills: list = []
+    #: The last frame's `(ticket, shown, taped)` while its downloads are still running behind
+    #: the next frame's generation. `None` once it has been put up.
+    in_flight = None
+
+    def land():
+        """Show and tape the frame left in flight, once its downloads have finished."""
+        nonlocal in_flight
+        if in_flight is None:
+            return
+        (ticket, shown, taped), in_flight = in_flight, None
+        ticket.wait()
+        if shown is not None:
+            display.publish(shown)
+        if taped is not None and rec is not None:
+            rec.offer(taped)
 
     def toggle_take(at=None):
         """Start or stop recording. Called by the frame loop, never by the window; see `asked`."""
         nonlocal rec
+        land()                  # the frame in flight belongs to the take it was taped for
         if rec is not None:
             report = rec.stop()
             print(f"take: {report}  staging {r.stage.pinned()}", flush=True)
@@ -703,7 +728,7 @@ def main(argv=None) -> int:
 
     if args.record:
         toggle_take()
-        rec.offer(r.stage.nv12_bytes(first, "take", TAKE_DEPTH + 2))
+        rec.offer(r.stage.nv12_bytes(first, "take", TAKE_RING))
         if not rec.drain():
             print("  the encoder did not start; the take may be short", flush=True)
 
@@ -760,6 +785,10 @@ def main(argv=None) -> int:
                     switch_model(delta)
 
                 t0 = time.perf_counter()
+                # Before anything writes this frame's inputs: a captured generator reads its
+                # latent and its settings from host buffers it owns, and writes every frame into
+                # one buffer the last frame's conversions may still be reading.
+                r.stage.release()
                 model = r.current
                 if ticks is not None:
                     ticks(t0)
@@ -775,24 +804,28 @@ def main(argv=None) -> int:
                 if asked["record"]:
                     asked["record"] = False
                     toggle_take(t0)
-                with r.stage.deferred():
+                with r.stage.handoff() as sent:
                     shown = (to_window(frame)
                              if display is not None and display.wants else None)
                     taped = None
                     if rec is not None:
                         if rec.wants:
-                            taped = r.stage.nv12_bytes(frame, "take", TAKE_DEPTH + 2)
+                            taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
                         else:
                             rec.skip()
-                if shown is not None:
-                    display.publish(shown)
-                if taped is not None:
-                    rec.offer(taped)
+                # The last frame's, whose downloads ran while this one was being generated.
+                land()
+                in_flight = (sent.ticket, shown, taped)
                 if asked["still"]:
                     asked["still"] = False
                     shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
                     stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
                     print(f"still: {shot}", flush=True)
+                # **On time, it goes up now.** Overlapping buys throughput and costs the picture
+                # a frame of lag, which is only worth paying on a frame that has already missed
+                # its slot: left in flight here, it would sit out the sleep below instead.
+                if not args.pipeline or time.perf_counter() < start + (frames + 1) * period:
+                    land()
                 took = (time.perf_counter() - t0) * 1000
                 ms.append(took)
                 recent.append(took)
@@ -823,6 +856,7 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
     finally:
+        land()
         stash(r.current)
         if positions.trouble:
             print(positions.trouble, flush=True)
