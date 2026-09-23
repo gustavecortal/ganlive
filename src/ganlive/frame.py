@@ -24,24 +24,50 @@ def warm(fns, probe: torch.Tensor) -> int:
 
 
 class _Deferred:
-    """The window inside which a stage's downloads do not each wait for the card."""
+    """The window inside which a stage's downloads do not each wait for the card.
 
-    __slots__ = ("_stage",)
+    On exit they are waited for together -- or, for a `handoff`, not at all: `ticket` then
+    holds what to wait on, and the caller waits when it is about to read the bytes."""
 
-    def __init__(self, stage: FrameStage) -> None:
-        self._stage = stage
+    __slots__ = ("_stage", "_keep", "ticket")
 
-    def __enter__(self) -> FrameStage:
+    def __init__(self, stage: FrameStage, keep: bool = False) -> None:
+        self._stage, self._keep = stage, keep
+        self.ticket = Ticket(None)
+
+    def __enter__(self) -> _Deferred:
         self._stage._wait = False
-        return self._stage
+        return self
 
     def __exit__(self, *_exc) -> bool:
         stage = self._stage
         stage._wait = True
         if stage._pending:
             stage._pending = False
-            stage.sync()
+            if self._keep and stage._side is not None:
+                event = stage._streams.Event()
+                event.record(stage._side)
+                self.ticket = Ticket(event)
+            else:
+                stage.sync()
         return False
+
+
+class Ticket:
+    """The downloads of one frame, started and not yet waited for. `wait` before reading them.
+
+    An event on the stage's own queue, so waiting on it waits for this frame's copies and
+    nothing else -- not for the generator, which by then is drawing the next frame."""
+
+    __slots__ = ("_event",)
+
+    def __init__(self, event) -> None:
+        self._event = event
+
+    def wait(self) -> None:
+        if self._event is not None:
+            self._event.synchronize()
+            self._event = None
 
 
 class FrameStage:
@@ -70,6 +96,10 @@ class FrameStage:
                          "bgra": to_bgra is not None}
         self._wait = True
         self._pending = False
+        #: Recorded on this stage's queue after the last conversion, before its copy: once it
+        #: has passed, the generator's frame has been read and the generator may write the
+        #: next one into the same buffer -- see `release`.
+        self._read = None
 
     def resize(self, height: int, width: int) -> None:
         """Produce frames at a different size from now on."""
@@ -101,6 +131,9 @@ class FrameStage:
             from ganlive.pixels import PinnedRing
 
             ring = self._rings[key] = PinnedRing(depth, self.device)
+        if self._side is not None:
+            self._read = self._streams.Event()
+            self._read.record(self._side)
         if self._wait:
             return ring.take(tensor)
         self._pending = True
@@ -115,6 +148,24 @@ class FrameStage:
     def deferred(self) -> _Deferred:
         """Batch the downloads inside this block and wait for the card once, on exit."""
         return _Deferred(self)
+
+    def handoff(self) -> _Deferred:
+        """Start the downloads inside this block and do not wait for them: the block's `ticket`
+        does, when the bytes are about to be read. Where there is no second queue to record
+        on, this is `deferred` and the ticket is already done.
+
+        **Call `release` before the generator runs again.** A captured generator writes every
+        frame into the same buffer, and these conversions read it."""
+        return _Deferred(self, keep=True)
+
+    def release(self) -> None:
+        """Wait until the last frame converted has been read out of the generator's buffer.
+
+        A host wait on this stage's own queue: it passes once the conversions are done, while
+        the copies behind them are still running, and it issues nothing on the generator's."""
+        if self._read is not None:
+            self._read.synchronize()
+            self._read = None
 
     def pinned(self) -> dict[str, bool]:
         """Which destinations really got pinned staging. Reported per destination, not per
@@ -162,6 +213,9 @@ class FrameStage:
             return self.to_rgb(frame).cpu().numpy()
 
     def bgra_bytes(self, frame: torch.Tensor):
-        """A stepped frame as height-by-width-by-four bytes, in the order a texture is."""
+        """A stepped frame as height-by-width-by-four bytes, in the order a texture is.
+
+        Four buffers, not three: one downloading behind the next frame (see `handoff`), one
+        published, and one the window thread may still be uploading from."""
         with self.aside():
-            return self._take("bgra", self.to_bgra(frame))
+            return self._take("bgra", self.to_bgra(frame), depth=4)

@@ -135,6 +135,82 @@ def test_a_deferred_block_waits_once_and_never_hands_out_a_buffer_that_has_not_l
     assert stage._wait is True
 
 
+class _Queue:
+    """A second device queue that only writes down what was asked of it."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def wait_stream(self, _other):
+        self.log.append("fence")
+
+
+def _queued_stage(log):
+    """A stage with a second queue, on a machine that has none: the events are bookkeeping."""
+    import contextlib
+
+    from ganlive.frame import FrameStage
+
+    class Event:
+        def __init__(self):
+            self.name = f"event{sum(1 for x in log if x.startswith('record'))}"
+
+        def record(self, _queue):
+            log.append(f"record {self.name}")
+
+        def synchronize(self):
+            log.append(f"wait {self.name}")
+
+    class Streams:
+        pass
+
+    streams = Streams()
+    streams.Event = Event
+    streams.stream = lambda _q: contextlib.nullcontext()
+    streams.current_stream = lambda: None
+    stage = FrameStage(8, 8, device="cpu")
+    stage._streams, stage._side = streams, _Queue(log)
+    stage.sync = lambda: log.append("sync the card")
+    return stage
+
+
+def test_a_handed_off_frame_waits_for_its_own_copies_and_not_for_the_card():
+    """What lets the next frame's generation run while this one downloads: the handoff leaves
+    an event to wait on, where `deferred` waited for the whole device -- generator included."""
+    import torch
+
+    log = []
+    stage = _queued_stage(log)
+    frame = stage.step(torch.zeros(1, 3, 8, 8))
+    with stage.handoff() as sent:
+        stage.bgra_bytes(frame)
+    assert "sync the card" not in log, log
+    # Read before copied: the conversion's event is recorded ahead of the download's.
+    assert log == ["fence", "record event0", "record event1"], log
+
+    stage.release()                  # the generator may write its buffer again
+    sent.ticket.wait()               # the bytes may be read
+    sent.ticket.wait()               # and a second wait is free
+    assert log[3:] == ["wait event0", "wait event1"], log
+    stage.release()
+    assert len(log) == 5, "a release with nothing converted since still waited"
+
+
+def test_a_handoff_where_there_is_no_second_queue_is_the_deferred_wait():
+    import torch
+
+    from ganlive.frame import FrameStage
+
+    stage = FrameStage(8, 8, device="cpu")
+    waits = []
+    stage.sync = lambda: waits.append(1)
+    with stage.handoff() as sent:
+        stage.bgra_bytes(stage.step(torch.zeros(1, 3, 8, 8)))
+    assert waits == [1]
+    sent.ticket.wait()
+    stage.release()
+
+
 def test_a_deferred_block_still_waits_when_its_body_raises():
     """A copy left in flight because the body raised would be read by whatever ran next."""
     import torch
