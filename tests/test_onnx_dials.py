@@ -379,3 +379,51 @@ def test_the_precision_verdict_and_the_dials_are_measured_on_one_runtime(tmp_pat
     assert {(b, d) for b, d, _p in opened} == {("openvino", "GPU")}, opened
     assert list(found.precision) == ["openvino/GPU"]
     assert [p for _b, _d, p in opened] == ["FP32", "FP16"], "calibration reuses the FP16 runner"
+
+
+class _Demodulated(nn.Module):
+    """The one reduction in a StyleGAN2 that breaks half precision: a filter's norm, where the
+    sum of squares under the root is far past FP16's range while the root is not."""
+
+    def forward(self, z):
+        m = z.reshape(4, 64) * 300.0
+        m = torch.cat([m, torch.zeros(1, 64)])          # a dead filter must stay finite too
+        return m * (m.square().sum(dim=1, keepdim=True) + 1e-2).rsqrt()
+
+
+def test_a_norm_is_taken_without_holding_its_square(tmp_path):
+    """`wide_norms` is exact: the same frame in single precision, and no full-size square."""
+    ov = pytest.importorskip("openvino")
+    from ganlive.models.onnx import wide_norms
+
+    path = _export(tmp_path, _Demodulated(), 256)
+    core = ov.Core()
+    z = np.random.default_rng(0).standard_normal((1, 256)).astype(np.float32)
+    frames = []
+    for rewrite in (False, True):
+        model = core.read_model(str(path))
+        if rewrite:
+            assert wide_norms(model) == 1
+            kinds = {op.get_type_name() for op in model.get_ordered_ops()}
+            assert "ReduceL2" in kinds and "ReduceSum" not in kinds, kinds
+        request = core.compile_model(model, "CPU").create_infer_request()
+        request.infer({0: z})
+        frames.append(np.array(request.get_output_tensor(0).data))
+    assert np.isfinite(frames[1]).all()
+    assert np.abs(frames[1] - frames[0]).max() < 1e-5
+
+
+def test_a_frame_lands_in_the_buffer_it_was_given(tmp_path):
+    """What lets an ONNX frame reach the card as a DMA: the runtime writes into our array."""
+    pytest.importorskip("openvino")
+    from ganlive.models.runtime import open_graph
+
+    torch.manual_seed(6)
+    out = tmp_path / "playable.onnx"
+    A_adopt(out, tmp_path)
+    runner = open_graph(out, backend="openvino", device="CPU", precision="FP32")
+    host = np.zeros(runner.shapes[0], runner.dtype)
+    runner.land(host)
+    z = np.random.default_rng(0).standard_normal((1, runner.nz)).astype(np.float32)
+    frame = runner.infer(z, np.ones(runner.settings, np.float32))
+    assert np.shares_memory(frame, host) and np.abs(host).max() > 0

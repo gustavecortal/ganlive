@@ -80,6 +80,72 @@ def _core():
     return ov.Core()
 
 
+def _constant(output):
+    """The value behind a graph edge, if it is a constant."""
+    node = output.get_node()
+    return node.get_data() if node.get_type_name() == "Constant" else None
+
+
+def _squared(output):
+    """`x`, if this edge is `x * x` or `x ** 2`."""
+    node = output.get_node()
+    kind = node.get_type_name()
+    if kind == "Multiply" and node.input_value(0) == node.input_value(1):
+        return node.input_value(0)
+    if kind == "Power":
+        exponent = _constant(node.input_value(1))
+        if exponent is not None and exponent.size == 1 and float(exponent.flat[0]) == 2.0:
+            return node.input_value(0)
+    return None
+
+
+def wide_norms(model) -> int:
+    """Rewrite every `sqrt(sum(x * x) + eps)` so that half precision cannot overflow it.
+    Returns how many were rewritten.
+
+    **This is why an adopted StyleGAN2 played in FP32.** Demodulation takes the norm of each
+    modulated filter, and on FFHQ-1024 the sum of squares under that root reaches 3.7e6 -- past
+    FP16's 65504, so the frame came back `inf`, 59 8-bit levels off, and the adoption correctly
+    refused half precision: 93.8 ms a frame. The root itself is only 1.9e3. `ReduceL2` computes
+    it without ever holding the square, and the GPU plugin accumulates it wide, so the graph
+    plays in FP16 at 13.1 ms, 0.32 levels from FP32 with the frame handed over in FP16.
+
+    The epsilon goes back in exactly, as `hypot(norm, sqrt(eps))` spelled so neither term is
+    squared at full size: `big * sqrt(1 + (small / big)**2)`. It also keeps an all-zero filter
+    finite, which a plain `norm * sqrt(1 + eps / norm**2)` does not."""
+    from openvino import opset13 as ops
+
+    rewritten = 0
+    for root in [op for op in model.get_ordered_ops() if op.get_type_name() == "Sqrt"]:
+        inner, eps = root.input_value(0), None
+        if inner.get_node().get_type_name() == "Add":
+            add = inner.get_node()
+            for i in (0, 1):
+                value = _constant(add.input_value(1 - i))
+                if value is not None and value.size == 1:
+                    eps, inner = float(value.flat[0]), add.input_value(i)
+                    break
+        total = inner.get_node()
+        if total.get_type_name() != "ReduceSum":
+            continue
+        x = _squared(total.input_value(0))
+        if x is None or (eps is not None and eps < 0):
+            continue
+        norm = ops.reduce_l2(x, total.input_value(1), total.get_attributes()["keep_dims"])
+        if eps:
+            floor = ops.constant(np.full([1], np.sqrt(eps), np.float32))
+            big, small = ops.maximum(norm, floor), ops.minimum(norm, floor)
+            ratio = ops.divide(small, big)
+            one = ops.constant(np.ones([1], np.float32))
+            norm = ops.multiply(big, ops.sqrt(ops.add(one, ops.multiply(ratio, ratio))))
+        for user in list(root.output(0).get_target_inputs()):
+            user.replace_source_output(norm.output(0))
+        rewritten += 1
+    if rewritten:
+        model.validate_nodes_and_infer_types()
+    return rewritten
+
+
 def compile_ov(path, ov_device: str = "GPU", precision: str = "FP16"):
     """One compiled OpenVINO model and the device's full name."""
     from openvino import Type
@@ -94,6 +160,9 @@ def compile_ov(path, ov_device: str = "GPU", precision: str = "FP16"):
     model = core.read_model(str(path))
 
     if precision == "FP16":
+        # Before the verdict is taken as well as before play: `usable_precision` compiles
+        # through here, so the half precision it measures is the half precision that plays.
+        wide_norms(model)
         # The graph computes in f16 and would otherwise convert the frame back to f32 to hand
         # it over -- twice the bytes, for a pipeline that is f16 from here to the window.
         # Declaring f16 outputs took the frame from 29.5 ms to 19.5 at 3072x2048.
@@ -156,10 +225,26 @@ class OnnxGenerator:
         # `vec` was paying `copy_`'s GIL release for a tensor nothing reads. Fed from itself,
         # a commit is the host write alone.
         self.knobs.feed_from(self.knobs.vec)
+        #: Where the runtime writes each frame, when that can be pinned memory: the upload to
+        #: the card is then a DMA rather than a copy staged through a pinned buffer of the
+        #: driver's -- 22.8 ms to 19.3 a frame at 3072x2048. `None` on the CPU, or where the
+        #: runtime only hands back arrays of its own.
+        self._landing = None
+        if device != "cpu" and self.runner.land is not None:
+            from ganlive.pixels import pinned
+
+            host = pinned(self.runner.shapes[0], torch.from_numpy(
+                np.zeros(0, self.runner.dtype)).dtype)
+            if host.is_pinned():
+                self.runner.land(host.numpy())
+                self._landing = host
 
     def __call__(self, z) -> list[torch.Tensor]:
         """One frame, on `device`, as a torch generator would return it."""
-        return [torch.from_numpy(self.infer(z)).to(self.device)]
+        frame = self.infer(z)
+        # Blocking, so the upload has read the buffer before the next frame is written into it.
+        return [(self._landing if self._landing is not None
+                 else torch.from_numpy(frame)).to(self.device)]
 
     def infer(self, z) -> np.ndarray:
         """One frame as OpenVINO left it: a view into host-visible memory."""
