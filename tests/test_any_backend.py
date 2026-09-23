@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import torch
 
-from ganlive import bank
+from ganlive import bank, frame
 from ganlive import device as dev
 from ganlive.frame import FrameStage
 from ganlive.models import capture as speedups
@@ -53,7 +53,7 @@ def test_conversions_that_fail_to_compile_fall_back_to_eager(monkeypatch, capsys
     def refuse(fns, probe):
         raise RuntimeError("Inductor cannot build this")
 
-    monkeypatch.setattr(speedups, "warm", refuse)
+    monkeypatch.setattr(frame, "warm", refuse)
     stage = FrameStage(4, 6, to_bgra=lambda x: x, device="cpu")
     assert stage.compiled["bgra"]
     assert stage.warm(torch.zeros(1, 3, 4, 6)) == 0

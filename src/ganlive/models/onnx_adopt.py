@@ -25,6 +25,7 @@ from ganlive.models.calibrate import (
     deterministic,
     levels,
 )
+from ganlive.models.onnx import _dims
 from ganlive.models.onnx import dials_of as onnx_dials
 
 #: The ops that make a graph give a different answer to the same question.
@@ -49,7 +50,7 @@ def _shapes(model) -> dict[str, tuple[int, ...]]:
     out: dict[str, tuple[int, ...]] = {}
     for group in (inferred.graph.value_info, inferred.graph.input, inferred.graph.output):
         for value in group:
-            dims = [d.dim_value for d in value.type.tensor_type.shape.dim]
+            dims = _dims(value)
             if dims and all(d > 0 for d in dims):
                 out[value.name] = tuple(dims)
     return out

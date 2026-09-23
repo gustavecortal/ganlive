@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import os
 import pathlib
 import time
 import types
@@ -86,6 +88,19 @@ FULL = Preset(
 )
 FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
 
+#: A Rytm over Overbridge: twelve tracks on eight voice channels, the pairs sharing one.
+OVERBRIDGE = "BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9"
+
+def tiny_stylegan2(**over):
+    """A StyleGAN2 config small enough to run in a pre-commit loop, and the same shape as the
+    real thing."""
+    from ganlive.models import stylegan2 as S2
+
+    return dataclasses.replace(
+        S2.Config(z_dim=16, w_dim=16, img_resolution=32, channel_base=128, channel_max=32,
+                  num_layers=2, num_fp16_res=0), **over)
+
+
 def walk(**kw) -> SlerpWalk:
     return SlerpWalk(NZ, "cpu", WalkConfig(**kw))
 
@@ -116,7 +131,6 @@ class FakeKnobs:
 
         self.index = {n: i for i, n in enumerate(SETTINGS_WRITTEN if names is None else names)}
         self.written = {}
-        self.noise_gains = None
 
     def set(self, name, value):
         if name not in self.index:
@@ -165,28 +179,41 @@ class _StubModel:
 
 
 
-def _panel(dials_live=None, levels=None):
-    """A strip with a stub rig behind it, for the things that are facts about a model."""
-    import types
-
+def _runner(preset: str = "still"):
+    """A runner for one fixture preset, on the twelve-track kit, with this project's dials."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
+
+    return PresetRunner(FIXTURES[preset], INDEX, 60.0, layout=_fastgan.fastgan())
+
+
+def _panel(dials_live=None, levels=None):
+    """A strip with a stub rig behind it, for the things that are facts about a model."""
     from ganlive.strip import DialPanel
 
     dirs = None if levels is None else types.SimpleNamespace(levels=levels)
     bank = None if dials_live is None else types.SimpleNamespace(
         current=_StubModel(dials_live=frozenset(dials_live), directions=dirs),
         models=[1], index=0, name="stub")
-    return DialPanel(PresetRunner(FIXTURES["still"], INDEX, 60.0, layout=_fastgan.fastgan()), bank=bank)
+    return DialPanel(_runner(), bank=bank)
 
 
+@contextlib.contextmanager
+def dummy_display():
+    """SDL on its dummy video driver for the duration, then the display closed and the
+    driver setting put back as it was."""
+    import pygame
 
-def _pngs(folder):
-    import hashlib
-    from pathlib import Path
-
-    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(Path(folder).glob("*.png"))}
+    before = os.environ.get("SDL_VIDEODRIVER")
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    try:
+        yield
+    finally:
+        pygame.display.quit()
+        if before is None:
+            os.environ.pop("SDL_VIDEODRIVER", None)
+        else:
+            os.environ["SDL_VIDEODRIVER"] = before
 
 
 

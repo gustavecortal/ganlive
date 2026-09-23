@@ -18,6 +18,7 @@ from ganlive.control.features import (
 )
 from ganlive.control.kit import (
     TRACKS,
+    by_channel,
     channel_map,
     output_mode,
     parse_channel_map,
@@ -371,9 +372,7 @@ def report_clock(clock, reader, args, pressure, encoders, runner, machine) -> No
 
 def report_drums(extractor, tracks, kind: str, fix: str, hears, heard0, wall) -> None:
     """Which drums reached the picture, which were silent, and which arrived unclaimed."""
-    names: dict[int, list[str]] = {}
-    for name, index in (extractor.channel_of() or tracks).items():
-        names.setdefault(index, []).append(name)
+    names = by_channel(extractor.channel_of() or tracks)
     played = extractor.played()
     if not played:
         print(f"  NO HITS ARRIVED over {kind}. The tempo was right and no drum moved the "
@@ -669,8 +668,7 @@ def main(argv=None) -> int:
                           overlay=panel, fullscreen=not args.console)
         print("window open. Esc or Q to stop.", flush=True)
 
-    to_window = (r.stage.bgra_bytes
-                 if getattr(display, "PIXELS", "bgra") == "bgra" else r.stage.rgb_bytes)
+    to_window = r.stage.bgra_bytes
 
     first = r.stage.step(r.current.net(walk.latent(0.0)))
     to_window(first)

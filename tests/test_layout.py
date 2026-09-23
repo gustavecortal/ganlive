@@ -47,12 +47,17 @@ def test_every_command_parses_and_answers_help():
 
     assert len(COMMANDS) >= 5, COMMANDS
     env = {**os.environ, "GANLIVE_DEVICE": "cpu"}
-    for name, (module, _) in COMMANDS.items():
+    for module, _ in COMMANDS.values():
         source = SRC / "tools" / f"{module}.py"
         ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        done = subprocess.run([sys.executable, "-m", "ganlive.cli", name, "--help"],
-                              capture_output=True, text=True, timeout=180, env=env)
-        assert done.returncode == 0, f"{name} --help failed: {done.stderr[-2000:]}"
+    # All at once: each is a cold interpreter importing torch, and none depends on another.
+    running = {name: subprocess.Popen([sys.executable, "-m", "ganlive.cli", name, "--help"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, env=env)
+               for name in COMMANDS}
+    for name, proc in running.items():
+        _out, err = proc.communicate(timeout=180)
+        assert proc.returncode == 0, f"{name} --help failed: {err[-2000:]}"
 
 
 def test_an_unknown_command_is_refused_with_the_list():

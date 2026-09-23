@@ -35,8 +35,7 @@ def _folded(nz: int = 32, seed: int = 0, gain: float = 2.0) -> tuple[nn.Module, 
     with torch.no_grad():
         for parameter in net.parameters():
             parameter.mul_(gain)
-    prepared = prepare_for_inference(net, nz, "cpu", half=False, fold=True,
-                                     compile_yuv=False)
+    prepared = prepare_for_inference(net, nz, "cpu", half=False, fold=True)
     return prepared["net"].eval(), nz
 
 
@@ -125,8 +124,7 @@ def _steerable(tmp_path, split=True):
             with torch.no_grad():                      # vacuous
                 module.weight.fill_(0.4)
     freeze_noise(net, seed=3)
-    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True,
-                                compile_yuv=False)["net"].eval()
+    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True)["net"].eval()
 
     # **Bring the picture off the rails of the tanh.** A randomly built generator drives its final squash to
     # 99.996% saturation, and a clipped picture cannot be moved by anything upstream: `pre_tanh` and two
@@ -229,8 +227,7 @@ def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()
     freeze_noise(net, seed=3)
-    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True,
-                                compile_yuv=False)["net"].eval()
+    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True)["net"].eval()
     knobs = K.install(net, "cpu", torch.float32, wanted=K.available(net))
 
     banked = bank_the_knobs(net, knobs)

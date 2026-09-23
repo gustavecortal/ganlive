@@ -36,7 +36,6 @@ class Knobs:
         self._fed = False
         self.skipped = 0
         self.sites: dict[str, int] = {}
-        self.noise_gains: dict[str, float] | None = None
 
     def view(self, name: str) -> torch.Tensor:
         """The slice of the vector a module should hold. A view, so `commit` reaches it."""

@@ -76,7 +76,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
     display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
                       fullscreen=False)
-    to_window = r.stage.bgra_bytes if Display.PIXELS == "bgra" else r.stage.rgb_bytes
+    to_window = r.stage.bgra_bytes
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
                               "issue": [], "window": [], "publish": []}
     total_ms: list[float] = []

@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from ganlive import device as dev
+from ganlive.bank import is_onnx
 from ganlive.models import foreign as F
 from ganlive.models import onnx_adopt as A
 
@@ -37,7 +38,7 @@ def graph_for(source: str, out_dir: Path, trust: bool, opset: int) -> tuple[Path
     """The ONNX file to adopt, fetching and exporting it if that is what the source needs."""
     if not source.startswith(HUB):
         path = Path(source)
-        if path.suffix.lower() == ".onnx":
+        if is_onnx(path):
             return path, f"{path.name}, as it arrived", False
         raise SystemExit(f"{source} is not a .onnx. A checkpoint of this project's own "
                          f"architecture goes through `ganlive export-onnx`, which folds it "

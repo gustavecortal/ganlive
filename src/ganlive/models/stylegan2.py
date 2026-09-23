@@ -32,19 +32,6 @@ FORMAT = "ganlive-stylegan2/1"
 FORMATS = (FORMAT, "smallgen-stylegan2/1")
 
 
-def _channels(channel_base: int, channel_max: int, res: int) -> int:
-    """NVIDIA's channel rule. One spelling, because both networks follow the same one."""
-    return min(channel_base // res, channel_max)
-
-
-def _fp16_from(img_resolution: int, num_fp16_res: int, half_from: int | None) -> int:
-    """The lowest resolution to run in half precision -- NVIDIA's rule, or an override."""
-    if half_from is not None:
-        return half_from
-    top = int(math.log2(img_resolution))
-    return max(2 ** (top + 1 - num_fp16_res), 8)
-
-
 #: Config fields that describe how to *play* a checkpoint rather than what is in it. `save` drops them, so a
 #: converted file is byte-identical whether or not one was in force.
 NOT_SAVED = ("half_from",)
@@ -84,11 +71,15 @@ class Config:
         return tuple(2 ** i for i in range(2, top + 1))
 
     def channels(self, res: int) -> int:
-        return _channels(self.channel_base, self.channel_max, res)
+        """NVIDIA's channel rule."""
+        return min(self.channel_base // res, self.channel_max)
 
     @property
     def fp16_from(self) -> int:
-        return _fp16_from(self.img_resolution, self.num_fp16_res, self.half_from)
+        """The lowest resolution to run in half precision -- NVIDIA's rule, or `half_from`."""
+        if self.half_from is not None:
+            return self.half_from
+        return max(2 ** (int(math.log2(self.img_resolution)) + 1 - self.num_fp16_res), 8)
 
     @property
     def num_ws(self) -> int:
@@ -117,14 +108,14 @@ def _open(path) -> dict:
     return blob
 
 
-def _rebuild(kind, raw: dict, half_from: int | None = None):
+def _rebuild(raw: dict, half_from: int | None = None) -> Config:
     """A stored config back into its dataclass."""
-    return kind(**{**raw, "taps": tuple(raw["taps"]), "half_from": half_from})
+    return Config(**{**raw, "taps": tuple(raw["taps"]), "half_from": half_from})
 
 
 def config_of(path) -> Config:
     """What a converted checkpoint says about itself, without loading 133 MB of weights."""
-    return _rebuild(Config, _open(path)["config"])
+    return _rebuild(_open(path)["config"])
 
 
 def config_from(G) -> Config:
@@ -345,7 +336,7 @@ class Mapping(nn.Module):
         self.layers = [getattr(self, f"fc{i}") for i in range(cfg.num_layers)]
         self.register_buffer("w_avg", torch.zeros(cfg.w_dim))
 
-    def forward(self, z: torch.Tensor, truncation: float | torch.Tensor = 1.0) -> torch.Tensor:
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
         x = z.to(torch.float32)
         x = x * (x.square().mean(dim=1, keepdim=True) + 1e-8).rsqrt()
         for layer in self.layers:
@@ -356,8 +347,6 @@ class Mapping(nn.Module):
         # typical; above it, less.
         if self.knob is not None:
             x = self.w_avg.lerp(x, (self.bands @ self.knob).reshape(1, -1, 1))
-        elif not (isinstance(truncation, float) and truncation == 1.0):
-            x = self.w_avg.lerp(x, truncation)
         # **After the truncation and not before it.** Both orders are defensible on paper; only one of them
         # makes an instrument.
         if self.push is not None:
@@ -371,8 +360,7 @@ class Generator(nn.Module):
     def __init__(self, cfg: Config = Config()) -> None:
         super().__init__()
         self.cfg = cfg
-        self.z_dim, self.num_ws = cfg.z_dim, cfg.num_ws
-        self.img_resolution, self.img_channels = cfg.img_resolution, cfg.img_channels
+        self.z_dim = cfg.z_dim
         self.mapping = Mapping(cfg)
         self.synthesis = nn.Module()
         blocks = []
@@ -383,9 +371,8 @@ class Generator(nn.Module):
             blocks.append(block)
         self.blocks = blocks
 
-    def forward(self, z: torch.Tensor, c=None,
-                truncation: float | torch.Tensor = 1.0) -> torch.Tensor:
-        ws = self.mapping(z, truncation)
+    def forward(self, z: torch.Tensor, c=None) -> torch.Tensor:
+        ws = self.mapping(z)
         x = img = None
         for i, block in enumerate(self.blocks):
             # Block `i` reads `ws[2i-1 : 2i+2]`; its last `w` is the next block's first, which
@@ -501,4 +488,4 @@ def half_from_for(dtype: torch.dtype, exact: bool = False) -> int | None:
 def from_file(path, device="cpu", half_from: int | None = None) -> Generator:
     """Open what `save` wrote, on any machine, with no other code in the room."""
     blob = _open(path)
-    return load(_rebuild(Config, blob["config"], half_from), blob["state"], device)
+    return load(_rebuild(blob["config"], half_from), blob["state"], device)

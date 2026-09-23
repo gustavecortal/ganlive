@@ -7,7 +7,7 @@ import sys
 import time
 from collections import defaultdict
 
-from ganlive.control.audio import HOSTAPI, NoAudioDevice, named_inputs, pick_input
+from ganlive.control.audio import DEFAULT_MATCH, HOSTAPI, NoAudioDevice, named_inputs, pick_input
 from ganlive.control.features import FeatureConfig
 from ganlive.control.kit import TRACKS
 from ganlive.control.machine import profile
@@ -17,7 +17,7 @@ from ganlive.walk import MusicalClock
 RATES = (48000, 44100, 96000)
 
 
-def find_devices(sd, pattern="rytm"):
+def find_devices(sd, pattern=DEFAULT_MATCH):
     """Every input-capable device whose name matches, with its host API.
 
     Through `named_inputs`, which is the same question `pick_input` asks when it goes looking
@@ -31,7 +31,7 @@ def find_devices(sd, pattern="rytm"):
     return out
 
 
-def cmd_list(sd, pattern="rytm") -> int:
+def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
     apis = [ha["name"] for ha in sd.query_hostapis()]
     print(f"PortAudio : {sd.get_portaudio_version()[1]}")
     print(f"host APIs : {', '.join(apis)}")
@@ -72,14 +72,7 @@ def cmd_list(sd, pattern="rytm") -> int:
               f"{d['max_output_channels']} out")
         print("    sample rates the driver claims (NOT proof it is connected): ",
               end="", flush=True)
-        ok = []
-        for sr in RATES:
-            try:
-                sd.check_input_settings(device=i, channels=d["max_input_channels"],
-                                        samplerate=sr)
-                ok.append(sr)
-            except Exception:                                     # noqa: BLE001
-                pass
+        ok = [sr for sr in RATES if _openable(sd, i, d["max_input_channels"], sr)]
         print(", ".join(str(s) for s in ok) if ok else "NONE (is the driver running?)")
         if d["max_input_channels"] < len(TRACKS):
             print(f"    NOTE: {d['max_input_channels']} channels against {len(TRACKS)} "
@@ -93,7 +86,7 @@ FLOOR = FeatureConfig().floor
 HEADROOM = 8.0
 
 def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
-              blocksize: int, with_midi: bool, pattern: str = "rytm") -> int:
+              blocksize: int, with_midi: bool, pattern: str = DEFAULT_MATCH) -> int:
     """Live per-channel levels. Hit one pad at a time and read which channel moves."""
     import numpy as np
 
@@ -237,7 +230,7 @@ class _MidiListener:
                         self.transport.append(f"SPP={event[1] | (event[2] << 7)}")
                     elif what == "control_change":
                         self.controls[status & 0x0F][event[1]] += 1
-                    elif 0x90 <= status <= 0x9F and event[2] > 0:
+                    elif what == "note_on":
                         self.notes[status & 0x0F][event[1]] += 1
 
     def report(self) -> None:
@@ -245,9 +238,9 @@ class _MidiListener:
             print("MIDI: no input ports were present at all.")
             return
         print(f"MIDI clock pulses : {self.clock}")
-        if self.clock > 24 and self.first_clock and self.last_clock > self.first_clock:
+        if self.clock > MusicalClock.PPQN and self.first_clock and self.last_clock > self.first_clock:
             span = self.last_clock - self.first_clock
-            bpm = (self.clock - 1) / 24 / span * 60
+            bpm = (self.clock - 1) / MusicalClock.PPQN / span * 60
             print(f"  implied tempo   : {bpm:.2f} BPM over {span:.1f} s")
         elif self.clock == 0:
             print(f"  NO CLOCK. On {self.machine.name}, {self.machine.says('clock')}, and")
@@ -284,7 +277,7 @@ def main(argv=None) -> int:
     ap.add_argument("--midi", action="store_true",
                     help="listen for clock, transport and note-ons at the same time")
     ap.add_argument("--device", type=int, default=None)
-    ap.add_argument("--name", default="rytm", metavar="TEXT",
+    ap.add_argument("--name", default=DEFAULT_MATCH, metavar="TEXT",
                     help="substring of the input to look for. The default suits an Analog "
                          "Rytm over Overbridge; pass your own interface's name")
     ap.add_argument("--rate", type=int, default=None)

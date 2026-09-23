@@ -30,6 +30,14 @@ def channel_map(layout: str = "tracks") -> dict[str, int]:
     raise ValueError(f"unknown layout {layout!r}; have tracks, voices")
 
 
+def by_channel(channel_of: dict[str, int]) -> dict[int, list[str]]:
+    """`{track: channel}` turned round: which tracks share each channel, in the map's order."""
+    out: dict[int, list[str]] = {}
+    for track, channel in channel_of.items():
+        out.setdefault(channel, []).append(track)
+    return out
+
+
 def track_index(name: str) -> int:
     """A track to its index, or raise. Its name, or the index itself for a
     machine whose pads are not called BD and SD -- `0` to `11`, the order the twelve tracks
@@ -46,14 +54,20 @@ def track_index(name: str) -> int:
     return INDEX[name]
 
 
+def pairs(text: str):
+    """`"a=b,c=d"` as `(a, b), (c, d)`: the one comma-list grammar every flag here shares.
+    Empty entries are skipped; each side is left for its own parser to strip and validate."""
+    for part in text.split(","):
+        part = part.strip()
+        if part:
+            left, _, right = part.partition("=")
+            yield left, right
+
+
 def parse_channel_map(text: str) -> dict[str, int]:
     """"BD=0,CH=4" to a map. Track names must be real ones, or a typo is a silent no-op."""
     out = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        name, _, channel = part.partition("=")
+    for name, channel in pairs(text):
         track_index(name)               # validated, but this map is by NAME
         out[name.strip().upper()] = int(channel)
     return out
@@ -70,11 +84,7 @@ def parse_notes(text: str) -> dict[int, int]:
     if text.isdigit():
         return {int(text) + i: i for i in range(len(TRACKS))}
     out: dict[int, int] = {}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        note, _, name = part.partition("=")
+    for note, name in pairs(text):
         number = int(note)
         if number in out:
             raise ValueError(f"note {number} is already {TRACKS[out[number]]}; two tracks on "
@@ -112,11 +122,7 @@ def parse_track_channels(text: str) -> dict[int, int]:
             raise ValueError(f"{text!r} is {span} channels for {len(TRACKS)} tracks; "
                              f"the whole kit or an explicit map")
         return {first - 1 + i: i for i in range(len(TRACKS))}
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        channel, _, name = part.partition("=")
+    for channel, name in pairs(text):
         index = track_index(name)
         number = int(channel) - 1
         if number in out:

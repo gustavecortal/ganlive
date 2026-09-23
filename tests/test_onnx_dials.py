@@ -21,7 +21,7 @@ class _Noisy(nn.Module):
 
     def __init__(self, nz: int = 16, base: int = 4, rungs: int = 3, gain: float = 0.6) -> None:
         super().__init__()
-        self.nz, self.base, self.gain = nz, base, rungs
+        self.base = base
         self.stem = nn.Linear(nz, 32 * base * base)
         self.blocks = nn.ModuleList()
         width = 32
@@ -180,7 +180,6 @@ def test_the_strip_reads_an_adopted_graph_without_knowing_the_architecture(tmp_p
 
     class _Knobs:
         index = {n: i for i, n in enumerate(found.names)}
-        noise_gains = None
 
         def set(self, name, value):
             written[name] = value

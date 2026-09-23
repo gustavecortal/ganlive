@@ -40,6 +40,7 @@ from tests.support import (
     _panel,
     _pulses,
     _StubModel,
+    tiny_stylegan2,
 )
 
 
@@ -735,8 +736,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_spine(tmp_path):
     from ganlive.dials import table as S
     from ganlive.models import stylegan2 as S2
 
-    cfg = S2.Config(z_dim=16, w_dim=16, img_resolution=32, channel_base=128,
-                    channel_max=32, num_layers=2, num_fp16_res=0)
+    cfg = tiny_stylegan2()
     converted = tmp_path / "converted.pt"
     S2.save(converted, cfg, S2.Generator(cfg).state_dict())
     ours = tmp_path / "ours.pt"
@@ -775,9 +775,9 @@ def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
     path = tmp_path / "tiny.pt"
     torch.save({"g_ema": net.state_dict(), "config": cfg}, path)
 
-    model, _ = R._prepare(path, "cpu", torch.float32, (None, None, None),
-                          R.LoadOptions(compile_net=False, capture=False,
-                                        measure_grain=False))
+    model = R._prepare(path, "cpu", torch.float32,
+                       R.LoadOptions(compile_net=False, capture=False,
+                                     measure_grain=False))
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
     assert model.knobs.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and

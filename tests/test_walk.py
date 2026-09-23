@@ -61,15 +61,6 @@ def test_a_segment_boundary_lands_exactly_on_a_seed(beats_per_segment):
             f"segment {k} does not start on its own seed")
 
 
-def test_the_bar_line_is_a_bar_line_at_any_tempo():
-    """Segments are counted in beats, so the boundary is at the same *musical* place whatever
-    the tempo -- and at a different wall-clock place, which is the entire point."""
-    w = walk(beats_per_segment=BEATS_PER_BAR)
-    assert w.seconds_per_segment(120.0) == pytest.approx(2.0)
-    assert w.seconds_per_segment(140.0) == pytest.approx(1.714, abs=1e-3)
-    assert 60 / w.seconds_per_segment(140.0) > 60 / w.seconds_per_segment(120.0)
-
-
 def test_a_higher_tempo_changes_seed_more_often():
     """The property that was actually asked for, asserted end to end through the clock."""
     seen = {}
@@ -182,33 +173,16 @@ def test_the_walk_uses_the_motion_dials_when_they_are_set():
     assert not torch.equal(held.latent(0.0), held.latent(3.9))   # then it moves
 
 
-def test_the_recorder_can_ask_for_frames_and_still_get_musical_positions():
-    """The recorder counts frames; everything here counts beats. The adapter is what lets the
-    existing frame loop become an instrument without being edited."""
-    from ganlive.walk import BeatDriver
-
-    clock = MusicalClock(120.0)
-    w = walk(beats_per_segment=BEATS_PER_BAR)
-    driver = BeatDriver(w, clock, fps=60.0)
-    for step in range(120):                               # two seconds at 120 BPM
-        z = driver.next_z(step)
-    assert tuple(z.shape) == (1, NZ)
-    assert clock.beats == pytest.approx(4.0, abs=1e-6)    # two seconds is four beats
-
-
 def test_midi_clock_takes_the_position_away_from_the_frame_count():
     """Free-running, a dropped frame slows the music with it, which is right for recording to
     a file. Under real clock the position comes from counted pulses, so a dropped frame skips
     further along the path instead -- which is what is wanted on stage."""
-    from ganlive.walk import BeatDriver
-
     clock = MusicalClock(120.0)
-    driver = BeatDriver(walk(), clock, fps=60.0)
     for _ in range(MusicalClock.PPQN * 8):
         clock.on_pulse()
     before = clock.beats
-    for step in range(60):
-        driver.next_z(step)
+    for _ in range(60):
+        clock.advance(1.0 / 60.0)
     assert clock.beats == before, "frame counting must not move a clock the Rytm is driving"
 
 

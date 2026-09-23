@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 from ganlive.models.common import first_image, latent
-from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, levels
+from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR
 
 #: The layer types that can be the first thing a latent meets.
 CONSUMERS = (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)
@@ -600,8 +600,6 @@ def orient(dirs: Directions, up: list[float], down: list[float]) -> tuple:
     Free, and without it whether a dial's big move is clockwise is LAPACK's sign convention.
     On FFHQ four of seven shipping dials point the wrong way, `dir7` worst at 23.3 up, 38.6 down.
     """
-    from dataclasses import replace
-
     flip = torch.tensor([-1.0 if d > u else 1.0 for u, d in zip(up, down, strict=True)])
     basis = dirs.basis * flip.reshape(-1, *([1] * (dirs.basis.dim() - 1)))
     return (replace(dirs, basis=basis),
@@ -723,9 +721,13 @@ def _measure(net: nn.Module, dirs: Directions, device, dtype=torch.float16,
         raise ValueError(
             f"a {dirs.space}-space basis {'needs' if into is None else 'has no use for'} a "
             f"seam to push through; `into` was {'not ' if into is None else ''}given")
-    basis = dirs.basis if into is not None else dirs.basis.to(device=device, dtype=dtype)
-    totals = [[0.0] * len(basis) for _ in signs]
-
+    # On the seam's device, so a push is not a blocking pageable upload per forward.
+    basis = (dirs.basis.to(device=into.device) if into is not None
+             else dirs.basis.to(device=device, dtype=dtype))
+    # Each reading stays on the card until every forward is queued: `levels` would `.item()` once
+    # per forward, and the host could never queue the next frame while the card drew this one.
+    # Read back once, the same float32 values `levels` would have returned, summed in its order.
+    got = torch.empty(seeds, len(signs), len(basis), dtype=torch.float32, device=basis.device)
     with torch.no_grad():
         for k in range(seeds):
             z = latent(dirs.nz, seed + k, device, dtype)
@@ -733,7 +735,13 @@ def _measure(net: nn.Module, dirs: Directions, device, dtype=torch.float16,
             for s, sign in enumerate(signs):
                 for i, row in enumerate(basis):
                     moved = pushed(net, z, (sign * amount) * row, into, dirs.push_shape)
-                    totals[s][i] += levels(moved, base)
+                    got[k, s, i] = (moved - base).abs().mean(dtype=torch.float32)
         if into is not None:
             into.zero_()
-    return [[t / seeds for t in got] for got in totals]
+    vals = got.cpu().tolist()
+    totals = [[0.0] * len(basis) for _ in signs]
+    for k in range(seeds):
+        for s in range(len(signs)):
+            for i in range(len(basis)):
+                totals[s][i] += vals[k][s][i] * 127.5
+    return [[t / seeds for t in row] for row in totals]

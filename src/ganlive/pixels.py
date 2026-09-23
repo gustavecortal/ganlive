@@ -49,14 +49,11 @@ def levels(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 def to_rgb(out: torch.Tensor) -> torch.Tensor:
-    """Generator output in [-1,1] -> the `(H, W, 3)` uint8 bytes a window blits, on the GPU."""
+    """Generator output in [-1,1] -> the `(H, W, 3)` uint8 bytes a window blits, on the GPU.
+
+    Compiled: 1.335 ms eager against 0.522 at 1536x1024."""
     x = out.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
     return x.permute(0, 2, 3, 1)[0].contiguous()
-
-
-def compiled_to_rgb():
-    """`to_rgb` through TorchInductor: 1.335 ms eager against 0.522 at 1536x1024."""
-    return torch.compile(to_rgb, dynamic=False)
 
 
 def to_bgra(out: torch.Tensor) -> torch.Tensor:
@@ -66,24 +63,20 @@ def to_bgra(out: torch.Tensor) -> torch.Tensor:
     return torch.stack([b, g, r, torch.full_like(b, 255)], dim=-1)[0].contiguous()
 
 
-def compiled_to_bgra():
-    """`to_bgra` through TorchInductor. Same `dynamic=False` argument as the other two."""
-    return torch.compile(to_bgra, dynamic=False)
-
-
 def to_nv12(out: torch.Tensor) -> torch.Tensor:
     """Generator output in [-1,1] -> the encoder's `(H*3/2, W)` uint8 plane stack, on the GPU.
 
-    NV12: the Y plane, then the chroma interleaved as UVUVUV rows."""
+    NV12: the Y plane, then the chroma interleaved as UVUVUV rows. Compiled, a 5.8x on this
+    function alone."""
     y, u, v = _yuv_planes(out)
     h, w = out.shape[-2:]
     chroma = torch.stack([u, v], dim=-1).reshape(-1)     # U,V,U,V... in row order
     return torch.cat([y.reshape(-1), chroma]).reshape(h * 3 // 2, w)
 
 
-def compiled_to_nv12():
-    """`to_nv12` through TorchInductor, which is a 5.8x on that function alone."""
-    return torch.compile(to_nv12, dynamic=False)
+def compiled_conversions():
+    """`(to_nv12, to_rgb, to_bgra)` through TorchInductor. Functions of a frame, not of a net."""
+    return tuple(torch.compile(f, dynamic=False) for f in (to_nv12, to_rgb, to_bgra))
 
 
 def _yuv_planes(out: torch.Tensor):

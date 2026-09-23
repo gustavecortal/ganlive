@@ -102,47 +102,43 @@ def _raise_priority() -> str | None:
     return f"nice {os.nice(0)}"
 
 
-def prioritise_gpu_feeder(pin_p_cores: bool = True, verbose: bool = True,
-                          raise_priority: bool = True) -> dict:
+def prioritise_gpu_feeder() -> dict:
     """Keep this process's GPU-submission thread on a performance core, at high priority."""
     result: dict[str, object] = {"platform": sys.platform, "priority": None,
                                  "affinity_mask": None, "note": None}
 
-    if raise_priority:
-        try:
-            result["priority"] = _raise_priority()
-        except Exception as exc:  # noqa: BLE001 - tuning is best-effort everywhere
-            result["note"] = f"priority unchanged: {exc}"
+    try:
+        result["priority"] = _raise_priority()
+    except Exception as exc:  # noqa: BLE001 - tuning is best-effort everywhere
+        result["note"] = f"priority unchanged: {exc}"
 
-    if pin_p_cores:
-        try:
-            import psutil
+    try:
+        import psutil
 
-            # P-cores without asking the OS for a core's kind: with `p` hyperthreaded performance cores
-            # and `e` efficiency cores, `logical = 2p + e` and `physical = p + e`, so `p = logical -
-            # physical`, and both Windows and Linux enumerate the P-core threads first.
-            logical, physical = os.cpu_count() or 0, psutil.cpu_count(logical=False) or 0
-            p_cores = (logical - physical) if logical > physical else 0
-            fast = list(range(2 * p_cores))
-            if not hasattr(psutil.Process(), "cpu_affinity"):
-                # macOS has no affinity API at all, hybrid silicon or not.
-                result["note"] = f"no affinity control on {sys.platform}"
-            elif 0 < len(fast) < logical:
-                psutil.Process().cpu_affinity(fast)
-                result["affinity_mask"] = hex((1 << (2 * p_cores)) - 1)
-                result["cores"] = fast
-            else:
-                result["note"] = "not a hybrid CPU; affinity left alone"
-        except Exception as exc:  # noqa: BLE001 - psutil's own errors are not enumerable
-            result["note"] = f"affinity unchanged: {exc}"
+        # P-cores without asking the OS for a core's kind: with `p` hyperthreaded performance cores
+        # and `e` efficiency cores, `logical = 2p + e` and `physical = p + e`, so `p = logical -
+        # physical`, and both Windows and Linux enumerate the P-core threads first.
+        logical, physical = os.cpu_count() or 0, psutil.cpu_count(logical=False) or 0
+        p_cores = (logical - physical) if logical > physical else 0
+        fast = list(range(2 * p_cores))
+        if not hasattr(psutil.Process(), "cpu_affinity"):
+            # macOS has no affinity API at all, hybrid silicon or not.
+            result["note"] = f"no affinity control on {sys.platform}"
+        elif 0 < len(fast) < logical:
+            psutil.Process().cpu_affinity(fast)
+            result["affinity_mask"] = hex((1 << (2 * p_cores)) - 1)
+            result["cores"] = fast
+        else:
+            result["note"] = "not a hybrid CPU; affinity left alone"
+    except Exception as exc:  # noqa: BLE001 - psutil's own errors are not enumerable
+        result["note"] = f"affinity unchanged: {exc}"
 
-    if verbose:
-        cores = result.get("cores")
-        said = (f"pinned to {len(cores)} P-core threads (0-{cores[-1]}) of {os.cpu_count()}"
-                if cores else "left where the scheduler puts it")
-        print(f"cpu: {said}"
-              + (f", priority {result['priority']}" if result["priority"] else "")
-              + (f"  ({result['note']})" if result["note"] else ""), flush=True)
+    cores = result.get("cores")
+    said = (f"pinned to {len(cores)} P-core threads (0-{cores[-1]}) of {os.cpu_count()}"
+            if cores else "left where the scheduler puts it")
+    print(f"cpu: {said}"
+          + (f", priority {result['priority']}" if result["priority"] else "")
+          + (f"  ({result['note']})" if result["note"] else ""), flush=True)
     return result
 
 
