@@ -352,3 +352,30 @@ def test_config_of_reads_a_real_graph_through_the_cached_parse(tmp_path):
     said = onnx_model.dials_of(path)
     assert said["nz"] == cfg.nz
     assert said["size"] == (cfg.ladder.height, cfg.ladder.width)
+
+
+def test_the_precision_verdict_and_the_dials_are_measured_on_one_runtime(tmp_path, monkeypatch):
+    """**Two passes, one backend.** The precision check went through `auto`, which ignores the
+    device and takes the first runtime that opens, while the dials were calibrated on OpenVINO
+    -- so on a CUDA machine the verdict was filed under, and measured on, a runtime the dials
+    never ran on. And the FP16 runner the verdict came from is the one calibration uses, not a
+    third compile of the same graph."""
+    import dataclasses
+
+    from ganlive.models import runtime
+    from ganlive.models.onnx_adopt import adopt
+
+    real, opened = runtime.open_graph, []
+
+    def recording(path, backend="auto", device="", precision=""):
+        opened.append((backend, device, precision))
+        # Run on this machine's CPU, reporting itself as what was asked for.
+        got = real(path, backend="ort", device="CPUExecutionProvider", precision=precision)
+        return dataclasses.replace(got, backend=backend, asked=device)
+
+    monkeypatch.setattr(runtime, "open_graph", recording)
+    torch.manual_seed(8)
+    found = adopt(_export(tmp_path, _Noisy(), 16), tmp_path / "playable.onnx", device="GPU")
+    assert {(b, d) for b, d, _p in opened} == {("openvino", "GPU")}, opened
+    assert list(found.precision) == ["openvino/GPU"]
+    assert [p for _b, _d, p in opened] == ["FP32", "FP16"], "calibration reuses the FP16 runner"

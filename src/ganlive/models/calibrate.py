@@ -124,14 +124,16 @@ class _Probe:
 class Probe(_Probe):
     """The adopted graph, runnable on the host, so a dial can be asked what it does."""
 
-    def __init__(self, model, device: str = "cpu", precision: str = "FP16") -> None:
-        """`device` is `cpu` for ONNX Runtime, or an OpenVINO device name such as `GPU`."""
-        from ganlive.models.runtime import open_graph
+    def __init__(self, model, device: str = "cpu", precision: str = "FP16",
+                 runner=None) -> None:
+        """`device` is `cpu` for ONNX Runtime, or an OpenVINO device name such as `GPU`.
+        `runner` is one already compiled for exactly that, so it is not compiled twice."""
+        from ganlive.models.runtime import measuring_on, open_graph
 
-        cpu = device.lower() == "cpu"
-        self.runner = open_graph(model, backend="ort" if cpu else "openvino",
-                                 device="CPUExecutionProvider" if cpu else device,
-                                 precision=precision)
+        if runner is None:
+            backend, want = measuring_on(device)
+            runner = open_graph(model, backend=backend, device=want, precision=precision)
+        self.runner = runner
         self.nz, self.settings = self.runner.nz, self.runner.settings
 
     def frame(self, z, k=None) -> np.ndarray:
