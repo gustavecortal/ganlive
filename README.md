@@ -2,7 +2,8 @@
 
 **Explore GAN latent spaces in real time.**
 
-Load a GAN, turn a dial, and watch the image change.
+ganlive is a Python tool for exploring generative adversarial network (GAN) latent spaces
+with your mouse or MIDI controller.
 
 <p align="center">
   <img src="docs/demo.webp" alt="Exploring GAN images with dials and MIDI controls" width="860">
@@ -92,7 +93,7 @@ Install `.[onnx]` for ONNX or `.[hub]` for Hub imports.
 
 [User guide](docs/guide.md) · [Automatic dials](docs/guide.md#how-the-dials-are-found) ·
 [Performance](docs/guide.md#speed) · [Development](docs/guide.md#development) ·
-[Related work](docs/guide.md#related-work)
+[Related work](docs/guide.md#related-work) · [Citation](CITATION.cff)
 
 ## License
 
