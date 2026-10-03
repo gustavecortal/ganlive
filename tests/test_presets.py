@@ -13,8 +13,8 @@ from tests.support import FIXTURES, FakeKnobs, _runner
 
 
 def test_a_hit_cannot_push_a_dial_off_its_scale():
-    """The clamp is at the dial, once, instead of at every parameter -- so an impulse with a
-    wildly wrong amount is a setting that does nothing extra, not a broken picture."""
+    """Dials are clamped to their range, so an impulse with a wildly wrong amount saturates the
+    dial rather than breaking the picture."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -28,9 +28,8 @@ def test_a_hit_cannot_push_a_dial_off_its_scale():
 
 
 def test_the_runner_counts_which_dials_were_played():
-    """Whether a dial earns its place on the strip is a count, printed at the end of a run:
-    frames it moved, time a hand held it, how far it got from rest. A dial nothing touched
-    is named as such rather than left off the list."""
+    """The end-of-run usage report counts, per dial, frames moved, time held by a holder
+    (mouse, knobs, pads) and distance from rest; untouched dials are listed as never moved."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -54,7 +53,7 @@ def test_the_runner_counts_which_dials_were_played():
 
 
 def test_a_hit_on_any_track_reaches_a_star_rule():
-    """One rule for the whole kit is the commonest thing to want and should not need twelve."""
+    """A `*` rule fires on a hit from any track, so one rule covers the whole kit."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -71,10 +70,8 @@ def test_a_hit_on_any_track_reaches_a_star_rule():
 
 
 def test_a_whole_kit_rule_decays_on_audio_time_like_every_other_rule():
-    """`*` rules used to count their own seconds, `+= 1/fps` per frame, while every named rule read the
-    extractor's array. The two came apart exactly when frames ran late -- and at the documented 21.31 ms
-    against a 16.7 ms period that is 1.3x fast, on `pulse`, which is the one preset built entirely from `*`
-    rules."""
+    """A `*` rule decays on the audio thread's time since the hit, like named rules, not by
+    counting frames; so when frames run late, the decay still keeps real time."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -95,9 +92,8 @@ def test_a_whole_kit_rule_decays_on_audio_time_like_every_other_rule():
 
 
 def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
-    """`hands` is the seam a physical encoder writes to, and it is applied with the resting
-    values rather than over the top of the rules -- so turning an encoder moves where the
-    reaction happens instead of cancelling it."""
+    """A held value replaces the dial's resting value, and hits still push from there: moving a
+    knob shifts where the reaction starts instead of cancelling it."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -116,7 +112,7 @@ def test_a_hand_on_a_dial_sets_where_the_drums_push_from():
 
 
 def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
-    """The one control to reach for when a performance is too much or too little."""
+    """`reaction` scales hit impulses (0 = none, 1 = double) and leaves slow macro rules alone."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -140,8 +136,8 @@ def test_reaction_scales_how_hard_hits_land_without_touching_the_arrangement():
 
 
 def test_at_zero_reaction_any_setting_behaves_like_the_structural_one():
-    """A useful property that falls out rather than being built: turn it off and the drumming
-    stops reaching the picture, leaving only the arrangement."""
+    """At zero reaction the drumming stops reaching the picture: with every track hitting, the
+    texture dials of any preset stay at their resting values."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -158,8 +154,8 @@ def test_at_zero_reaction_any_setting_behaves_like_the_structural_one():
 
 
 def test_a_hand_beats_the_slow_rule_for_that_dial_and_only_that_dial():
-    """A slow rule SETS, so without this a slider on any dial a macro drives would be overwritten a
-    microsecond later and the control would look broken."""
+    """A held value overrides a slow rule (which sets its dial every frame) on that dial only;
+    otherwise the macro would overwrite the slider at once."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -183,9 +179,8 @@ def test_a_hand_beats_the_slow_rule_for_that_dial_and_only_that_dial():
 
 
 def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
-    """The filter keeps running under a hand. Freezing it instead would make releasing a
-    slider glide the dial from wherever the rule was when the hand arrived, which is a move
-    nothing asked for and would read as the slider being sticky."""
+    """A slow rule keeps gliding while its dial is held, so on release the dial jumps to where
+    the rule is now rather than gliding from where it was when the hold began."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -194,7 +189,7 @@ def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
     since = [1e6] * len(INDEX)
     runner = PresetRunner(preset, INDEX, 60.0, layout=fastgan())
     runner.hold("test", {"dir1": 0.1})
-    for _ in range(120):                                  # two seconds under a hand
+    for _ in range(120):                                  # two seconds held
         runner.apply(since, {"density": 10.0}, FakeKnobs())
     assert runner.surface["dir1"] == pytest.approx(0.1)
     runner.hold("test", {})
@@ -203,9 +198,8 @@ def test_letting_go_returns_the_dial_to_where_the_slow_rule_has_reached():
 
 
 def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
-    """The console changes setting while the loop runs. The loop holds the runner and the walk
-    holds `walk_cfg`, so rebuilding either would leave something driving an object nothing
-    reads -- silently, which is the failure this project keeps paying for."""
+    """Loading a preset mid-run updates the runner and its `walk_cfg` in place, since the loop
+    and the walk hold references to them; held dials survive the change."""
     from ganlive.control.kit import INDEX
 
     runner = _runner()
@@ -221,7 +215,8 @@ def test_switching_patch_keeps_the_objects_the_loop_and_the_walk_hold():
 
 
 def test_a_setting_naming_a_dial_that_no_longer_exists_says_so():
-    """**Silence here cost the player both of his saved takes.**"""
+    """Preset entries naming a dial that does not exist are dropped and listed in
+    `runner.dropped`, while rules on real dials are kept."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -240,10 +235,8 @@ def test_a_setting_naming_a_dial_that_no_longer_exists_says_so():
 
 
 def test_two_sources_can_hold_different_dials_without_dropping_each_other():
-    """`set_hands` documented that it took one writer and that an encoder arriving as a second
-    would need the merge moved inside. Two writers already existed: the console read-merged-wrote
-    at the call site and the sweep renderer replaced the whole dict, which would have dropped
-    every console-held dial the moment they met."""
+    """Each holder (mouse, knobs, pads) holds dials under its own source name; the latest hold
+    wins a shared dial, and freeing one source leaves the others' holds in place."""
 
     runner = _runner()
     runner.hold("console", {"noise": 0.6})
@@ -259,9 +252,8 @@ def test_two_sources_can_hold_different_dials_without_dropping_each_other():
 
 
 def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
-    """The render loop iterates `hands` while the window thread writes it. Inserting into a
-    dict that is being iterated is a `RuntimeError` that could only ever fire mid-performance,
-    so every writer has to rebind -- one level up as well, or the merge itself is the race."""
+    """The render loop iterates `hands` while other threads write it, so each write builds a new
+    dict and rebinds it; editing in place could raise `RuntimeError` mid-iteration."""
 
     runner = _runner()
     runner.hold("a", {"noise": 0.5})
@@ -272,8 +264,8 @@ def test_a_writer_rebinds_the_dict_the_loop_reads_rather_than_editing_it():
 
 
 def test_a_rule_wired_past_the_end_of_the_kit_is_reported_not_silently_skipped():
-    """`--layout tracks` against an eight-input machine puts CY and CB past the end, which used
-    to be a `continue` inside the frame loop sixty times a second with nothing said."""
+    """A rule on a channel the input does not have (e.g. CY on an eight-channel input) is
+    dropped and reported when the preset loads."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import PresetRunner
 
@@ -289,28 +281,27 @@ def test_a_rule_wired_past_the_end_of_the_kit_is_reported_not_silently_skipped()
 
 
 def test_a_drum_can_be_wired_to_a_dial_while_it_runs():
-    """The thing this whole layer was heading toward: which drum drives which dial was data on
-    the preset already, and what was missing was a way to change it without editing a file."""
+    """`wire` toggles a drum-to-dial rule at runtime: the first call wires it and the hit then
+    moves the dial, the second call unwires it."""
     from ganlive.control.kit import INDEX
 
     runner = _runner()
     assert runner.routing() == {}
 
-    assert runner.route("BD", "noise") is True
+    assert runner.wire(["BD"], "noise") is True
     assert [(i.track, ch) for i, ch in runner.routing()["noise"]] == [("BD", INDEX["BD"])]
     since = np.full(len(INDEX), 1e6, dtype=np.float32)
     since[INDEX["BD"]] = 0.0
     runner.apply(since, {}, FakeKnobs())
     assert runner.surface["noise"] > DIALS["noise"][0]
 
-    assert runner.route("BD", "noise") is False, "the same call unwires it"
+    assert runner.wire(["BD"], "noise") is False, "the same call unwires it"
     assert "noise" not in runner.routing()
 
 
 def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
-    """Control a dial from a drum, but *not too much*. The amount was on the
-    rule already and only the interface could not reach it -- so the failure this guards is a
-    grid that can only wire at one fixed strength."""
+    """A wired rule's amount can be changed (and is clamped to `AMOUNT_MAX`) without rewiring;
+    a larger amount pushes further, and a negative one pushes down."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import AMOUNT_MAX
 
@@ -319,7 +310,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
     assert runner.amount_on("noise", bd) is None, "nothing is wired yet"
     assert runner.set_amount_on("noise", bd, 0.5) is None, "an unwired cell is not created"
 
-    runner.route("BD", "noise")
+    runner.wire(["BD"], "noise")
     assert runner.amount_on("noise", bd) == 0.3
 
     assert runner.set_amount_on("noise", bd, 0.08) == 0.08
@@ -327,7 +318,7 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
 
     def push(dial, amount):
         r = _runner()
-        r.route("BD", dial)
+        r.wire(["BD"], dial)
         r.set_amount_on(dial, INDEX["BD"], amount)
         since = np.full(len(INDEX), 1e6, dtype=np.float32)
         since[INDEX["BD"]] = 0.0
@@ -346,9 +337,8 @@ def test_how_hard_a_drum_pushes_a_dial_can_be_set_without_rewiring_it():
 
 
 def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire():
-    """A routing cell is a CHANNEL, and under the voices layout two drums share one. Reading
-    the loudest rule on the channel while writing to whichever track a display listed first
-    let the bar sit still while the wheel moved something else -- a control that looks dead."""
+    """A routing cell is a channel, which two drums share under the voices layout. Setting its
+    strength sets every rule on the channel, so the value shown is the value edited."""
     from ganlive.control.kit import channel_map
     from ganlive.presets import PresetRunner
 
@@ -358,8 +348,8 @@ def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire
 
     preset = Preset(**{**FIXTURES["still"].__dict__, "impulses": []})
     runner = PresetRunner(preset, voices, 60.0, layout=fastgan())
-    runner.route("RS", "se_512")
-    runner.route("CP", "se_512")
+    runner.wire(["RS"], "se_512")
+    runner.wire(["CP"], "se_512")
     runner.set_amount_on("se_512", channel, 0.12)
     runner.set_amount_on("se_512", channel, 0.44)
 
@@ -368,11 +358,8 @@ def test_the_strength_that_is_drawn_and_the_strength_that_is_edited_are_one_wire
 
 
 def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it():
-    """**The column is a channel, not a drum.** RS and CP share one pair of outputs, so the
-    grid draws them as one cell and reads its strength back per channel -- but the click wired
-    only the first of the two. A cell lit by CP could not be cleared by clicking it: the click
-    added an RS rule beside it, and clicking again took that one away and left the light on.
-    Four of the twelve tracks could not be wired from the grid at all."""
+    """A grid column is a channel, not a drum: clicking a cell shared by RS and CP wires both,
+    and clicking a lit cell clears every rule on it, whichever drum lit it."""
     from ganlive.control.kit import channel_map
     from ganlive.presets import PresetRunner
 
@@ -381,7 +368,7 @@ def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it
     assert voices["CP"] == channel, "this test needs two drums on one channel"
 
     runner = PresetRunner(Preset(**{**FIXTURES["still"].__dict__, "impulses": []}), voices, 60.0, layout=fastgan())
-    runner.route("CP", "se_512", amount=0.5)          # a saved setting wired the second of them
+    runner.wire(["CP"], "se_512", amount=0.5)          # a saved setting wired the second of them
 
     assert runner.wire(["RS", "CP"], "se_512") is False, "the cell is lit, so a click clears it"
     assert runner.amount_on("se_512", channel) is None, "and the light goes out"
@@ -392,10 +379,8 @@ def test_a_click_in_the_grid_wires_the_whole_column_and_a_second_click_clears_it
 
 
 def test_changing_a_strength_does_not_restart_the_slow_rules():
-    """`load` blanks `_macro_state` so a new setting does not glide down from the old one's
-    smoothed values. A wheel drag is dozens of notches, and reloading on each one restarted
-    every slow rule's glide -- a move nobody asked for, from the event thread, while the render
-    thread was inside `apply`."""
+    """Adjusting a wire's strength edits it in place without reloading, so the slow rules'
+    smoothed state (which `load` resets) is untouched by a scroll-wheel drag."""
     from ganlive.control.kit import INDEX
 
     runner = _runner("full")
@@ -405,7 +390,7 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
     glide = dict(runner._macro_state)
     assert glide, "this test needs a preset whose slow rules have started smoothing"
 
-    runner.route("BD", "noise")                      # creating a wire DOES reload, and resets
+    runner.wire(["BD"], "noise")                      # creating a wire DOES reload, and resets
     runner.apply(since, {"density": 0.8, "energy": 0.5, "active": 0.4},
                  FakeKnobs())
     glide = dict(runner._macro_state)
@@ -417,13 +402,13 @@ def test_changing_a_strength_does_not_restart_the_slow_rules():
 
 
 def test_a_strength_set_by_hand_survives_being_saved_and_read_back():
-    """A setting is saved as JSON and picked up next time. A strength that did not round-trip
-    would silently revert to the default push, which looks like the interface forgetting."""
+    """A strength set at runtime round-trips through the preset's JSON form, rather than reverting
+    to the default push on the next load."""
     from ganlive.control.kit import INDEX
     from ganlive.presets import from_dict, to_dict
 
     runner = _runner()
-    runner.route("BD", "noise")
+    runner.wire(["BD"], "noise")
     runner.set_amount_on("noise", INDEX["BD"], -0.11)
 
     back = from_dict(to_dict(runner.preset))
@@ -432,13 +417,12 @@ def test_a_strength_set_by_hand_survives_being_saved_and_read_back():
 
 
 def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
-    """A `Preset` outlives the runner holding it -- the library keeps every one it loaded.
-    Editing it in place would mean tabbing away and back did not undo a hand-made rule, with
-    nothing to say why."""
+    """Wiring edits the runner's copy, not the library's `Preset`, so reloading the preset
+    restores its original rules."""
 
     before = list(FIXTURES["voices"].impulses)
     runner = _runner("voices")
-    runner.route("BD", "se_64")
+    runner.wire(["BD"], "se_64")
     assert FIXTURES["voices"].impulses == before, "the loaded setting must be untouched"
     assert runner.preset.impulses != before
 
@@ -447,25 +431,24 @@ def test_wiring_a_drum_by_hand_does_not_edit_the_setting_it_came_from():
 
 
 def test_the_default_push_points_away_from_where_the_dial_is_parked():
-    """A dial parked near the top of its travel has nowhere to go upward, so a rule that pushes
-    it up does nothing visible from where it already is."""
+    """A new wire pushes a dial parked high downward and one parked low upward, so the push is
+    always visible."""
 
     runner = _runner("release")
     assert runner._base["hold"] > 0.6, "the fixture needs a dial parked high"
-    runner.route("CP", "hold")
+    runner.wire(["CP"], "hold")
     pushed = [i for i in runner.preset.impulses if i.track == "CP" and i.dial == "hold"]
     assert pushed and pushed[0].amount < 0, "a dial parked high gets pushed down"
 
-    runner.route("CP", "noise")
+    runner.wire(["CP"], "noise")
     up = [i for i in runner.preset.impulses if i.track == "CP" and i.dial == "noise"]
     assert up and up[0].amount > 0, "one parked at the bottom gets pushed up"
     assert pushed[0].attack > 0 and up[0].attack == 0
 
 
 def test_writes_from_two_threads_do_not_lose_a_source():
-    """The first version argued a lost update would last one frame because every writer rewrites
-    its own key sixty times a second. No writer that exists does: the console writes only when
-    the mouse moves, so a dropped dial would have been dropped for good."""
+    """Concurrent holds from two threads must not lose either source; writers only write on
+    change (e.g. when the mouse moves), so a lost update would stay lost."""
     import threading
 
 
@@ -503,7 +486,7 @@ def test_a_saved_setting_is_in_the_rotation_the_next_time_it_starts(tmp_path):
 
     runner = _runner("full")
     runner.hold("console", {"noise": 0.62, "hold": 0.81})
-    runner.route("BD", "se_256")
+    runner.wire(["BD"], "se_256")
 
     library = Library(tmp_path)
     shipped = list(library.names)
@@ -553,9 +536,8 @@ def test_a_hand_edited_setting_with_a_typo_says_which_key_rather_than_dropping_i
 
 
 def test_the_hand_positions_are_not_read_as_a_setting(tmp_path):
-    """`Positions` writes into the folder `Library` scans by extension, so every launch
-    reported the hand positions as a setting that would not load -- one line of known noise
-    in the one place a genuinely broken setting announces itself."""
+    """The saved held-dial positions file lives in the preset folder, and `Library` must not
+    list it as a preset or report it as broken."""
     from ganlive.presets import POSITIONS_NAME, Library, Positions
 
     runner = _runner()
@@ -569,9 +551,8 @@ def test_the_hand_positions_are_not_read_as_a_setting(tmp_path):
 
 
 def test_a_saved_setting_says_where_it_came_from_rather_than_wearing_another_blurb(tmp_path):
-    """The blurb is what the strip prints when you tab onto a setting. Carrying `full`'s
-    sentence across onto a setting whose rules have since been rewired by hand is a caption
-    describing something else, on the one line that exists to say what this is."""
+    """A saved preset's blurb (shown on the strip) names the preset it was derived from instead
+    of copying that preset's description."""
     from dataclasses import replace
 
     from ganlive.presets import Library

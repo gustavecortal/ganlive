@@ -1,15 +1,8 @@
-"""The export rewrites must produce the same picture, or they are worthless.
+"""The export rewrites, and graph capture: each must produce the same picture.
 
-A rewrite that is *nearly* right is worse than one that is plainly wrong: it survives every
-check that looks at a single picture, and the model that ships is then not the model that was
-trained.
-
-**The claim is mathematical identity, not bit identity, and the difference is worth stating.**
-Splitting one convolution into two changes the order floating-point results accumulate in, so
-the outputs can differ in the last bits. Measured: exactly 0.0 on the shipping fp32
-checkpoint, and 2.7e-05 of one 8-bit level on the toy fixture below. `IDENTICAL` is set four
-orders of magnitude under a level -- tight enough that any real change fails it, loose enough
-not to fail on reassociation.
+The claim is mathematical identity, not bit identity: splitting one convolution into two
+changes the order floating-point results accumulate in. `IDENTICAL` is far under one 8-bit
+level, so any real change fails it and reassociation does not.
 """
 from __future__ import annotations
 
@@ -35,7 +28,7 @@ def _folded(nz: int = 32, seed: int = 0, gain: float = 2.0) -> tuple[nn.Module, 
     with torch.no_grad():
         for parameter in net.parameters():
             parameter.mul_(gain)
-    prepared = prepare_for_inference(net, nz, "cpu", half=False, fold=True)
+    prepared = prepare_for_inference(net, nz, "cpu", half=False)
     return prepared["net"].eval(), nz
 
 
@@ -110,9 +103,8 @@ def _steerable(tmp_path, split=True):
     import contextlib
     import io
 
-    import numpy as np
-
     from ganlive.dials import steer as K
+    from ganlive.models.common import host_latent
     from ganlive.models.fastgan import Generator, freeze_noise
     from ganlive.models.fold import prepare_for_inference
     from ganlive.models.onnx_rewrite import bank_the_knobs, split_gated_convs
@@ -124,13 +116,11 @@ def _steerable(tmp_path, split=True):
             with torch.no_grad():                      # vacuous
                 module.weight.fill_(0.4)
     freeze_noise(net, seed=3)
-    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True)["net"].eval()
+    net = prepare_for_inference(net, 32, "cpu", half=False)["net"].eval()
 
-    # **Bring the picture off the rails of the tanh.** A randomly built generator drives its final squash to
-    # 99.996% saturation, and a clipped picture cannot be moved by anything upstream: `pre_tanh` and two
-    # noise rungs measured as *exactly* inert, which is the fixture speaking and not the mechanism.
-    probe = torch.from_numpy(
-        np.random.default_rng(0).standard_normal((1, 32)).astype("float32"))
+    # Bring the picture off the rails of the tanh. A randomly built generator saturates its
+    # final squash almost everywhere, and a clipped picture cannot be moved by any dial.
+    probe = torch.from_numpy(host_latent(32, 0))
     seen: list[float] = []
     handle = net.to_big.register_forward_hook(lambda _m, _i, o: seen.append(float(o.std())))
     with torch.no_grad():
@@ -142,8 +132,8 @@ def _steerable(tmp_path, split=True):
         clipped = (net(probe)[0].abs() > 0.99).float().mean().item()
     assert clipped < 0.05, f"{clipped:.2%} of the fixture is clipped; it can measure nothing"
 
-    # A 256-tall ladder has no `se_512` and no `feat_512`; ask for what it has.
-    knobs = K.install(net, "cpu", torch.float32, wanted=K.available(net))
+    # A 256-tall ladder has no `se_512` and no `feat_512`; `install` takes what it has.
+    knobs = K.install(net, "cpu", torch.float32)
     banked = bank_the_knobs(net, knobs).eval()
     if split:
         split_gated_convs(banked.net)
@@ -159,18 +149,20 @@ def _steerable(tmp_path, split=True):
 
 
 def test_every_exported_setting_moves_the_picture_exactly_as_the_module_does(tmp_path):
-    """**A view traces as a constant**, which is how an exported model came to arrive with six dials the strip
-    had to draw dark. Banking them makes each one a slice of the graph's second input, and what must then
-    be true is not that the nodes are there but that driving them changes the output. An exported dial that
-    does nothing is the inert-knob failure with the evidence thrown away."""
+    """A view traces as a constant, so the settings are banked into a second graph input.
+    What must then be true is not that the nodes are there but that driving them changes the
+    output exactly as driving the module does."""
     import numpy as np
     import onnxruntime as ort
+
+    from ganlive.models.common import host_latent
+    from ganlive.pixels import levels
 
     path, banked, names = _steerable(tmp_path)
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     assert [i.name for i in sess.get_inputs()] == ["z", "k"]
 
-    z = np.random.default_rng(0).standard_normal((1, 32)).astype(np.float32)
+    z = host_latent(32, 0)
     neutral = np.ones(len(names), np.float32)
     zt = torch.from_numpy(z)
 
@@ -187,8 +179,8 @@ def test_every_exported_setting_moves_the_picture_exactly_as_the_module_does(tmp
         k = neutral.copy()
         k[i] = 20.0 if name.startswith("noise.") else 1.8
         graph, module = moved(k)
-        by_graph = float(np.abs(graph - base_graph).mean() * 127.5)
-        by_module = float(np.abs(module - base_module).mean() * 127.5)
+        by_graph = levels(graph, base_graph)
+        by_module = levels(module, base_module)
         assert by_graph == pytest.approx(by_module, rel=0.05, abs=0.5), (
             f"{name}: the module moves {by_module:.3f} 8-bit levels and the graph "
             f"{by_graph:.3f} -- the exported dial is not the dial")
@@ -198,27 +190,23 @@ def test_every_exported_setting_moves_the_picture_exactly_as_the_module_does(tmp
 
 def test_the_settings_names_travel_inside_the_graph(tmp_path):
     """A second input of shape `(n,)` says how many dials there are and nothing about which
-    is which. The argument for this format is that a model nobody here has the code for
-    still arrives able to be played, so the names cannot live in a sidecar only."""
+    is which, so the names travel in the graph's own metadata."""
     import onnx
 
-    from ganlive.models.onnx import settings_of
+    from ganlive.models.onnx_file import dials_of, name_settings, structure
 
     path, _banked, names = _steerable(tmp_path)
-    assert settings_of(path) == [], "nothing writes them during a bare export"
+    assert dials_of(path)["settings"] == [], "nothing writes them during a bare export"
 
-    model = onnx.load(str(path), load_external_data=False)
-    entry = model.metadata_props.add()
-    # The prefix a graph exported under this project's earlier name carries; both are read.
-    entry.key, entry.value = "smallgen.settings", ",".join(names)
+    model = structure(path)
+    name_settings(model, names)
     onnx.save(model, str(path))
-    assert settings_of(path) == names
+    assert dials_of(path)["settings"] == names
 
 
 def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
-    """It counts *slots reached*, not modules replaced -- one noise dial drives every
-    injection at its rung, so there are more sites than settings and counting modules would
-    have said yes to a graph with a frozen dial in it."""
+    """It counts settings reached, not modules replaced: one noise setting drives several
+    modules, so counting modules would accept a graph with a frozen dial in it."""
     from ganlive.dials import steer as K
     from ganlive.models.fastgan import Generator, freeze_noise
     from ganlive.models.fold import prepare_for_inference
@@ -227,11 +215,10 @@ def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
     torch.manual_seed(4)
     net = Generator(ngf=16, nz=32, im_size=256, im_width=384).eval()
     freeze_noise(net, seed=3)
-    net = prepare_for_inference(net, 32, "cpu", half=False, fold=True)["net"].eval()
-    knobs = K.install(net, "cpu", torch.float32, wanted=K.available(net))
+    net = prepare_for_inference(net, 32, "cpu", half=False)["net"].eval()
+    knobs = K.install(net, "cpu", torch.float32)
 
     banked = bank_the_knobs(net, knobs)
-    assert len(banked.names) == len(knobs.names)
 
     knobs.names.append("sle.se_2048")            # a setting no module can possibly serve
     knobs.index["sle.se_2048"] = len(knobs.names) - 1
@@ -242,8 +229,8 @@ def test_banking_refuses_to_leave_a_setting_behind(tmp_path):
 class _Echo(nn.Module):
     """A generator that writes each frame into a buffer it keeps, as a captured graph does.
 
-    It also remembers the latent it was handed, so the stub backend below can "replay" by
-    running it again -- which is the only part of a device graph a CPU test can model.
+    It remembers the latent it was handed, so the stub backend below can replay it by
+    running it again.
     """
 
     def __init__(self, nz: int = 8) -> None:
@@ -288,9 +275,8 @@ def _backend(monkeypatch, replay) -> list[torch.Tensor]:
 
 
 def test_a_capture_that_paints_the_same_frame_whatever_the_latent_is_refused(monkeypatch):
-    """**The one failure no exception reports.** A recording that held none of the forward
-    replays faster than anything and paints a still picture, and every later measurement --
-    the dial sweep included -- would go on reading that one frame and calling it healthy."""
+    """A recording that held none of the forward replays fast and paints a still picture,
+    and no exception would report it."""
     from ganlive.models.capture import capture
 
     net = _Echo()
@@ -302,7 +288,7 @@ def test_a_capture_that_paints_the_same_frame_whatever_the_latent_is_refused(mon
 
 
 def test_a_capture_that_does_not_reproduce_the_forward_is_refused(monkeypatch):
-    """Exact, not approximate -- the rule this module is written to."""
+    """A replay has to reproduce the forward exactly."""
     from ganlive.models.capture import capture
 
     net = _Echo()
@@ -344,23 +330,23 @@ def test_a_capture_that_reproduces_the_forward_is_taken_and_steers(monkeypatch):
 
 
 def test_a_feed_is_uploaded_by_the_graph_and_written_on_the_host(monkeypatch):
-    """The settings vector and the push are read by the recording from host twins, so the frame
-    path issues nothing between replays -- the invariant `Replay` carries the measurement for."""
+    """The settings vector and the push buffer are uploaded by the recording from host
+    buffers, so the frame path issues nothing between replays."""
     setting = torch.full((3,), 2.0)
     _net, got = _taken(monkeypatch, feeds=[setting])
-    twin = got.twin(setting)
-    assert torch.equal(twin, torch.full((3,), 2.0)), "the twin starts holding what the card holds"
-    twin.fill_(5.0)
+    host = got.host_buffer(setting)
+    assert torch.equal(host, torch.full((3,), 2.0)), "it starts holding what the card holds"
+    host.fill_(5.0)
     got(torch.randn(1, 8))
     assert torch.equal(setting, torch.full((3,), 5.0)), "a host write reached the card by replay"
     with pytest.raises(KeyError, match="no upload"):
-        got.twin(torch.zeros(3))
+        got.host_buffer(torch.zeros(3))
 
 
 def test_a_generator_that_is_not_a_module_is_never_captured():
-    """An adopted ONNX graph runs under its own runtime, so a recording of the torch stream
-    would hold none of its work -- and would replay a still picture with nothing raised. No
-    backend is stubbed here: the refusal has to come before anything is asked of the device."""
+    """An ONNX graph runs under its own runtime, so a recording of the torch stream would
+    hold none of its work. No backend is stubbed: the refusal comes before the device is
+    asked anything."""
     from ganlive.models.capture import capture
 
     got, said = capture(lambda z: z, 8, "cpu", torch.float32)

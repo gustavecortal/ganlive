@@ -1,13 +1,16 @@
-"""A strip of sliders beside the picture, one per dial, turned with the mouse while it runs."""
+"""The control strip beside the picture: one slider per dial, a routing grid, a model picker,
+and the walk's scope, drawn with SDL and turned with the mouse while the picture runs.
+"""
 from __future__ import annotations
 
 import time
 from dataclasses import replace
 
+from ganlive.clock import position
 from ganlive.control.kit import by_channel
-from ganlive.dials.table import clamp01, direction_index, readout
+from ganlive.curves import clamp01
+from ganlive.dials.table import DIRECTIONS, direction_index, readout
 from ganlive.presets import AMOUNT_MAX
-from ganlive.walk import position
 
 PAD = 12
 DOT_W = 10
@@ -29,9 +32,13 @@ LINE_PITCH = 15
 LINES_H = 8 + (FIXED_LINES + KEY_LINES) * LINE_PITCH
 STATUS_H = SCOPE_H + DESC_H + LIGHTS_H + LINES_H
 
-#: The shortest window the strip is whole in, for the layout it is drawing. A model with
-#: more dials than ours needs a taller window, and the number was a constant.
+#: Font families, first found wins: Windows, then Linux, then anything.
+SANS = "segoeui,dejavusans,arial"
+MONO = "consolas,dejavusansmono,couriernew"
+
+
 def floor_height(groups) -> int:
+    """The shortest window the strip is whole in, for this layout's groups."""
     return PAD + len(groups) * HEAD_H + _dial_count(groups) * ROW_MIN + STATUS_H
 
 
@@ -43,6 +50,7 @@ WHEEL_STEP = 0.02
 
 CELL_H = 12
 
+#: Seconds a drum's light takes to fade after a hit.
 LIGHT_TAIL = 0.35
 
 PANEL = (20, 25, 29)
@@ -51,30 +59,26 @@ TEXT = (201, 209, 214)
 FAINT = (108, 120, 128)
 HAND = (243, 246, 248, 255)
 DOT_DARK = (44, 54, 60, 255)
-#: A dial this model does not have. Dim enough to read as "not a control here" at a glance,
-#: legible enough that the name can still be read.
+#: A dial this model does not have: dim, but the name stays legible.
 DEAD = (62, 70, 76)
-#: A routing cell on a dial that cannot be wired. `DEAD` is a *text* colour -- dimmer than TEXT
-#: where it is read, but brighter than `TRACK`, the cell outline it was reused for. That made
-#: the rows a click is refused on the brightest thing in the grid.
+#: The outline of a routing cell that cannot be wired; darker than `TRACK`, the live outline.
 DEAD_CELL = (28, 34, 39)
-#: The measured-strength underline beneath a direction's track. Dim: it is a fact about the
-#: dial, not a value, and it must not compete with the bar that shows where the dial is.
+#: The measured-strength underline beneath a direction's track. Dim, so it does not compete
+#: with the bar that shows where the dial is.
 STRENGTH = (84, 116, 92)
 REC = (226, 74, 74, 255)
-#: One colour per group. LATENT is the block that is identical on every model, so it
-#: gets its own; MODEL is the per-architecture block and keeps the old LOOK colour.
+#: One colour per group.
 GROUP_COLOUR = {"MASTER": (233, 196, 74), "MOTION": (74, 170, 178),
                 "LATENT": (146, 200, 120), "MODEL": (228, 87, 46)}
 
+#: How often the strip's text texture is repainted when nothing forces it.
 TEXT_HZ = 8.0
 
-#: How many rendered lines and wrapped paragraphs the strip keeps before starting again. A
-#: bound rather than an eviction policy: almost every line a repaint asks for is the same one
-#: it asked for last time, and the few that are not -- the readouts, the status -- are cheap to
-#: draw again after a clear. Each kept line is a small surface, so this is a few megabytes.
+#: How many rendered lines and wrapped paragraphs the strip keeps before starting again. Almost
+#: every line a repaint asks for is the one it asked for last time.
 TEXT_CACHE = 2048
 
+#: The holder name and priority the strip holds dials under; see `PresetRunner.hold`.
 SOURCE = "console"
 PRIORITY = 10
 
@@ -98,10 +102,14 @@ def model_at(y: int, floor: int, count: int) -> int | None:
     row = (y - PAD) // MODEL_ROW
     return row if 0 <= row < fits else None
 
+
+#: What a key in `HELP` needs before the strip offers it: nothing (`MINE`), a shelf, the
+#: machine's encoders, or else an action of that name passed in by the caller.
 MINE = "panel"
 NEEDS_SHELF = "shelf"
 NEEDS_ENCODERS = "encoders"
 
+#: `(keys, label, what it needs)`. One table for the help line and the key handler.
 HELP = ((("r",), "free", MINE), (("s",), "save", "save"), (("v",), "rec", "record"),
         (("c",), "still", "still"), (("tab",), "preset", "preset"),
         (("[", "]"), "model", "model"), (("m",), "load", NEEDS_SHELF),
@@ -109,7 +117,9 @@ HELP = ((("r",), "free", MINE), (("s",), "save", "save"), (("v",), "rec", "recor
         (("g",), "route", MINE), (("escape",), "quit", None))
 
 BUILT_IN = (None, MINE, NEEDS_SHELF, NEEDS_ENCODERS)
+#: The actions a caller may pass to `DialPanel`.
 ACTIONS = frozenset(a for _keys, _label, a in HELP if a not in BUILT_IN)
+
 
 def _breakable(words, font, width: int):
     """Split any word wider than the strip, so a line can always be made to fit."""
@@ -124,7 +134,8 @@ def _breakable(words, font, width: int):
 
 
 def wrap(text: str, font, width: int, max_lines: int) -> list[str]:
-    """Break `text` to fit `width` pixels, measured with the font that will draw it."""
+    """Break `text` to fit `width` pixels, measured with the font that will draw it. A text
+    that needs more than `max_lines` ends in `...`."""
     lines, line, dropped = [], "", False
     for word in _breakable(text.split(), font, width):
         trial = f"{line} {word}".strip()
@@ -153,7 +164,7 @@ def _row_height(height: int, groups) -> int:
 
 
 def layout(height: int, groups) -> list[tuple[str, str, int, int]]:
-    """`(kind, label, y, height)` for every row, top to bottom. Pure; no window needed."""
+    """`(kind, label, y, height)` for every row, top to bottom; `kind` is `head` or `dial`."""
     row = _row_height(height, groups)
     out, y = [], PAD
     for title, names in groups:
@@ -172,12 +183,11 @@ def rows(height: int, groups) -> list[tuple[str, int, int]]:
 
 
 def blocks(height: int, groups) -> dict[str, tuple[int, int]]:
-    """`(top, height)` of each block below the dials, so drawing and hit-testing cannot disagree."""
+    """`(top, height)` of each block below the dials, for drawing and hit-testing alike."""
     rows_end = (PAD + len(groups) * HEAD_H
                 + _dial_count(groups) * _row_height(height, groups))
     top = max(rows_end, min(height - STATUS_H, rows_end + PAD))
-    # A tall window's spare height goes to the description, up to twice its floor: the rows stop
-    # growing at ROW_MAX, and a direction's blurb ends with the one measured fact about it.
+    # A tall window's spare height goes to the description, up to twice its floor.
     desc = DESC_H + max(0, min(DESC_H, height - top - STATUS_H))
     out = {}
     for name, tall in (("scope", SCOPE_H), ("desc", desc),
@@ -208,16 +218,12 @@ def cell_box(cx: int, cw: int, top: int, tall: int) -> tuple[int, int, int, int]
     return cx + 2, top + (tall - CELL_H) // 2, cw - 4, CELL_H
 
 
-def grid_cell(x: int, y: int, width: int, height: int, count: int,
-              groups) -> tuple[str, int] | None:
-    """`(dial, column)` under a point in the routing view, or None."""
-    for label, top, tall in rows(height, groups):
-        if not (top <= y < top + tall):
-            continue
-        for i, (cx, cw) in enumerate(grid_columns(width, count)):
-            if cx <= x < cx + cw:
-                return label, i
-    return None
+def grid_cell(x: int, y: int, laid_out, columns) -> tuple[str, int] | None:
+    """`(dial, column)` under a point in the routing view, given `rows()` and `grid_columns()`."""
+    label = row_at(y, laid_out)
+    if label is None:
+        return None
+    return next(((label, i) for i, (cx, cw) in enumerate(columns) if cx <= x < cx + cw), None)
 
 
 def track_span(width: int) -> tuple[int, int]:
@@ -232,14 +238,8 @@ def value_at(x: int, width: int) -> float:
 
 
 def row_at(y: int, laid_out) -> str | None:
-    """Which dial a vertical position is on, given rows from `rows()` or already laid out."""
+    """Which dial a vertical position is on, given rows from `rows()`."""
     return next((label for label, top, tall in laid_out if top <= y < top + tall), None)
-
-
-def hit(x: int, y: int, width: int, height: int, groups) -> tuple[str, float] | None:
-    """Which dial is under a point in the strip, and what value that point asks for."""
-    label = row_at(y, rows(height, groups))
-    return None if label is None else (label, value_at(x, width))
 
 
 def scope_box(width: int, top: int, tall: int) -> tuple[int, int, int, int]:
@@ -274,7 +274,8 @@ def _wired_amounts(drivers) -> dict[str, dict[int, tuple[float, bool]]]:
 
 
 def driven_by(runner) -> dict[str, tuple[list[tuple[object, int]], list[str]]]:
-    """`dial -> ([(rule, channel)] whose hits push it, measurements that set it)`."""
+    """`dial -> ([(rule, channel)] whose hits push it, measurements that set it)`.
+    Channel -1 means any hit."""
     out: dict[str, tuple[list[tuple[object, int]], list[str]]] = {}
     for dial, wired in runner.routing().items():
         out.setdefault(dial, ([], []))[0].extend(wired)
@@ -286,7 +287,11 @@ def driven_by(runner) -> dict[str, tuple[list[tuple[object, int]], list[str]]]:
 
 
 class DialPanel:
-    """The strip: one row per dial, the mouse, and the one dict the render loop reads."""
+    """The strip: one row per dial of the playing model, and the mouse and keys that turn them.
+
+    `runner` is the `PresetRunner` it reads and holds dials on. `actions` maps the names in
+    `ACTIONS` to callbacks for keys the host implements; `bank`, `shelf` and `encoders` are
+    optional and enable the model switch, the picker and knob learning."""
 
     width = WIDTH
 
@@ -303,9 +308,8 @@ class DialPanel:
         self.encoders = encoders
         self._shelf_rows: list[tuple[object, int, int]] = []
         self._shelf_top = 0
-        shared = by_channel(runner.channel_of)
-        self.kit = [(channel, "/".join(names)) for channel, names in sorted(shared.items())]
-        self.tracks_on = [names for _channel, names in sorted(shared.items())]
+        #: `(channel, track names)` per kit channel: one light and one routing column each.
+        self.kit = sorted(by_channel(runner.channel_of).items())
         self.mode = MODE_DIALS
         self.actions = dict(actions or {})
         unknown = set(self.actions) - ACTIONS
@@ -315,6 +319,7 @@ class DialPanel:
         self._drag: str | None = None
         self._model_seen = runner.model
         self._focus = next(iter(self.dials))
+        self._hands_seen = None
         self._was_held: set[str] = set()
         self._learns_seen = 0
         self._size = (0, 0)
@@ -323,7 +328,7 @@ class DialPanel:
         self._font = self._small = self._tiny = self._body = self._micro = None
         self._cells: list[tuple[str, str, int, int]] = []
         self._rows: list[tuple[str, int, int]] = []
-        #: The layout the rows below were laid out for. See `draw`.
+        #: The groups `_rows` were laid out for; a switch to another layout lays them out again.
         self._laid: tuple = ()
         self._lights: list[tuple[int, int, int, int]] = []
         self._columns: list[tuple[int, int]] = []
@@ -336,99 +341,77 @@ class DialPanel:
         self._wrapped: dict = {}
         self.reload()
 
-    def _say(self, font, text: str, colour):
-        """One rendered line, kept.
-
-        **`font.render` rasterises every glyph on every call**, and a repaint asks for
-        sixty-five of them -- every dial name, every group heading, every drum label and the
-        whole key help, in the same colour as the repaint before it. That runs at `TEXT_HZ` on
-        the window's thread, which on a 60 fps loop is one frame in eight, holding the GIL the
-        frame loop is waiting to take back: the strip costs +0.18 ms on the median frame and
-        +1.79 at p95, and p95 is what the budget is judged on."""
-        key = (font, text, colour)
-        got = self._said.get(key)
+    @staticmethod
+    def _kept(cache: dict, key, make):
+        """`cache[key]`, made on a miss. Cleared when full rather than evicting."""
+        got = cache.get(key)
         if got is None:
-            if len(self._said) >= TEXT_CACHE:
-                self._said.clear()
-            got = self._said[key] = font.render(text, True, colour)
+            if len(cache) >= TEXT_CACHE:
+                cache.clear()
+            got = cache[key] = make()
         return got
+
+    def _say(self, font, text: str, colour):
+        """One rendered line, kept: `font.render` rasterises every glyph on every call, on the
+        window's thread, holding the GIL the frame loop wants."""
+        return self._kept(self._said, (font, text, colour),
+                          lambda: font.render(text, True, colour))
 
     def _lines(self, text: str, font, width: int, max_lines: int) -> list[str]:
-        """`wrap`, kept. It measures with the font -- ninety-one `font.size` calls a repaint --
-        and what it measures is the focused dial's paragraph and the key help, neither of which
-        changes between repaints unless a hand moves."""
-        key = (text, font, width, max_lines)
-        got = self._wrapped.get(key)
-        if got is None:
-            if len(self._wrapped) >= TEXT_CACHE:
-                self._wrapped.clear()
-            got = self._wrapped[key] = wrap(text, font, width, max_lines)
-        return got
-
+        """`wrap`, kept: it measures every word with the font."""
+        return self._kept(self._wrapped, (text, font, width, max_lines),
+                          lambda: wrap(text, font, width, max_lines))
 
     def _model(self):
-        """The model the strip draws: **the runner's**, not the bank's.
+        """The model the strip draws: the runner's, falling back to the bank's.
 
-        `Bank.use` and `PresetRunner.use_model` are consecutive statements on the frame loop's
-        thread, and the window paints between them. Reading the layout off the bank and the
-        values off the runner drew half of each for that frame. The runner takes its model as
-        the last thing a switch does, so one reference says which model this frame is. The
-        bank answers only before the runner has been handed one."""
+        The runner's, because a switch sets the bank first and the runner last, and the window
+        may paint between the two; the runner's model always matches the runner's values."""
         model = self.runner.model
         if model is None and self.bank is not None:
             model = self.bank.current
         return model
 
     def live_dials(self) -> frozenset | None:
-        """The dials that reach the loaded model, or `None` when there is nothing to ask."""
+        """The dials that reach the loaded model, or None when there is nothing to ask."""
         model = self._model()
         return None if model is None else model.dials_live
 
-    @staticmethod
-    def dead(name: str, live, live_dials) -> bool:
-        """Whether a row is drawn dark rather than as a control.
+    def _dark(self, name: str) -> bool:
+        """Whether the loaded model says this dial reaches nothing."""
+        live = self.live_dials()
+        return live is not None and name not in live
 
-        **Both paint passes ask this, and they had disagreed.** The texture pass tested the
-        runner's surface as well as the model's live set; the per-frame pass tested only the
-        live set, and then read `live[name]` for a row the surface did not carry. A caller that
-        hands the runner a layout without a model can still put the two apart."""
-        return name not in live or (live_dials is not None and name not in live_dials)
+    def _dead(self, name: str) -> bool:
+        """Whether a row is drawn dark rather than as a control: the model lacks it, or the
+        runner's surface does not carry it yet (a caller that skipped `use_model`)."""
+        return name not in self.runner.surface.values or self._dark(name)
 
     @property
     def dials(self):
-        """The loaded model's dials. **Not a module constant any more**: an adopted graph brings its own MODEL
-        block, with its own count, and the strip's whole geometry -- row height, block tops, the shortest
-        window it is whole in -- is a function of how many rows there are."""
+        """The loaded model's dial layout. The strip's geometry follows it."""
         model = self._model()
         return (self.runner.surface if model is None else model).layout
 
     @property
     def focus(self) -> str:
-        """The dial being described, always one the loaded model has.
-
-        A switch retires dials -- one checkpoint keeps 4 of its 8 directions where the next
-        keeps all 8, a StyleGAN2 has no `se_*` -- and the name a hand was last on outlives them.
-        Every reader of it looks the dial up in the layout, which raises, on the window's
-        thread, one frame after the switch."""
+        """The dial being described: the last one touched, if the loaded model still has it."""
         if self._focus not in self.dials:
             self._focus = next(iter(self.dials))
         return self._focus
 
     def _colour(self, name: str) -> tuple[int, int, int, int]:
-        """This dial's group colour, kept.
-
-        `self.dials` is a property that walks the bank to the loaded model's layout, and this
-        is asked once per drawn row and twice on a row with a driver dot -- twenty-odd chains
-        and twenty-odd freshly built 4-tuples per frame, for a mapping that changes only when
-        the model does. Cleared in `_resize`, which is what runs when it changes."""
+        """This dial's group colour, kept until the next relayout."""
         got = self._colours.get(name)
         if got is None:
             got = self._colours[name] = (*GROUP_COLOUR[self.dials[name].group], 255)
         return got
 
-    def _directions(self):
+    def _levels(self) -> tuple[float, ...]:
+        """Each surviving direction's measured effect, in rank order, or `()`."""
         model = self._model()
-        return None if model is None else model.directions
+        dirs = None if model is None else model.directions
+        return tuple(dirs.levels) if dirs is not None and dirs.levels else ()
 
     def _right(self, surf, img, y: int) -> None:
         """Blit against the strip's right-hand edge."""
@@ -451,23 +434,15 @@ class DialPanel:
         self._dirty |= bool(held) if name is None else name in held
         self.runner.free(SOURCE, name)
 
-    def live(self, layout=None) -> dict[str, float]:
-        """Where every dial actually is this frame, once the preset and the rules have moved it.
-
-        `layout` is the one `draw` already resolved, so the property is not walked again."""
-        values = self.runner.surface.values
-        names = self.dials if layout is None else layout
-        return {name: values[name] for name in names if name in values}
-
     def settings(self) -> dict[str, float]:
-        """What your hands are holding -- on the strip and on the machine's knobs -- as dial
-        values to fold into a preset. The strip wins where both hold one dial."""
+        """What the holders are holding -- the strip and the machine's knobs -- as dial values
+        to fold into a preset. The strip wins where both hold one dial."""
         held = {} if self.encoders is None else self.runner.held_by(self.encoders.source)
         held.update(self.runner.held_by(SOURCE))
         return {name: round(value, 3) for name, value in sorted(held.items())}
 
     def preset_now(self):
-        """The whole setting as it stands at the controls: the preset with your hands folded in."""
+        """The whole setting as it stands at the controls: the preset with the holders folded in."""
         preset = self.runner.preset
         return replace(preset, dials={**preset.dials, **self.settings()})
 
@@ -477,7 +452,6 @@ class DialPanel:
         self._wired = _wired_amounts(self._drivers)
         self._dirty = self._dirty or repaint
 
-
     def attach(self, renderer) -> None:
         """Called once by `Display`, on the thread that owns the window."""
         import pygame
@@ -485,40 +459,35 @@ class DialPanel:
         pygame.font.init()
         self._pg = pygame
         self._ren = renderer
-        self._font = pygame.font.SysFont("segoeui,dejavusans,arial", 15)
-        self._body = pygame.font.SysFont("segoeui,dejavusans,arial", 13)
-        self._small = pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13)
-        self._tiny = pygame.font.SysFont("segoeui,dejavusans,arial", 12, bold=True)
+        self._font = pygame.font.SysFont(SANS, 15)
+        self._body = pygame.font.SysFont(SANS, 13)
+        self._small = pygame.font.SysFont(MONO, 13)
+        self._tiny = pygame.font.SysFont(SANS, 12, bold=True)
         #: For a label that has to fit a column rather than a line of its own.
-        self._micro = pygame.font.SysFont("segoeui,dejavusans,arial", 10, bold=True)
-        # Both caches are keyed by the font object, so a second `attach` would otherwise keep
-        # lines drawn with fonts this panel no longer holds.
+        self._micro = pygame.font.SysFont(SANS, 10, bold=True)
+        # Both caches are keyed by font object, so lines drawn with old fonts are dropped.
         self._said.clear()
         self._wrapped.clear()
 
     def draw(self, ren, strip) -> None:
+        """One frame of the strip into `strip`, a `(x, y, w, h)` rect of the window.
+
+        The text is a texture repainted at `TEXT_HZ` or when something changes; the bars, the
+        held markers, the lights and the scope dot are rectangles drawn every frame."""
         x0, y0, w, h = strip
-        # **Keyed on the layout as well as the window.** The rows are the loaded model's dials,
-        # and a switch changes which dials those are without touching the window's size. The
-        # only thing that rebuilt them was a resize, and the window is only ever made TALLER --
-        # so a switch to a model with the same number of rows, or fewer, left the strip drawing
-        # the outgoing model's names, every one of them dark, with none of the incoming model's
-        # on it at all. Ours and a converted StyleGAN2 both come to nineteen rows.
-        # Resolved once and passed down. It is a property that walks `bank.current.layout`,
-        # and this function and the two below it asked for it about twenty-eight times a frame.
+        # Relaid out on a new window size or a new layout: a switch can change the dials
+        # without changing the window.
         layout = self.dials
         if (w, h) != self._size or layout.groups != self._laid:
             self._resize(w, h)
-        # A switch re-resolves which rules fire on the incoming model; the grid has to follow,
-        # or a click on a cell drawn empty removes a rule that is firing.
+        # A switch re-resolves which rules fire on the incoming model; the grid has to follow.
         if self.runner.model is not self._model_seen:
             self._model_seen = self.runner.model
             self.reload()
-        live = self.live(layout)
         self._follow_the_hand(layout)
         now = time.perf_counter()
         if self._dirty or now - self._last_paint >= 1.0 / TEXT_HZ:
-            self._paint(live)
+            self._paint()
             self._tex.update(self._surf)
             self._dirty = False
             self._last_paint = now
@@ -527,6 +496,7 @@ class DialPanel:
         rect = self._pg.Rect
         left, span = self._track
         hands = self.runner.hands
+        values = self.runner.surface.values
         since = getattr(self.extractor, "since", None)
         since = [] if since is None else since.tolist()
 
@@ -544,14 +514,12 @@ class DialPanel:
             self._draw_lights(ren, x0, y0, since)
             return
 
-        live_dials = self.live_dials()
-        since_any = min(since) if since else 1e6
         for name, top, tall in self._rows:
-            if self.dead(name, live, live_dials):
+            if self._dead(name):
                 continue
             ty = y0 + top + (tall - 8) // 2
             ren.draw_color = self._colour(name)
-            ren.fill_rect(rect(x0 + left, ty, max(2, round(span * live[name])), 8))
+            ren.fill_rect(rect(x0 + left, ty, max(2, round(span * values[name])), 8))
             held = hands.get(name)
             if held is not None:
                 ren.draw_color = HAND
@@ -559,48 +527,49 @@ class DialPanel:
                                    ty - 3, 3, 14))
             drivers = self._drivers.get(name)
             if drivers is not None:
-                ren.draw_color = self._driver_colour(name, drivers, since, since_any)
+                ren.draw_color = self._driver_colour(name, drivers, since)
                 ren.fill_rect(rect(x0 + PAD, ty + 1, 6, 6))
 
         self._draw_scope(ren, x0, y0)
-
         self._draw_lights(ren, x0, y0, since)
 
     def _follow_the_hand(self, layout) -> None:
-        """Describe whatever was just grabbed, whoever grabbed it."""
+        """Describe whatever was just grabbed, by whichever holder grabbed it."""
+        # A learn completes on the MIDI thread; flushed here, on the window's thread.
+        if self.encoders is not None and self.encoders.version != self._learns_seen:
+            self._learns_seen = self.encoders.version
+            self.encoders.flush()
+            self._dirty = True
         held = self.runner.hands
+        # The runner publishes a new dict on every change, so the same one means no change.
+        if held is self._hands_seen:
+            return
+        self._hands_seen = held
         grabbed = [n for n in layout if n in held and n not in self._was_held]
         self._was_held = set(held)
         if grabbed:
             self._focus = grabbed[0]
             self._dirty = True
-        # A learn completes on the MIDI thread; the status line has to notice.
-        if self.encoders is not None and self.encoders.version != self._learns_seen:
-            self._learns_seen = self.encoders.version
-            self.encoders.flush()                # here, on the window's thread, not the reader's
-            self._dirty = True
 
     def _draw_lights(self, ren, x0, y0, since):
         """Which drum just played. Drawn every frame rather than painted into the texture."""
         rect = self._pg.Rect
-        for (channel, _label), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
+        for (channel, _names), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
             glow = lit(since, channel)
             ren.draw_color = (round(36 + 192 * glow), round(44 + 43 * glow),
                               round(50 - 4 * glow), 255)
             ren.fill_rect(rect(x0 + lx, y0 + ly, lw, lh))
 
     def _grid_gesture(self, ev, dial: str, column: int) -> None:
-        """Click wires, wheel sets how hard, right click reverses. One tail for all three."""
+        """Click wires, wheel sets how hard, right click reverses."""
         pg = self._pg
-        live = self.live_dials()
-        if live is not None and dial not in live:
+        if self._dark(dial):
             return          # `route` raises on a dead dial, and this is the window's thread
         wheel = ev.type == pg.MOUSEWHEEL
-        channel = self.kit[column][0]
+        channel, tracks = self.kit[column]
         if not wheel and ev.button == 1:
-            # The whole column, not its first track: it is one column because those drums share
-            # one channel, and the cell beside it is read back per channel.
-            self.runner.wire(self.tracks_on[column], dial)
+            # Every track on the channel: they cannot be told apart once they arrive.
+            self.runner.wire(tracks, dial)
             self.reload()
             return
         now = self.runner.amount_on(dial, channel)
@@ -625,7 +594,7 @@ class DialPanel:
                 continue
             any_hit = channels.get(-1)
             r, g, b, _ = self._colour(name)
-            for i, (channel, _label) in enumerate(self.kit):
+            for i, (channel, _names) in enumerate(self.kit):
                 wire = channels.get(channel, any_hit)
                 if wire is None:
                     continue
@@ -638,16 +607,14 @@ class DialPanel:
                 mid = x0 + cx + half
                 ren.fill_rect(rect(mid if push else mid - span, y0 + cy, span, ch))
 
-    def _driver_colour(self, name, drivers, since, since_any: float):
-        """`since_any` is `min(since)`, taken once by the caller: an any-hit rule asked for it
-        per driven row, which is a reduction over the kit for each dot in the column."""
+    def _driver_colour(self, name, drivers, since):
+        """The driver dot's colour: the group colour, as bright as the most recent hit on any
+        drum wired to it. A dial set by a slow measurement never goes fully dark."""
         hits, slow = drivers
         glow = 0.0
         for _imp, channel in hits:
-            if channel < 0:
-                glow = max(glow, 1.0 - since_any / LIGHT_TAIL)
-            else:
-                glow = max(glow, lit(since, channel))
+            for ch in (range(len(since)) if channel < 0 else (channel,)):
+                glow = max(glow, lit(since, ch))
         glow = max(0.35 if slow else 0.0, min(1.0, glow))
         r, g, b, _ = self._colour(name)
         return (round(DOT_DARK[0] + (r - DOT_DARK[0]) * glow),
@@ -665,7 +632,7 @@ class DialPanel:
         ren.fill_rect(self._pg.Rect(x0 + px, y0 + py - 2, 5, 5))
 
     def _resize(self, w: int, h: int) -> None:
-        """Rebuild the strip's own texture at a new size."""
+        """Rebuild the strip's own texture and geometry for a new size or layout."""
         from pygame._sdl2.video import Texture
 
         self._surf = self._pg.Surface((w, h))
@@ -676,14 +643,13 @@ class DialPanel:
         # The incoming model's dials are not the outgoing one's, and a name may move group.
         self._colours.clear()
         self._cells = layout(h, groups)
-        self._rows = [(label, top, tall) for kind, label, top, tall in self._cells
-                      if kind == "dial"]
+        self._rows = rows(h, groups)
         self._blocks = blocks(h, groups)
         self._lights = lights(w, self._blocks["lights"][0], len(self.kit))
         self._columns = grid_columns(w, len(self.kit))
         self._dirty = True
 
-    def _paint(self, live: dict[str, float]) -> None:
+    def _paint(self) -> None:
         """Everything that is not moving: names, numbers, empty tracks, resting ticks."""
         pg, surf = self._pg, self._surf
         w, h = self._size
@@ -691,8 +657,10 @@ class DialPanel:
         pg.draw.line(surf, TRACK, (0, 0), (0, h))
         left, span = self._track
         hands = self.runner.hands
+        values = self.runner.surface.values
         live_dials = self.live_dials()
         strengths = self._strengths()
+        focus = self.focus
 
         if self.mode == MODE_MODELS:
             self._paint_models(surf)
@@ -702,22 +670,16 @@ class DialPanel:
             if kind == "head":
                 surf.blit(self._say(self._tiny, label, GROUP_COLOUR[label]),
                           (PAD, top + tall - 15))
-                # Said once, at the top of the block, rather than eleven times down the
-                # right-hand column. An ONNX model darkens six rows at a stroke.
+                # Said once on the heading when the whole block is dark.
                 names = blocks_of[label]
                 if live_dials is not None and not (set(names) & live_dials):
                     self._right(surf, self._say(self._tiny, "none on this model", DEAD),
                                 top + tall - 15)
                 continue
             mid = top + tall // 2
-            # **A dial the surface does not carry is drawn dark, not raised.** A caller that
-            # skips `PresetRunner.use_model` -- the latency harness did -- used to die here with
-            # `KeyError: 'w_coarse'` on the window thread, which stops the picture and leaves
-            # the frame loop reporting healthy times into a frozen window. `dead` carries the
-            # rest of it, including why the other pass has to ask the same question.
-            dead = self.dead(label, live, live_dials)
+            dead = self._dead(label)
             colour = (DEAD if dead else
-                      TEXT if label == self.focus or label in hands else FAINT)
+                      TEXT if label == focus or label in hands else FAINT)
             surf.blit(self._say(self._font, label, colour), (PAD + DOT_W, mid - 9))
             if self.mode == MODE_ROUTING:
                 for column in self._columns:
@@ -734,19 +696,19 @@ class DialPanel:
             if i is not None and i < len(strengths):
                 pg.draw.rect(surf, STRENGTH,
                              (left, mid + 6, max(1, round(span * strengths[i])), 2))
-            self._right(surf, self._say(self._small, readout(label, live[label], shown),
-                                          TEXT if label in hands else FAINT), mid - 7)
+            self._right(surf, self._say(self._small, readout(label, values[label], shown),
+                                        TEXT if label in hands else FAINT), mid - 7)
 
         if self.mode == MODE_ROUTING:
             self._paint_grid_header(surf)
         if self.mode != MODE_MODELS:
             self._paint_scope(surf, w)
-            self._paint_description(surf, w)
+            self._paint_description(surf, w, focus)
 
         top, _tall = self._blocks["lights"]
         pg.draw.line(surf, TRACK, (0, top), (w, top))
-        for (_channel, label), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
-            img = self._say(self._tiny, label, FAINT)
+        for (_channel, names), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
+            img = self._say(self._tiny, "/".join(names), FAINT)
             surf.blit(img, (lx + max(0, (lw - img.get_width()) // 2), ly + lh + 2))
 
         top, _tall = self._blocks["lines"]
@@ -786,18 +748,16 @@ class DialPanel:
             surf.blit(self._say(self._small, more, TRACK), (PAD, top + 2))
 
     def _paint_grid_header(self, surf) -> None:
-        """One column label per kit channel, above the first group heading.
-
-        In the narrower font when the name of a shared channel does not fit its column: the
-        columns share what is left after the dial names, and centring a label wider than its
-        column pushes it into the next one. `MT/HT CH/OH CY/CB` ran together as one word."""
-        for (_channel, label), (cx, cw) in zip(self.kit, self._columns, strict=True):
+        """One label per kit channel above the routing columns, in the narrower font when a
+        shared channel's name (`MT/HT`) is wider than its column."""
+        for (_channel, names), (cx, cw) in zip(self.kit, self._columns, strict=True):
+            label = "/".join(names)
             font = self._tiny if self._tiny.size(label)[0] <= cw else self._micro
             img = self._say(font, label, FAINT)
             surf.blit(img, (cx + max(0, (cw - img.get_width()) // 2), 2))
 
     def _paint_scope(self, surf, w: int) -> None:
-        """One segment of the walk's own position curve, plus where the bar lines are."""
+        """One segment of the walk's own position curve, plus where the beat lines are."""
         pg = self._pg
         top, tall = self._blocks["scope"]
         cfg = self.runner.walk_cfg
@@ -819,29 +779,18 @@ class DialPanel:
                    base + round(inner * (1.0 - t))) for i, t in enumerate(curve)]
         pg.draw.lines(surf, GROUP_COLOUR["MOTION"], False, points)
 
-    def _paint_description(self, surf, w: int) -> None:
-        """What the dial under the pointer actually does, in its own words."""
+    def _paint_description(self, surf, w: int, name: str) -> None:
+        """The focused dial: its name, what is wired to it, and what it does."""
         pg = self._pg
         top, tall = self._blocks["desc"]
         pg.draw.line(surf, TRACK, (0, top), (w, top))
-        name = self.focus
-        live = self.live_dials()
-        dead = live is not None and name not in live
-        # The heading carries the signal; the paragraph under it is meant to be read, so it
-        # keeps the ordinary weight. A dim heading over dim body reads as a rendering fault.
+        dark = self._dark(name)
         head = self._say(self._tiny, name.upper(),
-                         DEAD if dead else self._colour(name)[:3])
+                         DEAD if dark else self._colour(name)[:3])
         surf.blit(head, (PAD, top + 4))
-        # Everything wired to this dial, on one line: the knob that holds it, the measurements
-        # that set it, and the drums that push it. The knob was the missing third -- the routing
-        # grid shows the drums and a learned binding vanished the moment its learn ended.
-        #
-        # **In that order, because the line is elided and the tail is what goes.** The drums are
-        # already on the strip twice over -- the coloured dot at the head of the row, and a lit
-        # cell each in the routing grid -- while the knob and the slow rule are written nowhere
-        # else at all. Elided against what is free BESIDE THE HEADING: four drums and a slow
-        # rule already ran the line straight through `NOISE`, and the heading is the part that
-        # says which dial any of this belongs to.
+        # Everything wired to this dial, on one line beside the heading: the knob that holds
+        # it, the measurements that set it, then the drums. Elided from the end, so the drums
+        # (also shown by the dot and the routing grid) are what is cut.
         hits, slow = self._drivers.get(name, ((), ()))
         knob = "" if self.encoders is None else self.encoders.where(name)
         who = " ".join(([f"cc {knob}"] if knob else []) + [f"~{s}" for s in slow]
@@ -850,51 +799,43 @@ class DialPanel:
         if fitted:
             self._right(surf, self._say(self._small, fitted[0], FAINT), top + 4)
 
-        # A row of dashes with no reason is worse than no row. The group heading only covers a block
-        # that is dead entirely.
-        text = (self._reason(name) if dead
+        text = (self._reason(name) if dark
                 else self.dials[name].blurb + self._measured(name))
         for i, line in enumerate(self._lines(text, self._body, w - 2 * PAD, (tall - 22) // 16)):
             surf.blit(self._say(self._body, line, FAINT), (PAD, top + 20 + i * 16))
 
     def _strengths(self) -> tuple[float, ...]:
         """Each direction's measured effect as a fraction of the strongest, or `()`."""
-        dirs = self._directions()
-        levels = None if dirs is None else dirs.levels
+        levels = self._levels()
         if not levels:
             return ()
         top = max(levels) or 1.0
         return tuple(level / top for level in levels)
 
     def _reason(self, name: str) -> str:
-        """Why this dial is dark on the loaded model, in terms of the model rather than the
-        interface."""
+        """Why this dial is dark on the loaded model, in terms of the model."""
         if direction_index(name) is not None:
-            dirs = self._directions()
-            have = len(dirs.levels) if dirs is not None and dirs.levels else 0
-            return (f"Not on this model. Its first weight gave {have} latent direction(s) "
-                    f"that survived to the picture; the rest moved nothing and were dropped "
-                    f"rather than left here as a dial that does not act.")
+            have = len(self._levels())
+            return (f"Not on this model. {have} latent direction(s) earned a dial at load; "
+                    f"the others did not beat a random direction by the --direction-floor "
+                    f"margin, or fell beyond the {DIRECTIONS} the strip shows.")
         knob = self.dials.get(name)
-        measured = None if knob is None else knob.measured
-        if measured is not None:
-            return (f"This model has it and it does nothing. Driven to the far end of its "
-                    f"travel when the graph was adopted, it moved the picture "
-                    f"{measured:.2f} 8-bit levels -- so it is here rather than deleted, and "
-                    f"dark rather than offered. A gain feeding a modulated convolution is "
-                    f"the usual reason: the demodulation divides it straight back out.")
+        model = self._model()
+        index = getattr(getattr(model, "knobs", None), "index", None) or ()
+        reaches = knob is not None and any(w.setting in index for w in knob.writes)
+        if reaches and knob.measured is not None:
+            return (f"This model has it, but driven to either end of its travel at load it "
+                    f"moved the picture only {knob.measured:.2f} 8-bit levels, too little to "
+                    f"count as a control, so it is drawn dark rather than offered.")
         return ("Not on this model. This is a setting inside one architecture, and the "
-                "loaded generator does not have it -- a graph exported without its dials "
-                "has none of them, because they are swapped into a module tree it does "
-                "not have.")
+                "loaded generator does not have it.")
 
     def _measured(self, name: str) -> str:
         """What this model's own load pass found out about a dial, in the dial's own words."""
         i = direction_index(name)
         if i is not None:
-            dirs = self._directions()
-            levels = None if dirs is None else dirs.levels
-            if not levels or i >= len(levels):
+            levels = self._levels()
+            if i >= len(levels):
                 return ""
             level, rank = levels[i], f", ranked {i + 1} of {len(levels)}"
         else:
@@ -905,12 +846,8 @@ class DialPanel:
         return f" Measured on this model: {level:.0f} 8-bit levels at full travel{rank}."
 
     def offers(self, action: str | None) -> bool:
-        """Whether this strip acts on the key whose `HELP` row names `action`.
-
-        **One test, because the help line and the handler have to agree.** They each decided
-        it for themselves -- `_status_lines` from a four-clause comprehension, `handle` from
-        the same conditions written out again down its `KEYDOWN` chain -- and a key listed and
-        not handled is a lie, while a key handled and not listed cannot be found."""
+        """Whether this strip acts on the key whose `HELP` row names `action`. The help line
+        and the key handler both ask, so they cannot disagree."""
         if action in (None, MINE):
             return True                       # the strip itself, or the window, always acts
         if action == NEEDS_SHELF:
@@ -920,7 +857,8 @@ class DialPanel:
         return self.actions.get(action) is not None
 
     def _status_lines(self) -> list[str]:
-        """Short lines rather than long ones, so a long model name cannot push the rest off the panel."""
+        """Status, model, what the mouse does, then the key help. Short lines, so a long model
+        name cannot push the rest off the strip."""
         model = "no model"
         if self.bank is not None:
             model = self.bank.name
@@ -931,8 +869,6 @@ class DialPanel:
         hands = sorted({HAND_WORDS.get(s, s) for s in self.runner.hands_from.values()})
         holding = f"held by {', '.join(hands)}" if hands else "nothing held"
         learning = None if self.encoders is None else self.encoders.learning
-        # What the mouse does here, which changes with the mode and only ever named the dials one.
-        # The whole line, not a suffix: appending to the dial line ran it off the right-hand edge.
         third = {MODE_ROUTING: "click wires · wheel how hard · right-click flips",
                  MODE_MODELS: "click plays a loaded model, or loads one"}.get(
                      self.mode, f"LEARN {learning}: turn a knob · l cancels" if learning
@@ -943,13 +879,11 @@ class DialPanel:
                         for line in self._lines(" · ".join(keys), self._small, width, KEY_LINES)]
 
     def _hit(self, x: int, y: int):
-        """`hit`, against the rows this panel has already laid out."""
+        """`(dial, value)` under a point in the strip, or None. A dark dial takes no mouse."""
         label = row_at(y, self._rows)
-        live = self.live_dials()
-        if label is None or (live is not None and label not in live):
-            return None                              # a dead dial does not take the mouse
+        if label is None or self._dark(label):
+            return None
         return label, value_at(x, self._size[0])
-
 
     def _choose(self, y: int) -> None:
         """A click in the picker: play a model already loaded, or ask for one that is not."""
@@ -971,89 +905,92 @@ class DialPanel:
         pg = self._pg
         if pg is None:
             return False
-        x0, y0, w, h = strip
-
         if ev.type == pg.MOUSEBUTTONUP:
             was, self._drag = self._drag, None
             return was is not None
         if ev.type in (pg.MOUSEBUTTONDOWN, pg.MOUSEMOTION, pg.MOUSEWHEEL):
-            pos = getattr(ev, "pos", None)
-            if pos is None:
-                pos = pg.mouse.get_pos()
-            x, y = pos[0] - x0, pos[1] - y0
-            if ev.type == pg.MOUSEMOTION:
-                if self.mode in (MODE_ROUTING, MODE_MODELS):
-                    return False
-                if self._drag is None:
-                    if not (0 <= x < w and 0 <= y < h):
-                        return False
-                    found = self._hit(x, y)
-                    if found is not None:
-                        self._focus = found[0]
-                    return False
+            return self._mouse(ev, strip)
+        if ev.type == pg.KEYDOWN:
+            return self._key(ev)
+        return False
+
+    def _mouse(self, ev, strip) -> bool:
+        pg = self._pg
+        x0, y0, w, h = strip
+        pos = getattr(ev, "pos", None)
+        if pos is None:
+            pos = pg.mouse.get_pos()
+        x, y = pos[0] - x0, pos[1] - y0
+        inside = 0 <= x < w and 0 <= y < h
+        if ev.type == pg.MOUSEMOTION:
+            if self.mode in (MODE_ROUTING, MODE_MODELS):
+                return False
+            if self._drag is not None:
                 self.set(self._drag, value_at(x, w))
                 return True
-            if not (0 <= x < w and 0 <= y < h):
-                return False
-            if self.mode == MODE_MODELS:
-                if ev.type == pg.MOUSEWHEEL:
-                    self._shelf_top = max(0, self._shelf_top - ev.y)
-                    self._dirty = True
-                elif ev.type == pg.MOUSEBUTTONDOWN and ev.button == 1:
-                    self._choose(y)
-                return True
-            if self.mode == MODE_ROUTING:
-                cell = grid_cell(x, y, w, h, len(self.kit), self.dials.groups)
-                if cell is not None:
-                    dial, column = cell
-                    self._focus = dial
-                    self._grid_gesture(ev, dial, column)
-                return True
-            found = self._hit(x, y)
-            if found is None:
-                return True                       # inside the strip, but not on a control
-            name, value = found
+            found = self._hit(x, y) if inside else None
+            if found is not None:
+                self._focus = found[0]          # hovering describes, without taking the event
+            return False
+        if not inside:
+            return False
+        if self.mode == MODE_MODELS:
             if ev.type == pg.MOUSEWHEEL:
-                now = self.runner.hands.get(name, self.runner.surface[name])
-                self.set(name, now + ev.y * WHEEL_STEP)
-            elif ev.button == 1:
-                self._drag = name
-                self.set(name, value)
-            elif ev.button == 3:
-                self.release(name)
+                self._shelf_top = max(0, self._shelf_top - ev.y)
+                self._dirty = True
+            elif ev.type == pg.MOUSEBUTTONDOWN and ev.button == 1:
+                self._choose(y)
             return True
+        if self.mode == MODE_ROUTING:
+            cell = grid_cell(x, y, self._rows, self._columns)
+            if cell is not None:
+                dial, column = cell
+                self._focus = dial
+                self._grid_gesture(ev, dial, column)
+            return True
+        found = self._hit(x, y)
+        if found is None:
+            return True                       # inside the strip, but not on a control
+        name, value = found
+        if ev.type == pg.MOUSEWHEEL:
+            now = self.runner.hands.get(name, self.runner.surface[name])
+            self.set(name, now + ev.y * WHEEL_STEP)
+        elif ev.button == 1:
+            self._drag = name
+            self.set(name, value)
+        elif ev.button == 3:
+            self.release(name)
+        return True
 
-        if ev.type == pg.KEYDOWN:
-            # Every arm asks `offers` the same question the key help asks, so a key can never
-            # be listed and unhandled, or handled and unlisted. `act` is only reached once
-            # `offers` has said the action is there.
-            act = self.actions.get
-            if ev.key == pg.K_r:
-                self.release()
-            elif ev.key == pg.K_g:
-                self.mode = MODE_DIALS if self.mode == MODE_ROUTING else MODE_ROUTING
-                self._dirty = True
-            elif ev.key == pg.K_m and self.offers(NEEDS_SHELF):
-                self.mode = MODE_DIALS if self.mode == MODE_MODELS else MODE_MODELS
-                self._dirty = True
-            elif ev.key == pg.K_l and self.offers(NEEDS_ENCODERS):
-                self.encoders.learning = None if self.encoders.learning else self.focus
-                self._dirty = True
-            elif ev.key == pg.K_s and self.offers("save"):
-                act("save")(self.preset_now())
-                self._dirty = True
-            elif ev.key == pg.K_v and self.offers("record"):
-                act("record")()
-                self._dirty = True
-            elif ev.key == pg.K_c and self.offers("still"):
-                act("still")()
-            elif ev.key == pg.K_TAB and self.offers("preset"):
-                act("preset")(-1 if ev.mod & pg.KMOD_SHIFT else 1)
-                self.reload()
-            elif ev.key in (pg.K_LEFTBRACKET, pg.K_RIGHTBRACKET) and self.offers("model"):
-                act("model")(1 if ev.key == pg.K_RIGHTBRACKET else -1)
-                self._dirty = True
-            else:
-                return False
-            return True
-        return False
+    def _key(self, ev) -> bool:
+        """A key from `HELP`. Each arm asks `offers`, as the help line does."""
+        pg = self._pg
+        act = self.actions.get
+        if ev.key == pg.K_r:
+            self.release()
+        elif ev.key == pg.K_g:
+            self.mode = MODE_DIALS if self.mode == MODE_ROUTING else MODE_ROUTING
+            self._dirty = True
+        elif ev.key == pg.K_m and self.offers(NEEDS_SHELF):
+            self.mode = MODE_DIALS if self.mode == MODE_MODELS else MODE_MODELS
+            self._dirty = True
+        elif ev.key == pg.K_l and self.offers(NEEDS_ENCODERS):
+            self.encoders.learning = None if self.encoders.learning else self.focus
+            self._dirty = True
+        elif ev.key == pg.K_s and self.offers("save"):
+            act("save")(self.preset_now())
+            self._dirty = True
+        elif ev.key == pg.K_v and self.offers("record"):
+            act("record")()
+            self._dirty = True
+        elif ev.key == pg.K_c and self.offers("still"):
+            act("still")()
+        elif ev.key == pg.K_TAB and self.offers("preset"):
+            act("preset")(-1 if ev.mod & pg.KMOD_SHIFT else 1)
+            self.reload()
+        elif ev.key in (pg.K_LEFTBRACKET, pg.K_RIGHTBRACKET) and self.offers("model"):
+            act("model")(1 if ev.key == pg.K_RIGHTBRACKET else -1)
+            self._dirty = True
+        else:
+            return False
+        return True

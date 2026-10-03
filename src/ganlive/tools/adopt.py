@@ -4,15 +4,14 @@
     ganlive adopt some/model.onnx
     ganlive play --checkpoint runs/onnx/<what it printed>
 
-One command, and what comes out is a file that stands on its own: the graph, its dials,
-where each rests, what each takes at every point of its travel, and how many 8-bit levels
-each was measured to be worth. The instrument that opens it afterwards reads all of that out
-of the file and knows nothing about the architecture -- which is the whole point, and is why
-the measuring happens here, once, rather than at every load.
+What comes out is a file that stands on its own: the graph, its dials, where each rests,
+what each takes at every point of its travel, and how many 8-bit levels each was measured to
+be worth. The instrument reads all of that out of the file, so the measuring happens here,
+once, rather than at every load.
 
-**It refuses rather than guessing, in three places**: a repo whose code it will not import
-without being told to, a module that never turned a latent into a picture, and a graph that
-stays non-deterministic after its random draws have been frozen.
+It refuses rather than guessing: a repository whose code it was not told to import, a module
+that never turned a latent into a picture, and a graph that stays non-deterministic after its
+random draws have been frozen.
 """
 from __future__ import annotations
 
@@ -21,16 +20,17 @@ import time
 from pathlib import Path
 
 from ganlive import device as dev
-from ganlive.bank import is_onnx
+from ganlive.checkpoints import is_onnx
 from ganlive.models import foreign as F
 from ganlive.models import onnx_adopt as A
+from ganlive.models.onnx_file import weights_file
 
 HUB = "hf:"
 
 
 def slug(source: str) -> str:
     """A filename for what came from where. `hf:a/b` becomes `a-b`."""
-    text = source[len(HUB):] if source.startswith(HUB) else Path(source).stem
+    text = source.removeprefix(HUB) if source.startswith(HUB) else Path(source).stem
     return "".join(c if c.isalnum() or c in "-_" else "-" for c in text).strip("-")
 
 
@@ -44,7 +44,7 @@ def graph_for(source: str, out_dir: Path, trust: bool, opset: int) -> tuple[Path
                          f"architecture goes through `ganlive export-onnx`, which folds it "
                          f"and bakes its spectral norm first.")
 
-    repo = source[len(HUB):]
+    repo = source.removeprefix(HUB)
     inside = F.graph_in(repo)
     if inside is not None:
         from huggingface_hub import hf_hub_download
@@ -83,14 +83,14 @@ def main(argv=None) -> int:
                     help="keep the un-dialled export beside the playable one")
     args = ap.parse_args(argv)
 
-    # **Never two GPU jobs at once**, and adoption compiles a six-megapixel graph twice
-    # before it renders five hundred frames. The guardrail existed and nothing called it.
+    # Never two GPU jobs at once: adoption compiles the graph twice and renders hundreds of
+    # frames.
     if args.device.lower() != "cpu" and not dev.refuse_if_gpu_busy("adoption"):
         return 1
     free = dev.host_ram_free_gb()
     if free == free and free < 3.0:
-        print(f"only {free:.1f} GB of host RAM free; a 141 MB graph parses into about half a "
-              f"gigabyte and this machine is also the daily driver", flush=True)
+        print(f"only {free:.1f} GB of host RAM free; a large graph parses into several times "
+              f"its size on disk", flush=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -108,7 +108,7 @@ def main(argv=None) -> int:
 
     if made and raw != out and not args.keep_raw:
         raw.unlink(missing_ok=True)
-        Path(str(raw) + ".data").unlink(missing_ok=True)
+        weights_file(raw).unlink(missing_ok=True)
     print(f"\n{out}  ({out.stat().st_size / 1e6:.0f} MB, "
           f"{time.perf_counter() - started:.0f}s)", flush=True)
     print(f"play it:  ganlive play --console "

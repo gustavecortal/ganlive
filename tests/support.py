@@ -114,7 +114,7 @@ def _step(w: SlerpWalk, n: int = 40) -> float:
 
 def _pulses(clock, bpm, seconds, t0=0.0, jitter=0.0, rng=None):
     """Feed `seconds` of MIDI clock at `bpm`. Returns the timestamp reached."""
-    period = 60.0 / (bpm * MusicalClock.PPQN)
+    period = MusicalClock.pulse_period(bpm)
     t = t0
     for _ in range(int(seconds / period)):
         t += period
@@ -187,15 +187,32 @@ def _runner(preset: str = "still"):
     return PresetRunner(FIXTURES[preset], INDEX, 60.0, layout=_fastgan.fastgan())
 
 
-def _panel(dials_live=None, levels=None):
-    """A strip with a stub rig behind it, for the things that are facts about a model."""
+def stub_bank(current, **over):
+    """Just enough of `bank.Bank` for a strip to read the playing model off."""
+    return types.SimpleNamespace(**{"current": current, "models": [1], "index": 0,
+                                    "name": "stub", **over})
+
+
+def _panel(dials_live=None, levels=None, runner=None):
+    """A strip with a stub bank behind it, for the things that are facts about a model."""
     from ganlive.strip import DialPanel
 
     dirs = None if levels is None else types.SimpleNamespace(levels=levels)
-    bank = None if dials_live is None else types.SimpleNamespace(
-        current=_StubModel(dials_live=frozenset(dials_live), directions=dirs),
-        models=[1], index=0, name="stub")
-    return DialPanel(_runner(), bank=bank)
+    bank = None if dials_live is None else stub_bank(
+        _StubModel(dials_live=frozenset(dials_live), directions=dirs))
+    return DialPanel(runner or _runner(), bank=bank)
+
+
+@contextlib.contextmanager
+def headless_renderer(size, title: str = "test"):
+    """A real SDL renderer on the dummy video driver, for drawing the strip with no screen."""
+    import pygame
+
+    with dummy_display():
+        from pygame._sdl2.video import Renderer, Window
+
+        pygame.init()
+        yield Renderer(Window(title, size=size), vsync=False)
 
 
 @contextlib.contextmanager
@@ -215,6 +232,66 @@ def dummy_display():
         else:
             os.environ["SDL_VIDEODRIVER"] = before
 
+
+
+def offline(audio, samplerate: int, fps: float, config=None) -> dict:
+    """Run the onset extractor over a whole recording at a video frame rate."""
+    import numpy as np
+
+    from ganlive.control.features import FeatureExtractor
+
+    x = np.asarray(audio, dtype=np.float32)
+    if x.ndim == 1:
+        x = x[None, :]
+    ex = FeatureExtractor(x.shape[0], samplerate, config)
+    per_frame = samplerate / fps
+    frames = int(x.shape[1] / per_frame)
+    since = np.zeros((frames, x.shape[0]), dtype=np.float32)
+    whole = {k: np.zeros(frames, dtype=np.float32) for k in ex.features()}
+    onsets: list[list[tuple[int, float, float]]] = []
+    for f in range(frames):
+        a, b = int(f * per_frame), int((f + 1) * per_frame)
+        ex.push(x[:, a:b])
+        since[f] = ex.since
+        for k, v in ex.features().items():
+            whole[k][f] = v
+        onsets.append(ex.drain())
+    return {"since": since, "onsets": onsets, "frames": frames, "fps": fps, **whole}
+
+
+def score_onsets(detected, fps: float, truth, channel_of: dict[str, int],
+                 tolerance: float = 0.030) -> dict:
+    """Precision, recall and timing error of per-frame onsets against the simulator's events."""
+    import numpy as np
+
+    got: list[tuple[float, int]] = []
+    for f, items in enumerate(detected):
+        for ch, _vel, ago in items:
+            got.append(((f + 1) / fps - ago, ch))
+    want = [(t, channel_of[name]) for t, name, _v in truth if name in channel_of]
+
+    used = [False] * len(got)
+    matched, errors = 0, []
+    for t, ch in want:
+        best, best_i = tolerance, -1
+        for i, (gt, gch) in enumerate(got):
+            if used[i] or gch != ch:
+                continue
+            d = abs(gt - t)
+            if d < best:
+                best, best_i = d, i
+        if best_i >= 0:
+            used[best_i] = True
+            matched += 1
+            errors.append(got[best_i][0] - t)
+    return {
+        "truth": len(want), "detected": len(got), "matched": matched,
+        "recall": matched / max(len(want), 1),
+        "precision": matched / max(len(got), 1),
+        "mean_error_ms": float(np.mean(errors) * 1000) if errors else 0.0,
+        "abs_error_ms": float(np.mean(np.abs(errors)) * 1000) if errors else 0.0,
+        "max_error_ms": float(np.max(np.abs(errors)) * 1000) if errors else 0.0,
+    }
 
 
 def _drained(guide):

@@ -1,4 +1,9 @@
-"""A preset: the rules connecting what the drums do to what the picture does."""
+"""Presets: the rules connecting what the drums do to what the picture does.
+
+A `Preset` holds dial values plus two kinds of rule -- an `Impulse` (one drum hit pushes one
+dial and lets go) and a `Macro` (a slow whole-kit measurement steers a dial). `PresetRunner`
+applies one every frame, together with whatever the holders (mouse, knobs, pads) are holding.
+"""
 from __future__ import annotations
 
 import json
@@ -7,9 +12,10 @@ import threading
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 
-from ganlive.dials.table import MOTION, Surface, clamp01
-from ganlive.files import next_path, remember
-from ganlive.walk import WalkConfig
+from ganlive.clock import WalkConfig
+from ganlive.curves import clamp01
+from ganlive.dials.table import MOTION, Surface
+from ganlive.files import next_path, remember, write_json
 
 AMOUNT_MAX = 1.0
 
@@ -21,7 +27,10 @@ def clamp_amount(x: float) -> float:
 
 @dataclass
 class Impulse:
-    """One drum hit pushing one dial, and letting go."""
+    """One drum hit pushing one dial, and letting go.
+
+    `track` is a track name, or `"*"` for any hit. The push decays over `decay` seconds,
+    rises over `attack`, and `velocity` is how much the hit's strength scales it (0 to 1)."""
 
     track: str
     dial: str
@@ -34,6 +43,7 @@ class Impulse:
         self.amount = clamp_amount(self.amount)
 
     def value(self, since: float, velocity: float) -> float:
+        """The push `since` seconds after a hit of strength `velocity`."""
         if since >= self.decay * 6.0:
             return 0.0
         shape = math.exp(-since / max(self.decay, 1e-4))
@@ -44,7 +54,8 @@ class Impulse:
 
 @dataclass
 class Macro:
-    """A slow move: one measurement of the audio drives one dial over a range."""
+    """A slow move: one whole-kit measurement (`density`, `energy` or `active`) mapped from
+    `src_lo..src_hi` onto a dial's `out_lo..out_hi`, gliding over `glide` seconds."""
 
     source: str
     dial: str
@@ -127,21 +138,26 @@ def from_dict(data: dict) -> Preset:
 
 
 class PresetRunner:
-    """Turns one frame of audio measurements into dial values, then applies them."""
+    """Turns one frame of drum features into dial values, then applies them.
+
+    Dials come from three places, in rising precedence: the preset's own values, its rules
+    (impulses and macros), and the holders (mouse, knobs, pads), which `hold` and `free`
+    from any thread. `channel_of` says which feature channel each track arrives on."""
 
     def __init__(self, preset: Preset, channel_of: dict[str, int], fps: float,
                  channels: int = 0, layout=None) -> None:
         self.channel_of = channel_of
         self.fps = fps
         self.channels = int(channels) or max(channel_of.values(), default=-1) + 1
-        #: `None` is the spine -- the dials every model has. `adopt` replaces it with the
-        #: loaded model's the moment one arrives, which is before any frame is drawn.
+        #: `None` is the spine -- the dials every model has. `use_model` replaces it with the
+        #: loaded model's, which happens before any frame is drawn.
         self.surface = Surface(layout=layout)
         self.walk_cfg = WalkConfig()
 
         self._sources: dict[str, dict[str, float]] = {}
         self._rank: dict[str, int] = {}
         self._writing = threading.Lock()
+        #: Every held dial and its value, merged across holders by rank; and who holds each.
         self.hands: dict[str, float] = {}
         self.hands_from: dict[str, str] = {}
 
@@ -153,7 +169,7 @@ class PresetRunner:
         #: The model `use_model` last finished switching to, or `None` before the first. Written
         #: last, so a reader on another thread sees the old model whole or the new one whole.
         self.model = None
-        #: Per dial: frames it moved, frames a hand held it, furthest it got from rest.
+        #: Per dial: frames it moved, frames a holder held it, furthest it got from rest.
         self.usage: dict[str, list[float]] = {}
         self._last: dict[str, float] = {}
         self.load(preset)
@@ -164,85 +180,81 @@ class PresetRunner:
 
     def use_model(self, model) -> None:
         """The model changed; take its dials, re-decide what is writable, re-read the rules."""
-        if not hasattr(model, "layout"):
-            raise TypeError(
-                f"use_model takes the Model, not {type(model).__name__} -- the layout comes "
-                f"with it. This signature used to accept a bare set of live names too, and "
-                f"that arm skipped the relayout: the surface kept the dials it was built "
-                f"with while the strip drew the loaded model's, and the two agreed again "
-                f"only after a switch away and back.")
         live = frozenset(model.dials_live)
         if live != self.live or model.layout != self.surface.layout:
             self.live = live
             self.surface.relayout(model.layout)
             self._last.clear()
             self.load(self.preset)                # re-reports the rules this model cannot run
-            self._replace(dict(self._sources))   # and lets go of any hand on a dead dial
+            self._replace(dict(self._sources))   # and lets go of any hold on a dead dial
         self.model = model
 
+    def _unrunnable(self, dial: str) -> str | None:
+        """Why a rule on `dial` cannot run on this model, or None if it can."""
+        if dial not in self.surface.layout:
+            return "no such dial"
+        if not self.playable(dial):
+            return "not on this model"
+        return None
+
+    def _resolve_impulse(self, imp: Impulse) -> tuple[int | None, str | None]:
+        """`(channel, None)` for an impulse that can fire, `-1` meaning any hit, or
+        `(None, why not)`."""
+        why = self._unrunnable(imp.dial)
+        if why is not None:
+            return None, why
+        if imp.track == "*":
+            return -1, None
+        channel = self.channel_of.get(imp.track)
+        if channel is None:
+            return None, "no such track in this kit"
+        if channel >= self.channels:
+            return None, f"channel {channel}, kit has {self.channels}"
+        return channel, None
+
     def load(self, preset: Preset) -> None:
-        """Swap in a different preset without rebuilding anything that addresses this runner."""
+        """Swap in a different preset without rebuilding anything that addresses this runner.
+
+        Rules this model or kit cannot run are listed in `dropped` rather than silently
+        skipped."""
         # Copies of the rules themselves, not only of the lists: the routing grid edits an
         # impulse's amount in place, and that edit belongs to this performance until it is saved.
         self.preset = replace(preset, dials=dict(preset.dials),
-                             impulses=[replace(i) for i in preset.impulses],
-                             macros=[replace(m) for m in preset.macros])
+                              impulses=[replace(i) for i in preset.impulses],
+                              macros=[replace(m) for m in preset.macros])
         preset = self.preset
         base = dict(self.surface.layout.rests)
         impulses, dropped = [], []
-        # A dial that does not exist is reported, not filtered: this used to check the track only, so
-        # a setting saved before a rename loaded as `still` wearing its old name, silently.
-        known = self.surface.layout
         for name, value in preset.dials.items():
-            if name in known:
+            if name in self.surface.layout:
                 base[name] = clamp01(value)
             else:
                 dropped.append(f"{name} (no such dial)")
         for imp in preset.impulses:
-            if imp.dial not in known:
-                dropped.append(f"{imp.track}->{imp.dial} (no such dial)")
-                continue
-            if not self.playable(imp.dial):
-                dropped.append(f"{imp.track}->{imp.dial} (not on this model)")
-                continue
-            if imp.track == "*":
-                impulses.append((imp, -1))
-                continue
-            channel = self.channel_of.get(imp.track)
-            if channel is None:
-                dropped.append(f"{imp.track}->{imp.dial} (no such track in this kit)")
-            elif channel >= self.channels:
-                dropped.append(
-                    f"{imp.track}->{imp.dial} (channel {channel}, kit has {self.channels})")
-            else:
+            channel, why = self._resolve_impulse(imp)
+            if why is None:
                 impulses.append((imp, channel))
+            else:
+                dropped.append(f"{imp.track}->{imp.dial} ({why})")
         macros = []
         for mac in preset.macros:
-            if mac.dial not in known:
-                dropped.append(f"{mac.source}->{mac.dial} (no such dial)")
-            elif not self.playable(mac.dial):
-                dropped.append(f"{mac.source}->{mac.dial} (not on this model)")
-            else:
+            why = self._unrunnable(mac.dial)
+            if why is None:
                 macros.append((mac, 1.0 - math.exp(-1.0 / max(mac.glide * self.fps, 1e-6))))
+            else:
+                dropped.append(f"{mac.source}->{mac.dial} ({why})")
         self._base, self._impulses, self._macros, self.dropped = base, impulses, macros, dropped
         self._macro_state = {}
         self.walk_cfg.base_seed = preset.base_seed
         self.walk_cfg.loop_segments = preset.loop_segments
         self.walk_cfg.home_every = preset.home_every
 
-
-    def route(self, track: str, dial: str, amount: float | None = None) -> bool:
-        """Wire a drum to a dial, or unwire it. Returns True if the rule now exists."""
-        return self.wire([track], dial, amount)
-
     def wire(self, tracks, dial: str, amount: float | None = None) -> bool:
-        """Wire a whole kit channel to a dial, or unwire it. Returns True if it now fires.
+        """Wire drum tracks to a dial, or unwire them. Returns True if the rule now exists.
 
-        **Every track at once, because a channel is what fires.** A kit puts RS and CP on one
-        pair of Overbridge outputs, and downstream nothing can tell them apart: the rule is
-        stored per track but resolved to a channel. Toggling only the first of a shared pair
-        left a cell that was lit by the second and could not be cleared by clicking it, and
-        wrote a track name into the saved preset that was not the one under the pointer."""
+        Takes every track on one feature channel at once, because a channel is what fires: two
+        tracks sharing an audio channel cannot be told apart downstream, so wiring only one of
+        them would leave a rule the grid cannot show or clear."""
         tracks = list(tracks)
         unknown = [t for t in tracks if t not in self.channel_of]
         if dial not in self.surface.layout or unknown or not tracks:
@@ -257,6 +269,8 @@ class PresetRunner:
         if added:
             if amount is None:
                 amount = -0.3 if self._base.get(dial, 0.0) > 0.6 else 0.3
+            # A short rise on the motion dials, which move where the picture is: an instant
+            # shove there reads as a visible step.
             attack = 0.06 if dial in MOTION else 0.0
             kept += [Impulse(track, dial, amount=amount, attack=attack) for track in tracks]
         self.preset.impulses = kept
@@ -288,19 +302,19 @@ class PresetRunner:
             imp.amount = amount
         return amount
 
-
     def hold(self, source: str, values: dict[str, float], priority: int = 0) -> None:
-        """`source` is now holding exactly these dials. Anything it held before is let go."""
+        """Holder `source` is now holding exactly these dials. Anything it held before is let
+        go. Where two holders hold one dial, the higher `priority` wins."""
         with self._writing:
             self._rank[source] = priority
             self._replace({**self._sources, source: dict(values)})
 
     def held_by(self, source: str) -> dict[str, float]:
-        """What one source is holding. A copy, so a caller cannot edit the live set by hand."""
+        """What one holder is holding. A copy, so a caller cannot edit the live set by hand."""
         return dict(self._sources.get(source, {}))
 
     def free(self, source: str, name: str | None = None) -> None:
-        """Let go of one dial for one source, or of everything that source holds."""
+        """Let go of one dial for one holder, or of everything that holder holds."""
         with self._writing:
             held = self._sources.get(source)
             if not held:
@@ -309,7 +323,9 @@ class PresetRunner:
             self._replace({**self._sources, source: keep})
 
     def _replace(self, sources: dict[str, dict[str, float]]) -> None:
-        """Swap in a whole new set of sources and the flat dict the loop reads."""
+        """Swap in a whole new set of holders and the merged dict the frame loop reads.
+
+        Built aside and assigned whole, so the frame thread never sees a half-merged set."""
         merged: dict[str, float] = {}
         owner: dict[str, str] = {}
         order = {n: i for i, n in enumerate(sources)}
@@ -322,12 +338,13 @@ class PresetRunner:
         self.hands_from = owner
 
     def observe(self, onsets) -> None:
-        """Record what arrived this frame."""
+        """Record the strength of each hit that arrived this frame, per channel."""
         for ch, vel, _ago in onsets:
             self._velocity[ch] = clamp01(vel)
 
     def apply(self, since, features: dict, knobs) -> None:
-        """Write this frame's whole control state."""
+        """Write this frame's whole control state: preset values, held dials, macros, then
+        impulses, and hand the result to the generator's `knobs` and the walk."""
         surface = self.surface
         surface.values.update(self._base)
         surface.set_held(self.hands)
@@ -367,8 +384,6 @@ class PresetRunner:
             if name in held:
                 use[1] += 1
             use[2] = max(use[2], abs(value - rests.get(name, value)))
-            # Written back in the loop that already visits every dial, not copied whole a
-            # frame. `use_model` clears it, so a dial the new model lacks leaves no stale value.
             last[name] = value
 
     def usage_report(self) -> list[str]:
@@ -386,9 +401,7 @@ class PresetRunner:
         return out
 
 
-#: What the interface starts on: every dial at its resting value and nothing wired. The eight
-#: shipped presets are gone -- the routing grid takes seconds to fill in, and what a setting is
-#: worth is whether it was found at these controls.
+#: What the interface starts on: every dial at its resting value and nothing wired.
 DEFAULT = Preset(
     name="default",
     blurb="Every dial at rest, nothing routed. Wire the drums up in the routing grid and "
@@ -396,25 +409,23 @@ DEFAULT = Preset(
 )
 
 
-#: `Positions` writes this into the same folder the settings live in, and `Library` scans that
-#: folder by extension. One definition, because the two have to agree or the hand positions load
-#: as a setting: they did, and every launch printed a "settings that would not load" line for a
-#: file that was never one -- which is where a genuinely broken setting would have hidden.
+#: The file `Positions` writes into the settings folder. `Library` skips it when it scans
+#: that folder for settings.
 POSITIONS_NAME = "positions.json"
 
 
 class Library:
-    """The settings a performance can move between, including the ones you found yourself."""
+    """The settings a performance can move between: `DEFAULT`, then every one saved in
+    `folder`, each named by its file."""
 
     def __init__(self, folder) -> None:
         self.folder = Path(folder)
         self.broken: list[str] = []
         self.presets = [DEFAULT] + self._found()
-        self.shipped = {DEFAULT.name}
         self.index = 0
 
     def _found(self) -> list[Preset]:
-        """Every setting saved in the folder, named by its file rather than by its contents."""
+        """Every setting saved in the folder. One that will not load is listed in `broken`."""
         out = []
         for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
             if path.name == POSITIONS_NAME:
@@ -444,13 +455,16 @@ class Library:
         return self.current
 
     def save(self, preset: Preset) -> Path:
-        """Write this setting out, and make it the current one."""
+        """Write this setting out, and make it the current one.
+
+        A setting saved before is overwritten in place; `DEFAULT`, or one with no file yet,
+        goes to a new numbered `take-NN.json` instead."""
         path = self.folder / f"{preset.name}.json"
-        if preset.name in self.shipped or not path.exists():
+        if preset.name == DEFAULT.name or not path.exists():
             path = next_path(self.folder, "take", ".json")
             preset = replace(preset, blurb=f"Found at the controls, from {preset.name}.")
         preset = replace(preset, name=path.stem)
-        path.write_text(json.dumps(to_dict(preset), indent=2), encoding="utf-8")
+        write_json(path, to_dict(preset))
         if preset.name in self.names:
             self.index = self.names.index(preset.name)
             self.presets[self.index] = preset
@@ -461,9 +475,9 @@ class Library:
 
 
 class Positions:
-    """Where your hands left each model's own dials, so a switch lands where you left it.
+    """Where the holders left each model's own dials, so a switch lands where you left it.
 
-    Hands only: a dial nobody is holding follows the preset, and the preset is shared. Keyed by
+    Holds only: a dial nobody is holding follows the preset, which is shared. Keyed by
     `bank.slug_for`, written on every switch and at the end, read back the next time."""
 
     def __init__(self, path) -> None:
@@ -473,7 +487,7 @@ class Positions:
         try:
             if self.path.exists():
                 self.data = json.loads(self.path.read_text("utf-8"))
-        except (OSError, ValueError) as exc:                                # noqa: BLE001
+        except (OSError, ValueError) as exc:
             self.trouble = f"{self.path} was ignored: {exc}"
 
     def stash(self, key: str, runner: PresetRunner, source: str, names) -> dict[str, float]:
@@ -489,7 +503,7 @@ class Positions:
 
     def recall(self, key: str, runner: PresetRunner, source: str, priority: int,
                names) -> dict[str, float]:
-        """Put `source`'s hands back where they were on this model, on dials it still has."""
+        """Put `source`'s holds back where they were on this model, on dials it still has."""
         names = set(names)
         found = {n: clamp01(float(v)) for n, v in self.data.get(key, {}).items() if n in names}
         if found:

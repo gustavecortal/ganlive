@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 
 from ganlive.timing import stat_ms
-from tests.support import OVERBRIDGE, _drained
+from tests.support import OVERBRIDGE, _drained, offline, score_onsets
 
 
 def test_hit_detection_is_scored_against_the_simulator_rather_than_asserted():
-    """The reason the stand-in Rytm returns its event list at all."""
-    from ganlive.control.features import offline, score_onsets
+    """Onset detection is scored for precision, recall and timing against the simulator's own
+    list of the hits it played."""
     from ganlive.control.kit import INDEX
     from ganlive.control.simulate import MachineSim
 
@@ -27,9 +27,8 @@ def test_hit_detection_is_scored_against_the_simulator_rather_than_asserted():
 
 
 def test_the_ground_truth_drops_hits_that_were_silenced_before_they_sounded():
-    """Two tracks sharing one voice on the same step means the second erases the first, so
-    listing the first as a hit would make the ground truth claim something nothing can hear --
-    which once scored the detector at 90% on closed hats while it was completely correct."""
+    """Two tracks sharing one voice on the same step: the second erases the first, so only the
+    second may be listed as a hit, or the detector is scored against an inaudible event."""
     from ganlive.control.simulate import MachineSim, Section, _s
 
     both = [Section("clash", 1, {"CH": _s("x..............."),
@@ -40,8 +39,8 @@ def test_the_ground_truth_drops_hits_that_were_silenced_before_they_sounded():
 
 
 def test_the_preflight_tool_and_the_stand_in_agree_on_the_drums():
-    """A preset tuned against the stand-in has to address the same drums the hardware tool
-    labels, or the channel map discovered with one is read with the other's names."""
+    """`doctor` and the simulator use the same track names, so a channel map found with one
+    means the same drums in the other."""
 
     from ganlive.control.kit import TRACKS
     from ganlive.tools import doctor
@@ -50,10 +49,8 @@ def test_the_preflight_tool_and_the_stand_in_agree_on_the_drums():
 
 
 def test_the_pessimistic_eight_channel_case_still_finds_the_hits():
-    """If the MKI turns out to expose voices rather than tracks, closed and open hat arrive on
-    one channel. A preset has to survive that, so the loss it costs is measured rather than
-    assumed -- and the loss is real hardware behaviour, not a detection failure."""
-    from ganlive.control.features import offline, score_onsets
+    """With eight channels (one per analog voice), closed and open hat share a channel. Hits
+    are still found precisely; the recall lost is the hat choke, not a detection failure."""
     from ganlive.control.kit import VOICE_GROUPS, channel_map
     from ganlive.control.simulate import MachineSim
 
@@ -68,8 +65,8 @@ def test_the_pessimistic_eight_channel_case_still_finds_the_hits():
 
 
 def test_the_two_channel_layouts_are_what_the_hardware_might_give():
-    """One channel per track is the optimistic case; one per analog voice is what an MKI
-    advertising ten inputs most likely means."""
+    """The two audio layouts a drum machine may stream: one channel per track (twelve), or one
+    per analog voice (eight, with paired tracks sharing a channel)."""
     from ganlive.control.kit import TRACKS, VOICE_GROUPS, channel_map
 
     per_track = channel_map("tracks")
@@ -84,8 +81,8 @@ def test_the_two_channel_layouts_are_what_the_hardware_might_give():
 
 
 def test_a_typo_in_a_discovered_layout_is_refused():
-    """A wrong map is a machine where the kick drives what the hat should, and nothing
-    anywhere reports a problem -- so a name that is not a real track has to raise."""
+    """A channel map naming an unknown track raises, since a wrong map would silently route one
+    drum's audio to another's controls."""
     from ganlive.control.kit import parse_channel_map
 
     assert parse_channel_map("BD=0, ch=3") == {"BD": 0, "CH": 3}
@@ -94,7 +91,8 @@ def test_a_typo_in_a_discovered_layout_is_refused():
 
 
 def test_the_stand_in_produces_whatever_layout_the_map_asks_for():
-    """The one command meant to rehearse a discovered map used to hand it per-track audio."""
+    """The simulator mixes its stems into whatever channel layout a map asks for, so a
+    discovered map can be rehearsed without the hardware."""
     import numpy as np
 
     from ganlive.control.kit import INDEX, TRACKS, channel_map, parse_channel_map
@@ -118,9 +116,8 @@ def test_the_stand_in_produces_whatever_layout_the_map_asks_for():
 
 
 def test_the_stand_in_feeder_refuses_audio_shorter_than_one_block():
-    """The wrap-around skips a short tail by `continue`, so a take shorter than one block spins
-    the thread forever without ever pushing a sample -- silently, as a run that detects no hits
-    and looks merely quiet. Both copies of this class had it before there was one class."""
+    """A take shorter than one block is refused, since the feeder would otherwise loop forever
+    without pushing a sample and the run would just look quiet."""
     from ganlive.control.features import FeatureExtractor
     from ganlive.control.simulate import StemFeeder
 
@@ -131,9 +128,8 @@ def test_the_stand_in_feeder_refuses_audio_shorter_than_one_block():
 
 
 def test_the_feeder_reaches_the_extractor_at_something_like_wall_clock_rate():
-    """One class now, used by both the live tool and the timing harness. It used to be two,
-    differing only in whether being late was counted -- so they could drift apart and only one
-    of them could have noticed."""
+    """`StemFeeder` pushes blocks at roughly real-time pace and records how long each push took;
+    the live tool and the timing harness both use it."""
     from ganlive.control.features import FeatureExtractor
     from ganlive.control.simulate import MachineSim, StemFeeder
 
@@ -156,12 +152,8 @@ def test_the_feeder_reaches_the_extractor_at_something_like_wall_clock_rate():
 
 
 def test_swing_and_humanising_move_the_hits_and_the_detector_still_finds_them():
-    """Two simulator settings that nothing turned. Rather than delete them, they are the
-    pessimistic case the detector should be scored against: real drumming is not on the grid,
-    and a detector tuned only against a perfect one is tuned against a machine that does not
-    exist. This also makes two branches in the innermost render loop reachable.
-    """
-    from ganlive.control.features import offline, score_onsets
+    """Swing and humanising move hits off the grid, as real playing does, and the detector must
+    still find them."""
     from ganlive.control.kit import INDEX
     from ganlive.control.simulate import MachineSim
 
@@ -180,9 +172,8 @@ def test_swing_and_humanising_move_the_hits_and_the_detector_still_finds_them():
 
 
 def test_no_voice_rings_longer_than_the_choke_reaches():
-    """The choke silences a shared voice forward from the trig, and it stops at `LONGEST_VOICE_S` rather than
-    at the end of the record -- which was averaging half a multi-megabyte row per trig, 625 MB written
-    where 62 could be non-zero."""
+    """The choke silences a shared voice only up to `LONGEST_VOICE_S` after a trig, so no voice
+    may ring longer than that; the bound is also checked to stay reasonably tight."""
     from ganlive.control.kit import TRACKS
     from ganlive.control.simulate import LONGEST_VOICE_S, _voice
 
@@ -198,8 +189,8 @@ def test_no_voice_rings_longer_than_the_choke_reaches():
 
 
 def test_a_choked_trig_leaves_no_tail_behind_it():
-    """The property the bound exists to preserve, asserted on the audio rather than on the
-    arithmetic: a closed hat on top of a ringing open hat silences it from that sample on."""
+    """Checked on the rendered audio: a closed hat on top of a ringing open hat silences it
+    from that sample on."""
     from ganlive.control.kit import INDEX
     from ganlive.control.simulate import MachineSim
 
@@ -248,9 +239,8 @@ def test_midi_notes_drive_the_same_features_audio_does():
 
 
 def test_midi_separates_the_drums_that_share_an_analog_voice():
-    """The whole reason this exists. On an MKI, CH and OH share one voice and arrive on one
-    audio channel, so no audio rule can ever tell them apart -- and BT and LT are not streamed
-    at all for want of USB bandwidth. Each still has its own note."""
+    """Tracks that share an analog voice (and so one audio channel) still have their own MIDI
+    notes, so note input tells them apart where audio cannot."""
     from ganlive.control.features import NoteFeatures
     from ganlive.control.kit import INDEX, VOICE_GROUPS
 
@@ -269,9 +259,8 @@ def test_midi_separates_the_drums_that_share_an_analog_voice():
 
 
 def test_the_note_source_reports_density_and_does_not_leave_energy_inert():
-    """All six macros that ship read `density`, so it is the one that must be right. `energy`
-    is a different quantity here -- how hard the pads are struck, not how loud the room is --
-    and the failure to guard against is it silently reading 0.0 forever."""
+    """From notes, `density` counts hits in the window (every shipped macro reads it), and
+    `energy` reflects how hard pads are struck; neither may sit at 0.0 while hits arrive."""
     from ganlive.control.features import NoteFeatures
 
     notes = NoteFeatures(12)
@@ -291,9 +280,8 @@ def test_the_note_source_reports_density_and_does_not_leave_energy_inert():
 
 
 def test_a_quiet_send_loses_its_quietest_drums_first_and_preflight_says_so():
-    """`FeatureConfig.floor` is an ABSOLUTE level, measured against the stand-in Rytm rather than against
-    anybody's Overbridge gain staging. This pins how much room it actually has, because `doctor`'s
-    `HEADROOM` is a claim about this number and nothing else checks it."""
+    """`FeatureConfig.floor` is an absolute level, set against the simulator. This pins how much
+    gain headroom it leaves, which is what `doctor`'s `HEADROOM` check assumes."""
     from ganlive.control.features import FeatureConfig, FeatureExtractor
     from ganlive.control.kit import INDEX
     from ganlive.control.simulate import MachineSim
@@ -331,8 +319,8 @@ def test_a_quiet_send_loses_its_quietest_drums_first_and_preflight_says_so():
 
 
 def test_the_stand_in_can_be_heard_and_measured_from_the_same_sample_index():
-    """Two clocks over one recording would agree at the start of a set and be half a bar apart
-    by the end of it, so the picture would answer a kick that had already gone."""
+    """`MonitorFeeder` plays and analyses the simulator from one sample index, so what is heard
+    and what drives the picture cannot drift apart over a set."""
     import numpy as np
 
     from ganlive.control.features import FeatureExtractor
@@ -356,11 +344,9 @@ def test_the_stand_in_can_be_heard_and_measured_from_the_same_sample_index():
 
 
 def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
-    """**Neither source alone covers a live set on this machine.** The sequencer sends no notes
-    at all and playing its trigs is how the instrument is used; the pads send an exact note per
-    drum and are the only thing that can separate the four pairs sharing an analog voice. So the
-    index space is the NOTE's, the coarse one maps into it, and an onset on a shared voice fires
-    both of its tracks -- which is what the audio genuinely says and all it can say."""
+    """`BothFeatures` combines audio (heard sequencer trigs) and notes (pads) in the notes'
+    twelve-track space: an audio onset on a shared voice fires both its tracks, and a note
+    fires only its own."""
     from ganlive.control.features import BothFeatures, FeatureExtractor
     from ganlive.control.kit import INDEX, parse_channel_map
 
@@ -382,11 +368,8 @@ def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
 
 
 def test_every_source_answers_everything_the_end_of_run_report_asks_it():
-    """The report reached for `.density` and `.energy`, which only the two single-source extractors have.
-    `BothFeatures` is the DEFAULT -- `--triggers both` -- so the line raised at the end of every
-    performance, after the playing was over, and took the whole report with it: the tracks that played, the
-    hit counts, the diagnosis of what to fix. The one run that needed it most was the one where nothing
-    arrived."""
+    """Every trigger source, including the default `--triggers both`, answers the calls the
+    end-of-run report makes, so the report cannot fail after a performance."""
     from ganlive.control.features import BothFeatures, FeatureExtractor, NoteFeatures
     from ganlive.control.kit import parse_channel_map
 
@@ -407,10 +390,9 @@ def test_every_source_answers_everything_the_end_of_run_report_asks_it():
 
 
 def test_a_pad_that_is_heard_as_well_as_read_counts_once():
-    """A pad struck by hand arrives twice -- the note over USB MIDI, early, and the sound
-    through Overbridge a few milliseconds later. Counting both would push every dial a rule
-    drives twice as far for a hand hit as for a sequencer trig, which is a difference nobody
-    asked for and nothing would report."""
+    """A struck pad arrives twice: its MIDI note, then its sound over USB audio a few
+    milliseconds later. Within `PAIRED_S` they count as one hit, so a pad weighs the same as a
+    sequencer trig."""
     from ganlive.control.features import PAIRED_S, BothFeatures, FeatureExtractor
     from ganlive.control.kit import INDEX, parse_channel_map
 
@@ -428,10 +410,8 @@ def test_a_pad_that_is_heard_as_well_as_read_counts_once():
 
 
 def test_the_combined_source_answers_everything_a_source_is_asked():
-    """The frame loop reads `n`, `since`, `drain()` and `features()`; the guide wants `tap` and
-    `sr`; the summary wants `played()`, `hits` and `heard()`. A wrapper that answered most of
-    them would fail at the one call site that used the rest, and several of those run once at
-    the end of a performance -- the worst possible time to learn about it."""
+    """`BothFeatures` has every attribute the frame loop, the recording guide and the summary
+    use, and forwards `tap` and `push` to its audio half."""
     from ganlive.control.features import BothFeatures, FeatureExtractor
     from ganlive.control.kit import parse_channel_map
 
@@ -468,10 +448,8 @@ def test_a_track_channel_map_is_written_one_based_and_read_zero_based():
 
 
 def test_the_track_a_note_is_comes_from_the_channel_when_the_machine_sends_that_way():
-    """**The machine has two output modes and they identify a track differently.** On AUTO CH
-    the kit shares one channel and the note says which track -- 0 to 11, what the pads send. On
-    TRACK CH each track has its own channel and the note carries the trig's PITCH, 12 to 60,
-    which names no track at all. Reading the note in that mode indexes the kit with a pitch."""
+    """In AUTO CH mode the note number (0-11) names the track; in TRACK CH mode each track has
+    its own channel and the note is a pitch, so the track must come from the channel."""
     from ganlive.control.features import NoteFeatures
     from ganlive.control.kit import parse_track_channels
 
@@ -491,9 +469,8 @@ def test_the_track_a_note_is_comes_from_the_channel_when_the_machine_sends_that_
 
 
 def test_the_pair_source_claims_a_voice_by_the_same_rule_the_notes_use():
-    """`BothFeatures` had its own copy of `note - base_note`. It would have kept working while
-    `NoteFeatures` learned about channels, so the pad-beats-onset rule would have gone on
-    reading pitches and every trig would have been counted twice."""
+    """`BothFeatures` resolves a note to its track through `NoteFeatures`, channels included,
+    so a pad and the audio onset it causes are one hit, not two."""
     from ganlive.control.features import PAIRED_S, BothFeatures, FeatureExtractor
     from ganlive.control.kit import INDEX, parse_channel_map, parse_track_channels
 
@@ -510,11 +487,8 @@ def test_the_pair_source_claims_a_voice_by_the_same_rule_the_notes_use():
 
 
 def test_a_note_that_names_no_track_is_counted_rather_than_dropped():
-    """**Both ways of setting the mode wrongly are otherwise silent, and one of them looks
-    like a working run.** With the map omitted on TRACK CH every pitch falls out of spread and
-    the wire reads as dead. With it supplied on AUTO CH the whole kit shares one channel, so
-    all twelve drums resolve to ONE index -- `played()` is 1, the hit watchdog stays quiet, and
-    the picture runs with one drum driving what twelve should."""
+    """Notes that resolve to no track are counted per channel and note (up to a cap), so a
+    wrongly set output mode shows up in the report instead of looking like silence."""
     from ganlive.control.features import NoteFeatures
     from ganlive.control.kit import parse_track_channels
 
@@ -533,9 +507,8 @@ def test_a_note_that_names_no_track_is_counted_rather_than_dropped():
 
 
 def test_the_two_output_modes_are_told_apart_by_the_traffic_itself():
-    """The flag was very nearly the only way to know the mode. It is an override: the modes do
-    not overlap in what they put on the wire, so a few seconds of it settles the question --
-    except for the one genuinely ambiguous case, which must not be guessed."""
+    """A few seconds of traffic identify the output mode (the flag only overrides it); an
+    ambiguous sample returns None rather than a guess."""
     from ganlive.control.kit import output_mode
 
     assert output_mode({13: {0, 1, 5, 11}}) == "auto"           # pads, one channel, low notes
@@ -546,11 +519,8 @@ def test_the_two_output_modes_are_told_apart_by_the_traffic_itself():
 
 
 def test_a_channel_map_and_a_note_base_are_both_live_because_the_machine_uses_both():
-    """**Read off the MKI manual, not guessed, and it overturned a guard added an hour before.**
-    `TRK SEND MIDI` sends on the track's channel (11.8); `OUTPUT CH` selects auto or track for
-    the PADS and knobs (13.4.2). Two settings, two sources: per-track channels with OUTPUT CH
-    left on AUTO puts sequencer pitches on channels 1-12 and pad notes on the auto channel
-    simultaneously, so a reader that insisted on one rule would drop half the kit."""
+    """A machine can send sequencer trigs on per-track channels while its pads still use the
+    auto channel, so a reader with a channel map must also resolve auto-channel notes."""
     from ganlive.control.features import NoteFeatures
     from ganlive.control.kit import parse_track_channels
 
@@ -563,10 +533,8 @@ def test_a_channel_map_and_a_note_base_are_both_live_because_the_machine_uses_bo
 
 
 def test_the_guide_hears_whatever_pushes_the_extractor(tmp_path):
-    """**The tap is on the extractor, not on the sound card.** Three things push blocks into
-    it -- the live tool's ASIO callback, `StemFeeder` and `MonitorFeeder` -- so a hook beside
-    one of them is two copies waiting to be written and a `--simulate` path that quietly does
-    not do it. This drives it through the stand-in, which is the only path testable here."""
+    """The recording guide taps the feature extractor, so it hears every audio source that
+    pushes blocks (sound card, `StemFeeder`, `MonitorFeeder`); driven here by direct pushes."""
     from ganlive.control.features import FeatureExtractor
     from ganlive.record.sync import Guide
 
@@ -584,9 +552,8 @@ def test_the_guide_hears_whatever_pushes_the_extractor(tmp_path):
 
 
 def test_a_second_guide_is_refused_rather_than_displacing_the_first(tmp_path):
-    """`FeatureExtractor.tap` holds one consumer. A second attach used to overwrite it, which
-    leaves the first reporting on a stream that no longer reaches it -- a fault that counts
-    itself as fine, and this project's signature failure."""
+    """`FeatureExtractor.tap` holds one consumer, so a second guide is refused rather than
+    silently cutting off the first."""
     from ganlive.control.features import FeatureExtractor
     from ganlive.record.sync import Guide
 
@@ -594,3 +561,30 @@ def test_a_second_guide_is_refused_rather_than_displacing_the_first(tmp_path):
     Guide().listen_to(ex)
     with pytest.raises(RuntimeError, match="already has a tap"):
         Guide().listen_to(ex)
+
+
+def test_learning_the_channel_map_votes_each_pad_onto_the_channel_that_answers_it(capsys):
+    """`doctor --learn`: a note-on names the drum, and the channel that peaks just after it
+    is where that drum is heard. A channel answering every pad is a mix bus, set aside."""
+    from ganlive.tools.drum_map import WINDOW_S, Strikes, report, report_recall
+
+    strikes = Strikes(4)
+    t = 0.0
+    firsts = []
+    for note, channel in ((0, 1), (1, 2), (0, 1), (1, 2), (0, 1)):
+        firsts.append(strikes.on_note(note, t))
+        block = np.zeros((64, 4), dtype=np.float32)
+        block[:, channel] = 0.5
+        block[:, 3] = 0.4                                  # the mix bus hears everything
+        strikes.on_audio(block)
+        t += WINDOW_S * 2
+        strikes.settle(t)
+    assert firsts == [True, True, False, False, False], "a pad is announced once"
+
+    mapping = report(strikes.seen, strikes.votes, strikes.levels, strikes.struck,
+                     strikes.silent, ["BD", "SD"])
+    assert mapping == {"BD": 1, "SD": 2}
+    report_recall(strikes.times, [(0.001, 1)], mapping, ["BD", "SD"])
+    said = capsys.readouterr().out
+    assert "mix bus" in said and "--map BD=1,SD=2" in said
+

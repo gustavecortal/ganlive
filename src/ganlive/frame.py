@@ -1,4 +1,5 @@
-"""Getting a finished picture from the generator to the screen."""
+"""After the generator: resizing a frame and converting it to the bytes a window, an encoder or
+a still wants, on a device queue of its own."""
 from __future__ import annotations
 
 import contextlib
@@ -12,24 +13,11 @@ from ganlive.pixels import to_nv12
 from ganlive.pixels import to_rgb as _eager_rgb
 
 
-def warm(fns, probe: torch.Tensor) -> int:
-    """Compile the conversions now, **on a frame the real shape**, and report the graph count."""
-    from torch._dynamo.utils import counters
-
-    before = counters["frames"]["ok"]
-    with torch.no_grad():
-        for fn in fns:
-            fn(probe)
-    return counters["frames"]["ok"] - before
-
-
 class _Deferred:
-    """The window inside which a stage's downloads do not each wait for the card.
+    """A block inside which a stage's downloads do not each wait for the card.
 
     On exit they are waited for together -- or, for a `handoff`, not at all: `ticket` then
     holds what to wait on, and the caller waits when it is about to read the bytes."""
-
-    __slots__ = ("_stage", "_keep", "ticket")
 
     def __init__(self, stage: FrameStage, keep: bool = False) -> None:
         self._stage, self._keep = stage, keep
@@ -59,8 +47,6 @@ class Ticket:
     An event on the stage's own queue, so waiting on it waits for this frame's copies and
     nothing else -- not for the generator, which by then is drawing the next frame."""
 
-    __slots__ = ("_event",)
-
     def __init__(self, event) -> None:
         self._event = event
 
@@ -71,14 +57,13 @@ class Ticket:
 
 
 class FrameStage:
-    """The downscale and the host conversions, with one ring per destination.
+    """The resize and the host conversions, with one pinned ring of host buffers per destination.
 
-    **All of it on the stage's own queue, never the generator's.** An eager op on a captured
-    generator's queue between two replays makes every later replay slower, without bound --
-    see `models.capture.Replay`. So `step`, the first call after the generator,
-    fences on its queue once and moves to this stage's; the conversions and the host copies
-    follow it there, in order; and the frame's own wait for the card, `deferred` or
-    `PinnedRing.take`, is a host wait that appends to neither queue."""
+    All of it runs on the stage's own device queue, never the generator's: an eager op on a
+    captured generator's queue between two replays slows every later replay (see
+    `models.capture.Replay`). `step` waits on the generator's queue once and moves to this one;
+    the conversions and host copies follow in order; and waiting for a frame's bytes is a host
+    wait that adds work to neither queue."""
 
     def __init__(self, height: int, width: int, to_yuv=None, to_rgb=None,
                  to_bgra=None, device: str | None = None) -> None:
@@ -111,14 +96,19 @@ class FrameStage:
         self.compiled = dict.fromkeys(self.compiled, False)
 
     def warm(self, staged: torch.Tensor) -> int:
-        """Build the three conversions on a frame the real shape. Returns graphs built.
+        """Compile the three conversions now, on a frame of the real shape. Returns graphs built.
 
-        Never fatal, on the same rule as `capture.compile_and_count`: the conversions are the
-        one compile that would otherwise fail at the first *frame*, with the window open, so a
-        machine Inductor cannot build them on gets them in eager and a line saying so."""
+        Never fatal: a machine that cannot compile them gets them eager, and a line saying so,
+        rather than a failure at the first frame with the window open."""
+        from torch._dynamo.utils import counters
+
         try:
-            return warm([self.to_yuv, self.to_rgb, self.to_bgra], staged)
-        except Exception as exc:  # noqa: BLE001 -- see `compile_and_count`
+            before = counters["frames"]["ok"]
+            with torch.no_grad():
+                for fn in (self.to_yuv, self.to_rgb, self.to_bgra):
+                    fn(staged)
+            return counters["frames"]["ok"] - before
+        except Exception as exc:  # noqa: BLE001 -- see `capture.compile_and_count`
             print(f"conversions: running eager -- {str(exc).splitlines()[0][:120]}", flush=True)
             self.eager()
             return 0
@@ -168,24 +158,20 @@ class FrameStage:
             self._read = None
 
     def pinned(self) -> dict[str, bool]:
-        """Which destinations really got pinned staging. Reported per destination, not per
-        shape: a bank of three sizes would otherwise print nine entries saying one thing."""
+        """Which destinations really got pinned host memory, one entry per destination."""
         out: dict[str, bool] = {}
         for (name, _shape, _dtype), ring in self._rings.items():
             out[name] = bool(ring.pinned) and out.get(name, True)
         return out
 
     def aside(self):
-        """This stage's own queue, for the block inside. In order, so a conversion that follows
-        `step` on it follows the frame; `step` is what fences on the generator's queue."""
+        """Run the block inside on this stage's own queue, after the frame `step` handed over."""
         return contextlib.nullcontext() if self._side is None else self._streams.stream(self._side)
 
     def step(self, outs) -> torch.Tensor:
         """One frame in, one frame out, at the size being shown. The one call that crosses from
         the generator's queue to this stage's, so it is the one that waits."""
         if self._side is not None:
-            # `wait_stream` records a fresh event each frame; a held `Event` re-recorded in its
-            # place measured the same on the played loop, so the shorter spelling stays.
             self._side.wait_stream(self._streams.current_stream())
         with self.aside():
             o = first_image(outs)
@@ -215,7 +201,8 @@ class FrameStage:
     def bgra_bytes(self, frame: torch.Tensor):
         """A stepped frame as height-by-width-by-four bytes, in the order a texture is.
 
-        Four buffers, not three: one downloading behind the next frame (see `handoff`), one
-        published, and one the window thread may still be uploading from."""
+        Four buffers rather than the default three, because one more may be in use at once: one
+        downloading behind the next frame (see `handoff`), one published, and one the window
+        thread may still be uploading from."""
         with self.aside():
             return self._take("bgra", self.to_bgra(frame), depth=4)

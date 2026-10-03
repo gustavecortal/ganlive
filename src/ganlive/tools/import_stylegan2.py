@@ -4,18 +4,16 @@
     curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
     ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
 
-Runs once, offline, and needs their repository importable -- opening the pickle *is* running
-their code, because `torch_utils.persistence` re-executes each class's pickled source. What it
+Runs once, offline, and needs their repository importable: opening the pickle runs their
+code, because `torch_utils.persistence` re-executes each class's pickled source. What it
 writes needs nothing but torch.
 
-The check this rests on runs by default, and `--no-check` skips it: the same latent through
-both generators in full precision, reported in 8-bit levels. The two compute the modulated
-convolution in a different order, so they differ by float rounding -- about 0.0001 levels on
-`ffhq.pkl`. A wrong weight differs by whole levels, so anything past `TOLERANCE` is refused.
+By default it checks the conversion (`--no-check` skips it): the same latent through both
+generators in full precision. The two compute the modulated convolution in a different order,
+so they differ by float rounding, about 0.0001 8-bit levels; a wrong weight differs by whole
+levels, so anything past `TOLERANCE` is refused.
 
-**A generator is what this writes.** A discriminator in the pickle is ignored: this project
-plays models, and the only thing a discriminator is for is adversarial finetuning, which
-happens elsewhere. A trainer that wants one converts the pickle with its own importer.
+Only the generator is written; a discriminator in the pickle is ignored.
 """
 from __future__ import annotations
 
@@ -31,7 +29,7 @@ TOLERANCE = 0.01
 
 
 def open_pickle(pkl: Path, repo: Path):
-    """Their loader, with the one thing this card cannot survive taken out of the result."""
+    """Their loader, with numpy scalars in the result turned into Python numbers."""
     sys.path.insert(0, str(repo))
     try:
         import dnnlib
@@ -46,7 +44,7 @@ def open_pickle(pkl: Path, repo: Path):
         blob = legacy.load_network_pkl(f)
     G = blob["G_ema"].eval()
     # Their persistence layer restores numpy scalars where the class annotates plain numbers,
-    # and those reach arithmetic this card cannot do.
+    # and numpy float64 scalars reach arithmetic some devices cannot do.
     for module in G.modules():
         for name, value in list(vars(module).items()):
             if isinstance(value, np.floating):
@@ -57,18 +55,18 @@ def open_pickle(pkl: Path, repo: Path):
 
 
 def check(G, cfg: S2.Config, state: dict, seed: int) -> tuple[float, float]:
-    """Both networks, one latent, full precision on the host. The unit is 8-bit levels."""
-    import numpy as np
+    """Both networks, one latent, full precision on the host: the mean and the largest
+    difference, in 8-bit levels."""
     import torch
 
-    z = torch.from_numpy(np.random.default_rng(seed)
-                         .standard_normal((1, cfg.z_dim)).astype(np.float32))
-    # `half_from` and not `num_fp16_res=0`: one spelling of "run this in full precision",
-    # and it is the one both configs share.
+    from ganlive.models.common import host_latent
+    from ganlive.pixels import levels, worst_levels
+
+    z = torch.from_numpy(host_latent(cfg.z_dim, seed))
     ours = S2.load(dataclasses.replace(cfg, half_from=S2.SINGLE_EVERYWHERE), state)
     with torch.no_grad():
-        gap = (ours(z) - G(z, None, noise_mode="const", force_fp32=True)).abs() * 127.5
-    return float(gap.mean()), float(gap.max())
+        a, b = ours(z), G(z, None, noise_mode="const", force_fp32=True)
+    return levels(a, b), worst_levels(a, b)
 
 
 def main(argv=None) -> int:

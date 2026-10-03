@@ -1,35 +1,28 @@
-"""The control surface: the dials the drums, and your hands, actually turn."""
+"""The control surface: the dials, what each one does, and how a model's dials are laid out.
+
+The shared blocks (MASTER, MOTION, LATENT) are host arithmetic and the same on every model.
+A model adds a MODEL block: FastGAN's from `fastgan_dials`, any other's read out of what was
+measured on it (`adopted`, `stylegan2`).
+"""
 from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, replace
 
-#: How many principal latent directions to expose. Eight, because the Rytm gives eight
-#: encoders on a page -- so the directions are one page and everything else is another.
+from ganlive.curves import at, clamp01, evenly  # noqa: F401  re-exported
+
+#: How many latent directions to expose: one page of eight encoders on the drum machine.
 DIRECTIONS = 8
 
-#: The furthest a direction dial pushes, in units of that direction's own length -- of the
-#: latent, or of `w`. Not of the picture: what that buys is measured per model.
+#: The furthest a direction dial pushes, in units of that direction's own length (of the
+#: latent, or of `w`). What that buys in the picture is measured per model.
 DIRECTION_RANGE = 2.5
 
-#: **What a turn buys, measured** -- the fraction of full push that delivers each even share of
-#: a direction's total change. Pushing proportionally does not turn proportionally: over 96
-#: curves (8 directions x 6 latents x 2 checkpoints, both signs averaged) an eighth of the push
-#: already buys 23.6% of the change and half of it buys 71.1%, so laid out straight the last
-#: quarter of the dial is worth a tenth of the picture and the first eighth is worth a quarter.
-#: The shape is the same for every direction on both checkpoints, which is what makes one table
-#: honest; `spread` carries the same treatment for the same reason. Nine pushes at even shares
-#: of the change, read through `evenly` rather than written as pairs, so the share column cannot
-#: be mistyped into a dial that doubles back on itself.
+#: The fraction of full push that buys each even share of a direction's total change,
+#: measured over 96 curves on two checkpoints. Pushing proportionally does not turn
+#: proportionally: an eighth of the push already buys about a quarter of the change. The
+#: shape was the same for every direction, so one table serves them all.
 DIRECTION_PUSH = (0.0, 0.0662, 0.1342, 0.2160, 0.3078, 0.4147, 0.5465, 0.7166, 1.0)
-
-
-def evenly(values) -> tuple[tuple[float, float], ...]:
-    """A curve given as values at even spacing, as `(position, value)` pairs."""
-    values = tuple(values)
-    last = max(1, len(values) - 1)
-    return tuple((i / last, float(v)) for i, v in enumerate(values))
-
 
 DIRECTION_RESPONSE = evenly(DIRECTION_PUSH)
 
@@ -47,13 +40,10 @@ def _direction_points() -> tuple[tuple[float, float], ...]:
 DIRECTION_POINTS = _direction_points()
 
 #: The half of a direction dial's description that is true whatever space the basis lives in.
-#: Said once, because it appears both in the generic blurb and in the per-range one.
 DIRECTION_TAIL = ("Rests in the middle and travels both ways. What it does is measured on the "
                   "model you have loaded, and is for you to name.")
 
-#: The spine: what every model offers, whatever it is. One architecture's own
-#: dials live with that architecture -- see `fastgan_dials`. A graph that declares its
-#: own reads them out of the file instead; see `adopted` below.
+#: The shared dials, as `{name: (rest, description)}`.
 DIALS: dict[str, tuple[float, str]] = {
     "reaction": (0.50, "how hard the picture answers individual hits. 0.5 is as written, 0 "
                        "ignores every hit so only the arrangement moves the picture, 1 is "
@@ -75,34 +65,30 @@ DIALS: dict[str, tuple[float, str]] = {
     "grid": (0.00, "snap the movement to steps instead of gliding. 0 is off, then quarter "
                    "notes, eighths, sixteenths, thirty-seconds."),
 
-    # No claim about the ranking here: loading re-orders by measured effect, and the strip appends
-    # that measurement to this paragraph.
+    # Loading re-orders the directions by measured effect, and the strip appends that
+    # measurement to this description.
     **{f"dir{i + 1}": (0.50,
         f"principal latent direction {i + 1}, from the SVD of the first weight that consumes "
         f"z. {DIRECTION_TAIL}")
        for i in range(DIRECTIONS)},
 }
 
-
-
-
 MASTER = ("reaction",)
 MOTION = ("speed", "spread", "hold", "late", "grid")
-#: The direction dials, in order, so nothing has to spell `dir{i+1}` or slice `name[3:]`.
+#: The direction dials, in order.
 DIRECTION_DIALS = tuple(f"dir{i + 1}" for i in range(DIRECTIONS))
-#: The LATENT block, which since `z_scale` went is exactly those. Two names because one is what
-#: the dials are and the other is where they are drawn, and the block could take another dial.
+#: The LATENT block.
 LATENT = DIRECTION_DIALS
 SPEED_BEATS = (8.0, 4.0, 2.0, 1.0, 0.5)
 
 GRID_STEPS = (0, 4, 8, 16, 32)
 
+#: The walk's spread against how far a move goes, measured: `(spread, distance)`.
 SPREAD_TABLE = ((0.00, 0.0), (0.05, 1.8), (0.10, 3.5), (0.20, 7.0), (0.35, 11.8),
                 (0.50, 16.0), (0.70, 20.2), (1.00, 22.5))
 SPREAD_MAX = SPREAD_TABLE[-1][1]
-#: The same table as a curve the dial can be read through, so the walk between measured points
-#: is `at`'s one loop rather than a second copy of it. The distance is the position here,
-#: because the dial is laid out against what it buys and not against the number underneath.
+#: The same table as a curve, with the distance as the dial position: the dial is laid out
+#: against what it buys, not against the number underneath.
 SPREAD_POINTS = tuple((far / SPREAD_MAX, near) for near, far in SPREAD_TABLE)
 
 
@@ -112,10 +98,6 @@ def direction_index(name: str) -> int | None:
         return DIRECTION_DIALS.index(name)
     except ValueError:
         return None
-
-
-def clamp01(x: float) -> float:
-    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
 
 
 def _detent(x: float, values):
@@ -131,9 +113,7 @@ RANGE_WORDS = ((3.5, "breathing"), (16.0, "altering"))
 
 HOLD_MAX = 0.95
 
-#: `(below, above, at rest)` for the readout. A bare 0.62 cannot say which way a dial is
-#: heading. The resting word is per dial: `reaction` never touches the weights, so there is
-#: nothing trained about where it sits, and `noise` rests at off.
+#: `(below, above, at rest)` for the readout, so it can say which way a dial is heading.
 POLES = {"reaction": ("calmer", "harder", "as written")}
 
 
@@ -163,13 +143,12 @@ def readout(name: str, value: float, layout=None) -> str:
             return "spread evenly"
         return f"{'arrives' if v > 0.5 else 'leaves'} {abs(v - 0.5) * 200:.0f}%"
     if direction_index(name) is not None:
-        # A direction has no trained value to be "as" -- it has a push, so say the push.
+        # A direction has no trained value; say the push.
         push = at(DIRECTION_POINTS, v)
         return "centred" if abs(push) < 0.02 else f"{push:+.2f}"
     poles = (knob.poles if knob is not None else None) or POLES.get(name)
     if poles is not None:
-        # Measured from this dial's own rest, not from the middle: a one-sided gate rests at 0,
-        # so a fixed 0.5 pivot had it reading "down 100%" while sitting where it starts.
+        # Measured from this dial's own rest, which for a one-sided dial is an end.
         rest = knob.rest if knob is not None else DIALS[name][0]
         span = max(rest, 1.0 - rest)
         away = (v - rest) / span if span else 0.0
@@ -182,9 +161,8 @@ class Surface:
     """The dial values, and the one method that turns them into everything downstream."""
 
     def __init__(self, values: dict[str, float] | None = None, layout=None) -> None:
-        # The spine, not one architecture's table: a surface with no model yet has the
-        # dials every model has. `PresetRunner.adopt` relayouts the moment one loads.
-        self.layout = layout if layout is not None else Layout(tuple(spine()))
+        # With no model yet, the dials every model has.
+        self.layout = layout if layout is not None else Layout(tuple(shared_knobs()))
         self.values = dict(self.layout.rests)
         self.held: frozenset[str] = frozenset()
         for name, value in (values or {}).items():
@@ -195,7 +173,6 @@ class Surface:
         self.layout = layout
         self.values = {name: self.values.get(name, rest)
                        for name, rest in layout.rests.items()}
-
 
     def set_held(self, values) -> None:
         """Put these dials where they are asked and stop `set` moving them."""
@@ -212,15 +189,13 @@ class Surface:
         if name in self.values:
             self.values[name] = clamp01(self.values[name] + value)
 
-
     def __getitem__(self, name: str) -> float:
         return self.values[name]
 
-
-    # Written once per frame, so a frame is never drawn against a half-written control
-    # state. Writer order is resting value, then a held hand, then anything automated.
     def apply(self, knobs, walk_cfg) -> None:
-        """Write every dial through to its two destinations: the network, and the walk."""
+        """Write every dial through to its two destinations: the network, and the walk.
+
+        Called once per frame, so a frame is never drawn against a half-written state."""
         v = self.values
 
         walk_cfg.beats_per_segment = _detent(v["speed"], SPEED_BEATS)
@@ -229,31 +204,14 @@ class Surface:
         walk_cfg.when = clamp01(v["late"])
         walk_cfg.step_grid = _detent(v["grid"], GRID_STEPS)
 
-        # Every remaining dial through the layout, because which settings exist and what each takes
-        # at each point of a turn is a property of the loaded model.
+        # Which settings exist, and what each takes at each point of a turn, is the loaded
+        # model's layout.
         for knob in self.layout.knobs:
             for write in knob.writes:
                 knobs.set(write.setting, at(write.points, v[knob.name]))
 
         walk_cfg.amounts = tuple(at(DIRECTION_POINTS, v[name]) if name in v else 0.0
                                  for name in DIRECTION_DIALS)
-
-
-
-# The strip, per model.
-
-def at(points, x: float) -> float:
-    """A dial's value at position `x`, walking the line between its measured points."""
-    # By index rather than `zip(points, points[1:])`: that slice allocates a fresh tuple on
-    # every call, and this runs once per dial per frame. Free at three points; the direction
-    # dials' measured table is seventeen, and there are eight of them.
-    x = clamp01(x)
-    for i in range(1, len(points)):
-        x1, v1 = points[i]
-        if x <= x1:
-            x0, v0 = points[i - 1]
-            return v0 if x1 == x0 else v0 + (v1 - v0) * (x - x0) / (x1 - x0)
-    return points[-1][1]
 
 
 @dataclass(frozen=True)
@@ -277,7 +235,7 @@ class Knob:
     #: `(below, above, at rest)` for the readout, when this dial has a direction to report.
     poles: tuple[str, str, str] | None = None
     #: Mean 8-bit levels this dial was measured to buy at full travel, or `None` when nothing
-    #: measured it. Read, not decoration: `bank.live_dials` draws a dial that measured nothing dark.
+    #: measured it. A dial that measured nothing is drawn dark.
     measured: float | None = None
 
 
@@ -323,8 +281,8 @@ class Layout:
         return self._groups
 
 
-def spine(directions: int = DIRECTIONS) -> list[Knob]:
-    """MASTER, MOTION and LATENT: host arithmetic, identical on every model ever loaded."""
+def shared_knobs(directions: int = DIRECTIONS) -> list[Knob]:
+    """The MASTER, MOTION and LATENT blocks: the same on every model."""
     out = [Knob("reaction", *DIALS["reaction"], group="MASTER", poles=POLES["reaction"])]
     out += [Knob(name, *DIALS[name], group="MOTION") for name in MOTION]
     out += [Knob(name, *DIALS[name], group="LATENT") for name in DIRECTION_DIALS[:directions]]
@@ -333,8 +291,8 @@ def spine(directions: int = DIRECTIONS) -> list[Knob]:
 
 def stylegan2(names=(), rests=(), curves=(), levels=(), ranges=(),
               directions: int = DIRECTIONS) -> Layout:
-    """A converted StyleGAN2's surface: `adopted`, saying on the dials themselves that its
-    directions are style directions and not latent ones."""
+    """A converted StyleGAN2's layout: `adopted`, with each direction dial saying which
+    style range it comes from."""
     notes = w_direction_notes(ranges)
     out = []
     for knob in adopted(names, rests, curves, levels, directions).knobs:
@@ -346,7 +304,7 @@ def stylegan2(names=(), rests=(), curves=(), levels=(), ranges=(),
 
 
 def w_direction_notes(ranges) -> tuple[str, ...]:
-    """One blurb per direction dial, saying which style range that dial factorises."""
+    """One description per direction dial, from its `(range name, pixel stages)`."""
     total = collections.Counter(name for name, _pixels in ranges)
     seen: collections.Counter = collections.Counter()
     out = []
@@ -358,42 +316,33 @@ def w_direction_notes(ranges) -> tuple[str, ...]:
     return tuple(out)
 
 
-#: What a derived dial's description says. The mechanism is known -- a gain on one band, or on
-#: the network's own noise at one scale -- and what it looks like is a property of the model.
+#: A derived dial's description, by the prefix of its name. The mechanism is known; what it
+#: looks like is a property of the model.
 DERIVED_BLURB = {
     "noise": "the network's own noise at the {h}-tall stage, frozen at load and brought in "
              "as this rises. Derived from the graph and measured on it.",
     "gain": "the gain on everything the {h}-tall stage hands upward. Derived from the graph "
             "and measured on it.",
-    # **The control this family is known for, and it read as "a setting this graph declares".**
-    # `w_coarse`, `w_mid` and `w_fine` are truncation per style range -- the three headline dials
-    # on every converted StyleGAN2, unnamed on the strip while the grain beneath them was
-    # described in full. Only that family ever spells a dial `w_*`: an adopted graph's are named
-    # by `adopt`, which only ever writes `gain_*` and `noise_*`.
+    # A StyleGAN2's truncation per style range: only that family names a dial `w_*`.
     "w": "how far this model's {h} styles are pulled toward the average `w` it was trained "
          "around -- truncation, for that range of layers alone. Below its rest the picture is "
          "more typical of what the model was trained on and less extreme; above it, less "
          "typical. Derived from the graph and measured on it.",
-    # No `pre_tanh` entry: `adopt` no longer puts a dial on the squash's input, for the reason
-    # written beside `fastgan_dials.SPANS` -- a gain there is a contrast curve, not a way through.
 }
 
 
 def adopted(names, rests, curves, levels, directions: int = DIRECTIONS) -> Layout:
-    """The layout of a graph nobody here wrote, read out of the graph."""
-    knobs = spine(directions)
-    for i, name in enumerate(names):
+    """The layout of a model whose dials were measured rather than written by hand: one
+    rest, curve and level per name, as `calibrate` produced them."""
+    knobs = shared_knobs(directions)
+    for name, rest, curve, level in zip(names, rests, curves, levels, strict=True):
         family = name.split("_")[0] if name.startswith(("noise_", "gain_", "w_")) else name
-        height = name.partition("_")[2]
         blurb = DERIVED_BLURB.get(family, "a setting this graph declares.")
-        rest = float(rests[i]) if i < len(rests) else 0.5
-        level = float(levels[i]) if i < len(levels) else None
         knobs.append(Knob(
-            name, rest, blurb.format(h=height), group="MODEL",
-            writes=(Write(name, evenly(curves[i])),) if i < len(curves) and len(curves[i]) else (),
-            # Every derived dial rests at what the model was trained to do, whichever end of its travel
-            # that is, because rest is always a gain of 1.0. Reading "off" there says the opposite.
-            poles=("down", "up", "as trained"), measured=level))
+            name, float(rest), blurb.format(h=name.partition("_")[2]), group="MODEL",
+            writes=(Write(name, evenly(curve)),) if len(curve) else (),
+            # Every derived dial rests at a gain of 1.0, which is the model as trained.
+            poles=("down", "up", "as trained"), measured=float(level)))
     return Layout(tuple(knobs))
 
 

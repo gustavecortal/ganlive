@@ -1,11 +1,9 @@
-"""The clean StyleGAN2, checked without NVIDIA's code and without a 382 MB pickle.
+"""The StyleGAN2 port, checked without NVIDIA's code or a pickle.
 
-What cannot be checked here is exactness, because that needs the original to compare against.
-It is checked against `ffhq.pkl` and `afhqcat.pkl` on the card:
-0.000 8-bit levels in fp32, block by block, and bit-for-bit in fp16. What *can* be checked
-here is everything that made those two runs possible -- that the shapes NVIDIA's rules give
-are the shapes this builds, that a checkpoint loads under its own names, and that the whole
-network still captures in one graph with no breaks, which is the entire point of the file.
+Exactness against the original needs the original, and is checked by
+`ganlive import-stylegan2`. What is checked here: the shapes NVIDIA's rules give are the
+shapes this builds, a checkpoint loads under its own names, and the network captures in one
+graph with no breaks.
 """
 from __future__ import annotations
 
@@ -77,8 +75,8 @@ def _fused(layer, x, w):
 @pytest.mark.parametrize("frozen", [False, True])
 def test_the_styles_scale_the_activations_and_it_is_the_same_convolution(up, frozen):
     """What plays scales the input channels by the styles and demodulates the output, where the
-    reference modulates the weight -- the same arithmetic in another order, per image, so a
-    batch of two with different styles has to come out as two separate frames would."""
+    original implementation modulates the weight: the same arithmetic in another order, per
+    image, so a batch of two with different styles comes out as two separate frames would."""
     torch.manual_seed(0)
     layer = S2.SynthesisLayer(8, 6, w_dim=16, resolution=16 if up > 1 else 8, up=up).eval()
     with torch.no_grad():
@@ -121,7 +119,7 @@ def test_the_wrong_architecture_is_refused_by_name():
 
 
 def test_a_half_precision_block_is_decided_when_it_is_built():
-    """Which blocks run half is a constant of the checkpoint, which is why there is no branch."""
+    """Which blocks run in half precision is fixed when the network is built."""
     net = S2.Generator(tiny(num_fp16_res=1))
     assert [b.half for b in net.blocks] == [False, False, False, True]
     assert net.blocks[-1].conv1.prenorm > 0 and net.blocks[0].conv1.prenorm == 0.0
@@ -175,9 +173,8 @@ def test_one_dial_per_resolution_not_per_layer():
     assert knobs.sites == {"noise": 7, "style": 3}   # one block has one convolution, three two
     assert net.blocks[1].conv0.knob is net.blocks[1].conv1.knob
 
-    # **The style dials must be a view, not a copy.** `torch.cat` of the three would allocate,
-    # and the module would hold something `commit` never reaches -- three bright dials moving
-    # nothing, which is the failure this project keeps paying for. It happened here once.
+    # The style dials must be a view into the settings vector, not a copy, or `commit` never
+    # reaches the module.
     knobs.reset()
     knobs.set("w_mid", 0.25)
     knobs.commit()
@@ -227,11 +224,8 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     assert model.dials_live, "nothing reached the model"
     assert "This is a StyleGAN" not in capsys.readouterr().out    # no per-architecture text
 
-    # **`--stock-grain` is a question about grain strength, not about which dials exist.** It
-    # used to skip this family's sweep too -- under the name `--no-calibrate`, which is what
-    # made that read plausible -- and since a derived dial's curve *is* its measurement, the
-    # strip came up with a spine and an empty MODEL block while all twelve dials sat live on
-    # the model. Same surface either way; only the grain gains are at stake.
+    # `--stock-grain` is a question about grain strength, not about which dials exist: the
+    # sweep that builds this family's dials runs either way.
     bare = bank._prepare(path, "cpu", torch.float32,
                         bank.LoadOptions(compile_net=False, measure_grain=False))
     assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.knobs.names
@@ -240,35 +234,28 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     assert bare.dials_live == model.dials_live
 
 
-def test_without_a_measurement_it_shows_the_spine_and_nothing_else(tmp_path):
-    """No measurement, no MODEL block -- and specifically not this project's own dials.
-
-    `--stock-grain` no longer reaches this: it asks for stock grain gains, and the sweep that
-    builds a StyleGAN2's dials runs either way, or twelve live dials sit on the model with
-    nothing on the strip to reach them. What lands here is a `Model` built without a sweep at
-    all, where a spine is the only honest answer -- a derived dial's curve *is* its measurement,
-    so there is nothing to draw."""
+def test_without_a_measurement_it_shows_the_shared_blocks_and_nothing_else(tmp_path):
+    """No measurement, no MODEL block -- and specifically not this project's own dials. A
+    derived dial's curve is its measurement, so before the sweep there is nothing to draw."""
     from ganlive import bank
-    from ganlive.dials import steer as K
 
     cfg = tiny()
     path = tmp_path / "tiny.pt"
     S2.save(path, cfg, S2.Generator(cfg).state_dict())
-    knobs = K.install_stylegan2(S2.from_file(path), "cpu")
 
-    layout = bank.layout_for(knobs, path)
+    layout = bank.layout_for(path)
     assert [k.name for k in layout.knobs if k.group == "MODEL"] == []
     assert {k.name for k in layout.knobs} >= {"reaction", "speed", "dir1"}
     # and without the dispatch it is the hand-tuned surface, whose MODEL block names five
     # gates and a grain band that live in this project's architecture and in no other.
-    fallback = bank.layout_for(knobs, tmp_path / "ours.pt")
+    fallback = bank.layout_for(tmp_path / "ours.pt")
     assert [k.name for k in fallback.knobs if k.group == "MODEL"] == ["se_256", "se_512",
                                                                      "se_128", "se_64",
                                                                      "noise"]
 
 
 def test_the_affine_map_is_the_slice_each_block_is_actually_handed():
-    """`affine_sites` claims a structural map. This drives the forward and checks it."""
+    """`affine_sites` states which `w` each affine reads. This drives the forward and checks."""
     cfg = tiny()
     net = S2.Generator(cfg).eval()
     seen: dict[int, int] = {}
@@ -287,7 +274,7 @@ def test_the_affine_map_is_the_slice_each_block_is_actually_handed():
     claimed = {tag: idx for idx, tag, _affine in S2.affine_sites(net)}
     assert seen == claimed, (
         f"`affine_sites` says {claimed} and the forward pass used {seen}; the style ranges "
-        f"are cut with this map, so a wrong entry silently factorises the wrong weights")
+        f"are cut with this map")
     # The overlap, spelled out, because it is the part that reads like an off-by-one.
     assert claimed["b4.torgb"] == claimed["b8.conv0"]
 
@@ -317,9 +304,11 @@ def test_a_range_with_no_affines_is_reported_empty_rather_than_dropped():
 
 
 def test_the_style_push_reaches_the_picture_and_the_latent_push_cannot():
-    """The seam, and the reason it has to be a seam at all."""
+    """Why a StyleGAN2's directions push `w`: the mapping's pixel norm cancels a `z` scaling."""
+    from ganlive.models.common import latent
+
     net = S2.Generator(tiny()).eval().requires_grad_(False)
-    z = torch.randn(1, net.z_dim, generator=torch.Generator().manual_seed(0))
+    z = latent(net.cfg.z_dim, 0, "cpu", torch.float32)
     with torch.no_grad():
         base = net(z)
         scaled = net(z * 3.0)
@@ -330,17 +319,18 @@ def test_the_style_push_reaches_the_picture_and_the_latent_push_cannot():
 
     assert torch.allclose(base, scaled, atol=1e-4), "the pixel norm should cancel a z scaling"
     assert torch.equal(base, still), "a zero push must be the network as trained, exactly"
-    assert (pushed - base).abs().mean() > 1e-3, "a w push that changes nothing is not a seam"
+    assert (pushed - base).abs().mean() > 1e-3, "a w push must change the picture"
 
 
 def test_the_push_lands_after_the_truncation_and_not_before_it():
     """A direction dial must not get weaker because a different dial was turned down."""
-    # 64px, so all three ranges are non-empty: `tiny()` alone has eight `w` vectors and an
-    # empty `w_fine`, which would have made this pass by pushing nothing.
+    from ganlive.models.common import latent
+
+    # 64px, so all three ranges are non-empty: `tiny()` alone has an empty `w_fine`.
     net = S2.Generator(tiny(img_resolution=64)).eval().requires_grad_(False)
     mapping = net.mapping
     mapping.w_avg.normal_()
-    z = torch.randn(1, net.z_dim, generator=torch.Generator().manual_seed(1))
+    z = latent(net.cfg.z_dim, 1, "cpu", torch.float32)
     push = torch.randn(len(S2.BANDS), net.cfg.w_dim)
     wanted = mapping.bands @ push                            # `(num_ws, w_dim)`
 
@@ -352,9 +342,7 @@ def test_the_push_lands_after_the_truncation_and_not_before_it():
             mapping.push = push.clone()
             moved = mapping(z)
             assert torch.allclose(moved - plain, wanted, atol=1e-5), (
-                f"at truncation {trunc} the push arrived scaled; before the lerp it would be "
-                f"multiplied by the truncation, and a dial whose strength depends on another "
-                f"dial gets blamed on the model")
+                f"at truncation {trunc} the push arrived scaled by the truncation")
 
 def test_a_saved_checkpoint_is_a_generator_and_nothing_else(tmp_path):
     """This project plays models, so a generator is the whole of what it writes."""
@@ -382,10 +370,7 @@ def test_a_checkpoint_that_carries_more_than_a_generator_still_opens(tmp_path):
 
 
 def test_this_repository_has_no_discriminator_at_all():
-    """It was 219 lines of training network in a package whose headline is playback.
-
-    The two repositories do not rely on each other: the training half has its own converter
-    and its own discriminator, and needs nothing written here."""
+    """This package plays models; training code, a discriminator included, lives elsewhere."""
     for gone in ("Discriminator", "DConfig", "load_d", "d_config_from",
                  "discriminator_from_file", "DBlock", "Epilogue"):
         assert not hasattr(S2, gone), f"{gone} is training code"

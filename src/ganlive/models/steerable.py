@@ -1,13 +1,7 @@
-"""The two modules a live dial is actually made of, grafted into a built generator.
+"""The two modules a live FastGAN dial is made of, grafted into a built generator.
 
-They are `nn.Module`s that replace a trained one in the tree, so they are model code, and
-they lived in `dials.steer` -- which meant `models.onnx_rewrite` had to import upward, out of
-`models` and into `dials`, to name the classes it rewrites. That import was written inside a
-function to keep the cycle out of the importer's way, which is the usual sign that a thing is
-one layer off from where it belongs.
-
-What each holds is a **view into the settings vector**, never a float: `torch.compile` guards
-on scalar values and would rebuild the graph every time a dial moved.
+Each holds a view into the settings vector, never a float: `torch.compile` guards on scalar
+values and would rebuild the graph every time a dial moved.
 """
 
 from __future__ import annotations
@@ -17,19 +11,19 @@ from torch import nn
 
 
 class SteerableNoise(nn.Module):
-    """`FoldedNoise` with a live gain: `x + (coeff * rung) * noise`."""
+    """`FoldedNoise` with a live gain: `x + (coeff * gain) * noise`."""
 
     def __init__(self, coeff: torch.Tensor, noise: torch.Tensor,
-                 rung: torch.Tensor) -> None:
+                 gain: torch.Tensor) -> None:
         super().__init__()
         self.register_buffer("coeff", coeff)
         self.register_buffer("noise", noise)
-        # A plain attribute, NOT a buffer: register_buffer + .to() hands each module its
-        # own detached copy, leaving the caller holding a tensor that steers nothing.
-        self.rung = rung
+        # A plain attribute, not a buffer: `.to()` would give each module its own copy of a
+        # buffer, and the settings vector would no longer reach it.
+        self.gain = gain
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.addcmul(x, self.coeff * self.rung, self.noise)
+        return torch.addcmul(x, self.coeff * self.gain, self.noise)
 
 
 class SteerableSLE(nn.Module):

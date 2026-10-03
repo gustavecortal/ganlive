@@ -383,7 +383,7 @@ def test_a_dark_dial_says_why_in_the_model_s_terms_not_the_interface_s():
 
     why = panel._reason("dir4")
     assert "1 latent direction" in why, why
-    assert "moved nothing" in why, "a dropped direction is not a missing feature"
+    assert "random direction" in why, "a dropped direction is not a missing feature"
 
     assert "architecture" in panel._reason("se_256")
     assert panel._reason("se_256") != why, "two different reasons, not one phrase reused"
@@ -398,7 +398,7 @@ def test_switching_models_repoints_the_directions_at_the_new_one():
     first = np.eye(2, 8, dtype=np.float32)
     second = np.full((2, 8), 0.5, dtype=np.float32)
     models = [_StubModel(rows=first), _StubModel(rows=second)]
-    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu", width=96, height=64)
+    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu")
 
     cfg = WalkConfig()
     bank.walk(cfg, dtype=torch.float32)
@@ -482,8 +482,7 @@ def test_the_shelf_lists_what_is_on_disk_and_every_readable_model_can_join(tmp_p
 
     loaded = types.SimpleNamespace(path=here, name="gv-here 82000", cfg=types.SimpleNamespace(
         nz=256, ladder=types.SimpleNamespace(width=1536, height=1024)))
-    bank = Bank(models=[loaded], stage=FrameStage(1024, 1536, device="cpu"), device="cpu",
-              width=1536, height=1024)
+    bank = Bank(models=[loaded], stage=FrameStage(1024, 1536, device="cpu"), device="cpu")
     shelf = Shelf(bank, tmp_path)
 
     by_name = {e.name: e for e in shelf.entries()}
@@ -557,7 +556,7 @@ def test_a_switch_moves_the_stage_to_the_incoming_models_size():
 
     big, small = model(48, 32), model(24, 16)
     r = Bank(models=[big, small], stage=FrameStage(32, 48, device="cpu"), device="cpu",
-            width=48, height=32, dtype=torch.float32)
+             dtype=torch.float32)
 
     assert (r.height, r.width) == (32, 48)
     assert r.stage.rgb_bytes(r.stage.step(big.net(None))).shape == (32, 48, 3)
@@ -582,16 +581,12 @@ def test_a_bank_may_mix_latent_widths_and_aspect_ratios_and_refuses_only_a_dupli
     def m(path, nz, w, h):
         return types.SimpleNamespace(path=pathlib.Path(path), name=path, cfg=cfg(nz, w, h))
 
-    incoming = cfg(512, 1024, 1024)                    # square, nz 512: refused outright once
     bank = [m("runs/gv/checkpoints/0072000.pt", 256, 3072, 2048)]
-    was, R.config_of = R.config_of, lambda _p: incoming
-    try:
-        assert R.admit(bank, pathlib.Path("runs/stylegan2/ffhq.pt")) is None
+    # A square model with another latent width joins a 3:2 bank.
+    assert R.admit(bank, pathlib.Path("runs/stylegan2/ffhq.pt")) is None
 
-        with pytest.raises(ValueError, match="already in this bank"):
-            R.admit(bank, pathlib.Path("runs/gv/checkpoints/0072000.pt"))
-    finally:
-        R.config_of = was
+    with pytest.raises(ValueError, match="already in this bank"):
+        R.admit(bank, pathlib.Path("runs/gv/checkpoints/0072000.pt"))
 
     assert R.admit([], pathlib.Path("runs/anything.pt")) is None
 
@@ -712,9 +707,9 @@ def test_a_model_switch_moves_where_the_latent_goes_with_it():
     models = [_StubModel(path=pathlib.Path("runs/a.onnx"),
                          net=types.SimpleNamespace(latent_on_host=True)),
               _StubModel(path=pathlib.Path("runs/b.pt"))]
-    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu", width=96, height=64)
+    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu")
     cfg = WalkConfig()
-    bank._walk_cfgs = [cfg]
+    bank.walk(cfg, dtype=torch.float32)
 
     bank.index = 0
     bank._rewire()
@@ -742,7 +737,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_spine(tmp_path):
     ours = tmp_path / "ours.pt"
     torch.save({"g_ema": {}, "config": {"nz": 256, "im_size": 512}}, ours)
 
-    bare = R.layout_for(None, converted)
+    bare = R.layout_for(converted)
     # The calibrated shape: dials with measured travel, as `_prepare_stylegan2` builds it.
     # `curves` are values at even spacing, one tuple per dial -- `calibrate.Dial.curve`.
     swept = S.stylegan2(("w_coarse", "noise_32"), (0.5, 0.0),
@@ -754,7 +749,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_spine(tmp_path):
     assert [n for n in swept if swept[n].group == "MODEL"] == ["w_coarse", "noise_32"], (
         "the calibrated builder must still carry the model's own dials")
 
-    mine = R.layout_for(None, ours)
+    mine = R.layout_for(ours)
     assert [n for n in mine if mine[n].group != "MODEL"] == spine, (
         "the spine is the spine on every family, which is the whole argument for having one")
 
@@ -840,8 +835,7 @@ def test_a_flat_folder_of_conversions_offers_every_one_and_no_dial_cache(tmp_pat
         torch.save({"config": {"nz": 256, "im_size": 64, "im_width": 64}, "g_ema": {}},
                    flat / f"{name}.pt")
     (flat / "ffhq.directions.pt").write_bytes(b"not a model")
-    bank = Bank(models=[], stage=FrameStage(64, 64, device="cpu"), device="cpu",
-                width=64, height=64)
+    bank = Bank(models=[], stage=FrameStage(64, 64, device="cpu"), device="cpu")
     found = sorted(p.name for p in Shelf(bank, tmp_path)._models())
     assert found == ["afhq.pt", "ffhq.pt", "metfaces.pt"], found
 

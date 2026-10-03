@@ -1,4 +1,10 @@
-"""Audio in, per-frame control features out. One implementation for offline and live."""
+"""Turning what the drums play into per-track features the presets read each frame.
+
+Three sources with one interface: `FeatureExtractor` hears onsets in multichannel audio,
+`NoteFeatures` reads MIDI note-ons, and `BothFeatures` combines them. Each keeps, per track,
+the seconds since it last fired (`since`) and a queue of onsets (`drain`), plus three whole-kit
+measurements: `density` (hits per second), `energy` (loudness) and `active`.
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -6,14 +12,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
+#: `since` for a track that has never fired.
 NEVER = 1e6
 
+#: The peak level read as a full-strength hit, so audio onsets get a strength in [0, 1].
 FULL_SCALE_HIT = 0.55
 
 
 @dataclass
 class FeatureConfig:
-    """Thresholds for the follower and the onset detector."""
+    """Thresholds for the envelope follower and the onset detector. Times are in seconds."""
 
     hop: int = 128
     release: float = 0.12
@@ -24,7 +32,7 @@ class FeatureConfig:
 
 
 class _Source:
-    """What both per-track sources answer the same way, from `since`, `pending` and the three
+    """The answers every source gives the same way, from `since`, `pending` and the three
     whole-kit measurements each keeps up to date."""
 
     def played(self) -> int:
@@ -32,17 +40,20 @@ class _Source:
         return int((self.since < NEVER * 0.1).sum())
 
     def features(self) -> dict[str, float]:
-        """The whole-kit measurements a slow rule can be driven from."""
+        """The whole-kit measurements a slow rule (`presets.Macro`) can be driven from."""
         return {"density": self.density, "energy": self.energy, "active": self.active}
 
     def drain(self) -> list[tuple[int, float, float]]:
-        """Take every onset since the last call. Draining, not sampling: see the module note."""
+        """Take every onset since the last call, as `(track, strength, seconds ago)`.
+
+        A queue rather than a snapshot, so two hits between frames are both seen."""
         out, self.pending = self.pending, []
         return out
 
 
 class FeatureExtractor(_Source):
-    """Per-channel envelope, latched onsets, and a slow global energy."""
+    """Onsets heard in audio: a per-channel envelope follower, latched onsets, and a slow
+    global energy. `push` is called from the audio thread."""
 
     def __init__(self, channels: int, samplerate: int,
                  config: FeatureConfig | None = None) -> None:
@@ -65,6 +76,7 @@ class FeatureExtractor(_Source):
         self.hits = np.zeros(channels, dtype=np.int64)
         self._last_onset = np.full(channels, -10 ** 9, dtype=np.int64)
         self._tail = np.zeros((channels, 0), dtype=np.float32)
+        #: Called with every block pushed, before analysis; `record.sync.Guide` attaches here.
         self.tap = None
 
     def push(self, block: np.ndarray) -> None:
@@ -99,6 +111,8 @@ class FeatureExtractor(_Source):
         env, since = self.env.copy(), self.since.copy()
         for j in range(nhops):
             p = peaks[:, j]
+            # An onset: loud enough, well above the decaying envelope, and not too soon after
+            # the last one on this channel.
             hit = ((p > self.cfg.floor)
                    & (p > self.cfg.onset_ratio * env)
                    & ((self.hops - self._last_onset) >= self._refractory_hops))
@@ -122,11 +136,11 @@ class FeatureExtractor(_Source):
 
     @property
     def floor(self) -> float:
-        """The absolute level a hit must clear. Read beside `loudest`; see there."""
+        """The absolute level a hit must clear. Read beside `loudest`."""
         return self.cfg.floor
 
     def loudest(self) -> list[float]:
-        """The peak each channel ever carried, so a silent one can say WHY it was silent."""
+        """The peak each channel ever carried, so a report can tell a quiet send from none."""
         return [float(v) for v in self.peak]
 
     def heard(self) -> float:
@@ -138,78 +152,22 @@ class FeatureExtractor(_Source):
         return None
 
 
-def offline(audio: np.ndarray, samplerate: int, fps: float,
-            config: FeatureConfig | None = None) -> dict:
-    """Run the extractor over a whole recording at a video frame rate."""
-    x = np.asarray(audio, dtype=np.float32)
-    if x.ndim == 1:
-        x = x[None, :]
-    ex = FeatureExtractor(x.shape[0], samplerate, config)
-    per_frame = samplerate / fps
-    frames = int(x.shape[1] / per_frame)
-    since = np.zeros((frames, x.shape[0]), dtype=np.float32)
-    whole = {k: np.zeros(frames, dtype=np.float32) for k in ex.features()}
-    onsets: list[list[tuple[int, float, float]]] = []
-    for f in range(frames):
-        a, b = int(f * per_frame), int((f + 1) * per_frame)
-        ex.push(x[:, a:b])
-        since[f] = ex.since
-        for k, v in ex.features().items():
-            whole[k][f] = v
-        onsets.append(ex.drain())
-    return {"since": since, "onsets": onsets, "frames": frames, "fps": fps, **whole}
-
-
-def score_onsets(detected: list[list[tuple[int, float, float]]], fps: float,
-                 truth: list[tuple[float, str, float]], channel_of: dict[str, int],
-                 tolerance: float = 0.030) -> dict:
-    """Precision, recall and timing error against the simulator's ground truth."""
-    got: list[tuple[float, int]] = []
-    for f, items in enumerate(detected):
-        for ch, _vel, ago in items:
-            got.append(((f + 1) / fps - ago, ch))
-    want = [(t, channel_of[name]) for t, name, _v in truth if name in channel_of]
-
-    used = [False] * len(got)
-    matched, errors = 0, []
-    for t, ch in want:
-        best, best_i = tolerance, -1
-        for i, (gt, gch) in enumerate(got):
-            if used[i] or gch != ch:
-                continue
-            d = abs(gt - t)
-            if d < best:
-                best, best_i = d, i
-        if best_i >= 0:
-            used[best_i] = True
-            matched += 1
-            errors.append(got[best_i][0] - t)
-    return {
-        "truth": len(want), "detected": len(got), "matched": matched,
-        "recall": matched / max(len(want), 1),
-        "precision": matched / max(len(got), 1),
-        "mean_error_ms": float(np.mean(errors) * 1000) if errors else 0.0,
-        "abs_error_ms": float(np.mean(np.abs(errors)) * 1000) if errors else 0.0,
-        "max_error_ms": float(np.max(np.abs(errors)) * 1000) if errors else 0.0,
-    }
-
-
 class NoteFeatures(_Source):
     """The same per-track features, from MIDI note-ons instead of from audio."""
 
-    def __init__(self, tracks: int = 12, base_note: int = 0,
-                 config: FeatureConfig | None = None,
-                 channels: dict[int, int] | None = None,
+    def __init__(self, tracks: int = 12, channels: dict[int, int] | None = None,
                  notes: dict[int, int] | None = None) -> None:
         self.n = int(tracks)
-        #: Which note is which track, when the kit shares one channel. `base_note` is the
-        #: shorthand for a kit whose pads are consecutive from there; `notes` says it outright
-        #: for one whose are not. See `kit.parse_notes`.
-        self.notes = dict(notes) if notes else {int(base_note) + i: i for i in range(self.n)}
+        #: `{note: track}`, for a kit that shares one channel (see `kit.parse_notes`). Without
+        #: it, note `i` is track `i`.
+        self.notes = dict(notes) if notes else {i: i for i in range(self.n)}
+        #: `{MIDI channel: track}`, for a kit that puts each track on its own channel. Checked
+        #: first; a channel not in it falls through to the note.
         self.channels = dict(channels) if channels else None
+        #: Note-ons that named no track: a count, and a small sample of `(channel, note)`.
         self.unresolved = 0
         self.unclaimed: dict[tuple[int, int], int] = {}
-        self.cfg = config or FeatureConfig()
+        self.cfg = FeatureConfig()
         self.since = np.full(self.n, NEVER, dtype=np.float32)
         self.hits = np.zeros(self.n, dtype=np.int64)
         self.pending: list[tuple[int, float, float]] = []
@@ -221,7 +179,7 @@ class NoteFeatures(_Source):
         self._now = 0.0
 
     def track_of(self, channel: int, note: int) -> int | None:
-        """Which track a note-on IS, or None if it is not one of ours."""
+        """Which track a note-on is, or None if it is not one of ours."""
         if self.channels is not None:
             index = self.channels.get(channel)
             if index is not None:
@@ -268,10 +226,9 @@ class NoteFeatures(_Source):
     def channel_of(self) -> dict[str, int]:
         """`track -> index into `since``, for the tracks this kit can actually reach.
 
-        Derived from the wiring, not from the twelve names: a General MIDI kit wired with
-        `--notes 36=BD,38=SD,42=CH,46=OH` reaches four. Returning all twelve gave the strip
-        eight drum lights that could never fire and the end-of-run report eight silent
-        tracks to complain about -- a fault that cannot exist."""
+        Derived from the wiring rather than the twelve names: a General MIDI kit wired with
+        `--notes 36=BD,38=SD,42=CH,46=OH` reaches four, so the strip draws four drum lights
+        and the end-of-run report checks four tracks."""
         from ganlive.control.kit import TRACKS
 
         reached = set(self.notes.values())
@@ -280,18 +237,22 @@ class NoteFeatures(_Source):
         return {TRACKS[i]: i for i in sorted(reached) if i < len(TRACKS)}
 
 
+#: How close an audio onset may follow a note-on on the same voice and still be that hit.
 PAIRED_S = 0.075
 
 
 class BothFeatures:
-    """Pads by their MIDI note, sequencer trigs by their sound, in one twelve-track space."""
+    """Pads by their MIDI note, sequencer trigs by their sound, in one twelve-track space.
+
+    For a machine whose sequencer does not send notes: pads still arrive as note-ons, and an
+    audio onset on a voice's channel counts as a hit unless a note-on for it just arrived.
+    `tracks` is `{track: audio channel}`."""
 
     def __init__(self, audio: FeatureExtractor, tracks: dict[str, int],
-                 base_note: int = 0, config: FeatureConfig | None = None,
                  channels: dict[int, int] | None = None,
                  notes: dict[int, int] | None = None) -> None:
         self.audio = audio
-        self.notes = NoteFeatures(len(tracks), base_note, config, channels, notes)
+        self.notes = NoteFeatures(len(tracks), channels, notes)
         self.n = self.notes.n
         index = self.notes.channel_of()
         self.on_channel: dict[int, list[int]] = {}
@@ -301,7 +262,6 @@ class BothFeatures:
         self._voice_of = {i: ch for ch, idxs in self.on_channel.items() for i in idxs}
         self._noted: dict[int, float] = {}
         self._now = 0.0
-
 
     @property
     def since(self):
@@ -325,7 +285,7 @@ class BothFeatures:
 
     @property
     def tap(self):
-        """The guide attaches here and reaches the audio half, which is the half with blocks."""
+        """The audio half's tap: the half that has audio blocks to hand on."""
         return self.audio.tap
 
     @tap.setter
@@ -370,7 +330,7 @@ class BothFeatures:
         return self.audio.heard()
 
     def loudest(self) -> list[float]:
-        """The audio half's, in ITS channel space -- the only half that measures a level."""
+        """The audio half's, in its channel space -- the only half that measures a level."""
         return self.audio.loudest()
 
     @property

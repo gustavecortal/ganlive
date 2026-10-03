@@ -1,13 +1,12 @@
 """The twelve-track drum vocabulary, and the three ways a machine is wired to it.
 
 Track names are the usual abbreviations -- bass drum, snare, rim shot, clap, four toms, two
-hats, cymbal, cowbell -- and an Analog Rytm's twelve pads are exactly this order. Any other
-machine is wired to it by `parse_notes` (which note is which pad), `parse_track_channels`
-(which MIDI channel is which track) or `parse_channel_map` (which audio channel is which
-drum). All three validate through `track_index`, so a typo is refused once rather than three
-times differently.
+hats, cymbal, cowbell -- in the pad order of the Elektron Analog Rytm drum machine, which is
+the default kit. Any other machine is wired to it by `parse_notes` (which note is which pad),
+`parse_track_channels` (which MIDI channel is which track) or `parse_channel_map` (which audio
+channel is which drum). All three validate names through `track_index`.
 
-Nothing here makes a sound. The stand-in machine that does is `control/simulate.py`.
+Nothing here makes a sound; the stand-in machine that does is `control/simulate.py`.
 """
 from __future__ import annotations
 
@@ -16,13 +15,15 @@ TRACKS = ("BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"
 
 INDEX = {t: i for i, t in enumerate(TRACKS)}
 
-
+#: Tracks that share one analog voice on the default kit, so one hit chokes the other and
+#: they arrive on one audio channel in the `voices` layout.
 VOICE_GROUPS = (("BD",), ("SD",), ("RS", "CP"), ("BT",), ("LT",), ("MT", "HT"),
                 ("CH", "OH"), ("CY", "CB"))
 
 
 def channel_map(layout: str = "tracks") -> dict[str, int]:
-    """Which audio channel each drum arrives on."""
+    """Which audio channel each drum arrives on: one per track (`tracks`), or one per shared
+    voice (`voices`)."""
     if layout == "tracks":
         return dict(INDEX)
     if layout == "voices":
@@ -39,9 +40,8 @@ def by_channel(channel_of: dict[str, int]) -> dict[int, list[str]]:
 
 
 def track_index(name: str) -> int:
-    """A track to its index, or raise. Its name, or the index itself for a
-    machine whose pads are not called BD and SD -- `0` to `11`, the order the twelve tracks
-    are wired in. Every parser here validates the same way."""
+    """A track to its index, or raise. Accepts its name, or the index itself (`0` to `11`)
+    for a machine whose pads are not called BD and SD."""
     name = name.strip().upper()
     if name.isdigit():
         index = int(name)
@@ -65,7 +65,7 @@ def pairs(text: str):
 
 
 def parse_channel_map(text: str) -> dict[str, int]:
-    """"BD=0,CH=4" to a map. Track names must be real ones, or a typo is a silent no-op."""
+    """"BD=0,CH=4" to `{track: audio channel}`. Unknown track names are refused."""
     out = {}
     for name, channel in pairs(text):
         track_index(name)               # validated, but this map is by NAME
@@ -76,10 +76,10 @@ def parse_channel_map(text: str) -> dict[str, int]:
 def parse_notes(text: str) -> dict[int, int]:
     """Which note is which track, for a kit that shares one channel: `{note: track index}`.
 
-    `"0"` -- a first note, for a kit whose pads send consecutive notes from there; a Rytm's
-    send 0 to 11. Or `"36=BD,38=SD,42=CH,46=OH"` for one whose do not, which is every General
-    MIDI kit: kick 36, snare 38, closed hat 42, open hat 46, and nothing consecutive about it.
-    Same grammar as `parse_track_channels`, with a note where the channel was."""
+    `"0"` -- a first note, for a kit whose pads send consecutive notes from there (the default
+    kit sends 0 to 11). Or `"36=BD,38=SD,42=CH,46=OH"` for one that does not, such as a
+    General MIDI kit. Same grammar as `parse_track_channels`, with a note where the channel
+    was."""
     text = text.strip()
     if text.isdigit():
         return {int(text) + i: i for i in range(len(TRACKS))}
@@ -97,9 +97,12 @@ def parse_notes(text: str) -> dict[int, int]:
 
 def output_mode(seen: dict[int, set[int] | list[int] | dict[int, int]],
                 known=range(len(TRACKS))) -> str | None:
-    """`"auto"`, `"track"`, `"mixed"`, or None if the traffic cannot say. channel -> notes.
+    """How a machine sends its drums, read from `{MIDI channel: notes seen}`.
 
-    `known` is the notes that name a track on this kit -- 0 to 11 unless told."""
+    `"auto"` when the notes name tracks (the whole kit on one channel), `"track"` when several
+    channels carry other notes (one channel per track), `"mixed"` for both at once, or None if
+    the traffic cannot tell. `known` is the notes that name a track on this kit, 0 to 11
+    unless told."""
     known = set(known)
     low = {ch for ch, notes in seen.items() if any(n in known for n in notes)}
     high = {ch for ch, notes in seen.items() if any(n not in known for n in notes)}

@@ -1,15 +1,14 @@
-"""The instrument on a machine that is not this one: another card, a Mac, or no card at all.
+"""The instrument on any machine: another card, a Mac, or no card at all.
 
-Every default here used to be `"xpu"` and `torch.float16`, written where the instrument
-was built. These pin the rules that replaced them, and the two failures that degrade to eager
-instead of ending the load."""
+The device and precision defaults, and the two compile failures that degrade to eager instead
+of ending the load."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import torch
 
-from ganlive import bank, frame
+from ganlive import bank
 from ganlive import device as dev
 from ganlive.frame import FrameStage
 from ganlive.models import capture as speedups
@@ -34,7 +33,7 @@ def test_no_memory_report_where_there_is_no_allocator():
 
 def test_the_stage_and_the_rig_default_to_the_detected_backend():
     assert FrameStage(4, 6).device == dev.detect_backend()
-    r = bank.Bank(models=[], stage=FrameStage(4, 6, device="cpu"), device="cpu", width=6, height=4)
+    r = bank.Bank(models=[], stage=FrameStage(4, 6, device="cpu"), device="cpu")
     assert r.dtype is torch.float32, "a cpu rig built without a dtype must not play in half"
 
 
@@ -49,12 +48,11 @@ def test_a_compile_that_fails_plays_eager_and_says_so(monkeypatch, capsys):
     assert "running eager -- no host compiler" in capsys.readouterr().out
 
 
-def test_conversions_that_fail_to_compile_fall_back_to_eager(monkeypatch, capsys):
-    def refuse(fns, probe):
+def test_conversions_that_fail_to_compile_fall_back_to_eager(capsys):
+    def refuse(_frame):
         raise RuntimeError("Inductor cannot build this")
 
-    monkeypatch.setattr(frame, "warm", refuse)
-    stage = FrameStage(4, 6, to_bgra=lambda x: x, device="cpu")
+    stage = FrameStage(4, 6, to_bgra=refuse, device="cpu")
     assert stage.compiled["bgra"]
     assert stage.warm(torch.zeros(1, 3, 4, 6)) == 0
     assert not any(stage.compiled.values())

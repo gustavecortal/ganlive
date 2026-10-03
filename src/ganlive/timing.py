@@ -1,14 +1,14 @@
-"""How a run is summarised: a median, and the slope a median hides."""
+"""Summarising timing samples: median, p95 and max, and the slope a median hides."""
 
 from __future__ import annotations
 
-import json
 import statistics
-from pathlib import Path
+
+from ganlive.files import write_json as write_metrics  # noqa: F401  re-exported
 
 
 def stat_ms(samples, budget_ms: float | None = None) -> dict:
-    """The summary every timing loop here reports."""
+    """The summary every timing loop here reports, with `over_budget` if a budget is given."""
     xs = sorted(float(x) for x in samples)
     if not xs:
         return {"median": 0.0, "p95": 0.0, "max": 0.0, "mean": 0.0, "n": 0}
@@ -25,16 +25,10 @@ def stat_ms(samples, budget_ms: float | None = None) -> dict:
 def drift_ms(samples, seconds: float) -> dict:
     """The first fifth of a run against the last, as a slope in ms per second.
 
-    Beside `stat_ms`, because a median hides a slope: a graph replay was gaining
-    0.066 ms every second and every 15 s median read fine. `samples` in run order."""
+    A frame time that creeps up over a run can still have a fine median, so long runs report
+    this beside `stat_ms`. `samples` in run order."""
     xs = [float(x) for x in samples]
     fifth = max(1, len(xs) // 5)
     first, last = statistics.median(xs[:fifth]), statistics.median(xs[-fifth:])
     return {"first_ms": round(first, 3), "last_ms": round(last, 3),
             "ms_per_s": round((last - first) / max(seconds * 0.8, 1e-9), 4)}
-
-
-def write_metrics(path: str | Path, payload: dict) -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")

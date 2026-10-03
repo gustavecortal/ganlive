@@ -17,6 +17,7 @@ from ganlive.walk import (
     MusicalClock,
     SlerpWalk,
     WalkConfig,
+    position,
 )
 from tests.support import NZ, _step, walk
 
@@ -62,7 +63,7 @@ def test_a_segment_boundary_lands_exactly_on_a_seed(beats_per_segment):
 
 
 def test_a_higher_tempo_changes_seed_more_often():
-    """The property that was actually asked for, asserted end to end through the clock."""
+    """Through the clock, end to end: at a faster tempo the walk passes more seeds per second."""
     seen = {}
     for bpm in (100.0, 150.0):
         clock = MusicalClock(bpm)
@@ -113,9 +114,8 @@ def test_different_base_seeds_give_different_walks():
 
 
 def test_a_seed_has_the_norm_the_generator_was_trained_on():
-    """Targets are plain Gaussian draws, so their length must sit near sqrt(nz). A walk whose
-    endpoints drifted off that shell would spend the whole path out of distribution, which is
-    the failure the straight-line path was rejected for."""
+    """Targets are plain Gaussian draws, so their length must sit near sqrt(nz); endpoints off
+    that shell would keep the whole path out of the generator's training distribution."""
     w = SlerpWalk(256, "cpu", WalkConfig())
     norms = [float(w.seed_for(k).norm()) for k in range(16)]
     assert all(0.85 * 16.0 < n < 1.15 * 16.0 for n in norms), norms
@@ -141,8 +141,8 @@ def test_spread_controls_reach_independently_of_rate():
 
 
 def test_spread_keeps_targets_on_the_shell():
-    """A target off the training shell would be out of distribution before the walk even
-    starts, which is the failure the great circle exists to avoid."""
+    """Pulling targets toward a home keeps them on the training shell, so a small spread does
+    not put the walk out of distribution."""
     for spread in (0.05, 0.3, 0.7, 1.0):
         w = SlerpWalk(256, "cpu", WalkConfig(spread=spread))
         norms = [float(w.seed_for(k).norm()) for k in range(20)]
@@ -158,8 +158,38 @@ def test_spread_does_not_break_purity():
     assert torch.equal(a.latent(9.5), b.latent(9.5))
 
 
+def _torch_slerp(z0, z1, t):
+    """The great circle between two latents, written in torch as an independent reference."""
+    n0, n1 = z0 / z0.norm(), z1 / z1.norm()
+    omega = torch.clamp((n0 * n1).sum(), -1.0, 1.0).acos()
+    so = omega.sin()
+    return ((1.0 - t) * omega).sin() / so * z0 + (t * omega).sin() / so * z1
+
+
+@pytest.mark.parametrize("spread, home_every", [(0.05, 0), (0.3, 0), (0.12, 4)])
+def test_a_pulled_in_seed_is_the_great_circle_point_between_home_and_draw(spread, home_every):
+    """Each seed is `spread` of the way from its home to its raw draw along the great circle,
+    so a saved set replays the same seeds, to within float rounding."""
+    w = SlerpWalk(256, "cpu", WalkConfig(spread=spread, home_every=home_every, base_seed=9))
+    for k in (0, 3, 4, 17):
+        block = k // home_every if home_every else 0
+        want = _torch_slerp(w._draw(block, salt=1), w._draw(k), torch.tensor(spread))[:256]
+        torch.testing.assert_close(w.seed_for(k), want, rtol=0, atol=2e-6)
+        torch.testing.assert_close(w.home_for(k), w._draw(block, salt=1)[:256], rtol=0, atol=0)
+
+
+def test_the_latent_between_two_seeds_is_on_their_great_circle():
+    """Mid-segment, the latent is the slerp of the segment's two seeds at the shaped phase."""
+    cfg = WalkConfig(spread=0.4, hold=0.3, when=0.7, base_seed=2)
+    w = SlerpWalk(64, "cpu", cfg)
+    for beats in (0.7, 5.1, 9.9):
+        k, _u, t = position(cfg, beats)
+        want = _torch_slerp(w.seed_for(k), w.seed_for(k + 1), torch.tensor(t))
+        torch.testing.assert_close(w.latent(beats).reshape(-1), want, rtol=0, atol=2e-6)
+
+
 def test_spread_one_is_exactly_the_raw_draw():
-    """The default has to be bit-identical to drawing, so the old behaviour is recoverable."""
+    """The default spread of 1 is bit-identical to the raw Gaussian draw."""
     w = SlerpWalk(256, "cpu", WalkConfig(spread=1.0))
     # `_draw` is the walk's own width, `seed_for` is the loaded model's: the sequence is
     # drawn once, above every model, and each reads the front of it.
@@ -174,9 +204,9 @@ def test_the_walk_uses_the_motion_dials_when_they_are_set():
 
 
 def test_midi_clock_takes_the_position_away_from_the_frame_count():
-    """Free-running, a dropped frame slows the music with it, which is right for recording to
-    a file. Under real clock the position comes from counted pulses, so a dropped frame skips
-    further along the path instead -- which is what is wanted on stage."""
+    """Once MIDI clock pulses arrive, the position comes from counted pulses, not frames, so a
+    dropped frame skips ahead on the path instead of slowing it (right for stage; free-running
+    frame counting is right for recording to a file)."""
     clock = MusicalClock(120.0)
     for _ in range(MusicalClock.PPQN * 8):
         clock.on_pulse()
@@ -204,7 +234,8 @@ def test_a_new_seed_sequence_is_seen_at_once_rather_than_at_the_end_of_the_bar()
 
 
 def test_two_latent_widths_read_the_same_seed_sequence():
-    """**The claim that lets a bank hold two latent widths at once.**"""
+    """A 256-wide and a 512-wide walk share one seed sequence, which lets a bank hold models of
+    both latent widths at once."""
     from ganlive.walk import SlerpWalk, WalkConfig
 
     narrow = SlerpWalk(256, "cpu", WalkConfig(base_seed=7), dtype=torch.float32)
@@ -224,7 +255,8 @@ def test_two_latent_widths_read_the_same_seed_sequence():
 
 
 def test_a_direction_basis_of_the_wrong_width_is_skipped_rather_than_crashing():
-    """**This killed a live set, and the good version of it is a missing push.**"""
+    """After a switch to a model of another width, the old direction basis is skipped: the
+    push goes missing, but the frame is still produced."""
 
     from ganlive.walk import SlerpWalk, WalkConfig
 
@@ -255,7 +287,8 @@ def test_retargeting_a_walk_changes_its_width_and_keeps_its_place():
     assert walk.nz == 512 and after.shape == (512,)
     torch.testing.assert_close(after, reference.latent(5.5).reshape(-1), rtol=0, atol=0), (
         "the walk did not land where a walk of the new width would be at this beat")
-    assert walk.phase(5.5) == reference.phase(5.5), "the switch moved the beat"
+    assert position(walk.cfg, 5.5)[:2] == position(reference.cfg, 5.5)[:2], (
+        "the switch moved the beat")
 
     assert walk._scratch.shape == (512,), "the offset scratch is still the old width"
     assert all(b.shape == (1, 512) for b in walk._staging), "the staging ring is stale"
@@ -289,26 +322,11 @@ def test_a_walk_with_no_directions_still_plays():
     assert walk.latent(0.5).shape == (1, 8)
 
 
-def test_the_cache_key_actually_reads_every_field_it_claims_to():
-    """`_key` builds a literal tuple for speed, so it can drift from `SEED_FIELDS`, which is
-    what the partition test above trusts. Changing each named field must change the key."""
-    w = walk()
-    base = w._key(3)
-    for name in SlerpWalk.SEED_FIELDS:
-        setattr(w.cfg, name, getattr(w.cfg, name) + 7)
-        assert w._key(3) != base, f"_key ignores {name}, which SEED_FIELDS says it reads"
-        setattr(w.cfg, name, getattr(w.cfg, name) - 7)
-    assert w._key(3) == base
-    assert w._key(4) != base, "and the segment index itself"
-
-
 def test_the_two_routes_a_dial_can_be_written_by_do_not_overlap_or_invent():
-    """That a dial is *written* is `test_every_dial_changes_something`'s job, and it does it behaviourally,
-    which is stronger. This is the pair of facts that one cannot see: a dial written by both routes would
-    have two owners, and a span naming a dial that does not exist would be a destination nothing can ever
-    reach."""
-    # Three routes now, not two. `noise` walks a ladder of bands and the `dir` dials are
-    # written as one vector onto the walk, so neither can be a `Span`.
+    """No dial is written by both a span and the table (it would have two owners), and every
+    dial is wired somewhere. That each dial has a visible effect is tested elsewhere."""
+    # `noise` walks a ladder of bands and the `dir` dials are written as one vector onto the
+    # walk, so neither can be a `Span`; they count with the table-written dials here.
     by_table = set(MASTER) | set(MOTION) | {"noise"} | set(LATENT)
     spanned = {s.dial for s in SPANS}
     assert not (spanned & by_table), "a dial cannot be written by both routes"
@@ -316,7 +334,8 @@ def test_the_two_routes_a_dial_can_be_written_by_do_not_overlap_or_invent():
 
 
 def test_the_walk_hands_an_onnx_graph_its_latent_on_the_host():
-    """Same numbers, without the round trip to the card and back."""
+    """With `latent_on_host`, an ONNX graph gets the same latent as a host array, without a
+    round trip to the GPU and back."""
 
     from ganlive.walk import SlerpWalk, WalkConfig
 
@@ -339,8 +358,8 @@ def test_the_walk_hands_an_onnx_graph_its_latent_on_the_host():
 
 
 def test_switching_back_to_a_model_clears_the_push_it_was_left_holding():
-    """The handed-over memo was the push alone. Pushed on A, switched to B, every dial back to
-    rest, then back to A: nothing was written, and A played offset with its dials centred."""
+    """Push on model A, switch to B, centre every dial, switch back to A: A's push must be
+    cleared, or A plays offset with its dials centred."""
     import numpy as np
 
     from ganlive.walk import SlerpWalk, WalkConfig

@@ -1,14 +1,15 @@
-"""Reading a machine's clock, transport and controls, and driving a `MusicalClock` from them."""
+"""MIDI in: finding ports, reading clock and transport into a `MusicalClock`, and mapping knobs
+(CC and NRPN) and pad pressure onto dials."""
 from __future__ import annotations
 
 import threading
 import time
 from typing import NamedTuple
 
+from ganlive.clock import MusicalClock
 from ganlive.control.kit import pairs
-from ganlive.dials.table import clamp01
+from ganlive.curves import clamp01
 from ganlive.files import remember
-from ganlive.walk import MusicalClock
 
 
 class Ports(NamedTuple):
@@ -21,10 +22,7 @@ class Ports(NamedTuple):
 
 
 def find_ports(match: str = "") -> Ports:
-    """Every MIDI port whose name contains `match`, case-insensitively; all of them if empty.
-
-    The one enumeration. `play`'s clock reader, `wire`, `learn` and `doctor` each had their
-    own, and two of them compared the name as bytes while two compared it as text."""
+    """Every MIDI port whose name contains `match`, case-insensitively; all of them if empty."""
     import pygame.midi
 
     pygame.midi.init()
@@ -43,8 +41,8 @@ def find_ports(match: str = "") -> Ports:
 def open_inputs(match: str = "") -> tuple[list, list, str | None]:
     """`(opened, rejected, error)` for every matching input, as `(name, Input)` pairs.
 
-    `error` is why there is no MIDI at all, or the last port that refused to open -- never a
-    raise, because three of the four callers are reporting on the machine rather than using it."""
+    `error` is why there is no MIDI at all, or the last port that refused to open. It never
+    raises, because most callers are reporting on the machine rather than depending on it."""
     try:
         import pygame.midi
 
@@ -60,6 +58,15 @@ def open_inputs(match: str = "") -> tuple[list, list, str | None]:
     return out, found.rejected, error
 
 
+def messages(ports, batch: int = 128):
+    """Every message waiting on the opened inputs, as `(event, timestamp)`.
+
+    `event` is `[status, data1, data2, data3]`; the timestamp is PortMidi's, in ms."""
+    for port in ports:
+        while port.poll():
+            yield from port.read(batch)
+
+
 CLOCK = 0xF8
 START = 0xFA
 CONTINUE = 0xFB
@@ -69,44 +76,88 @@ CONTROL_CHANGE = 0xB0
 NOTE_ON = 0x90
 AFTERTOUCH_POLY = 0xA0
 
+_SYSTEM = {CLOCK: "clock", START: "start", CONTINUE: "continue", STOP: "stop",
+           SONG_POSITION: "song_position"}
+_VOICE = {CONTROL_CHANGE: "control_change", AFTERTOUCH_POLY: "aftertouch_poly"}
+
+
+def classify(status: int, data2: int = 0) -> str | None:
+    """What one MIDI message is, or None for the kinds this instrument ignores.
+
+    A note-on with velocity 0 is a release, by MIDI convention, and reads as `"note_off"`."""
+    if status >= 0xF0:
+        return _SYSTEM.get(status)
+    kind = status & 0xF0
+    if kind == NOTE_ON:
+        return "note_on" if data2 > 0 else "note_off"
+    return _VOICE.get(kind)
+
 
 def dispatch(clock: MusicalClock, status: int, data1: int = 0, data2: int = 0,
              now: float | None = None) -> str | None:
-    """Apply one MIDI message to a clock. Returns what it was, or None if it was ignored."""
-    if status == CLOCK:
+    """Apply one MIDI message to a clock. Returns what it was (see `classify`)."""
+    what = classify(status, data2)
+    if what == "clock":
         clock.on_pulse(now)
-        return "clock"
-    if status == START:
+    elif what == "start":
         clock.on_start()
-        return "start"
-    if status == CONTINUE:
+    elif what == "continue":
         clock.on_continue()
-        return "continue"
-    if status == STOP:
+    elif what == "stop":
         clock.on_stop()
-        return "stop"
-    if status == SONG_POSITION:
+    elif what == "song_position":
         clock.on_song_position(data1 | (data2 << 7))
-        return "song_position"
-    if CONTROL_CHANGE <= status <= CONTROL_CHANGE + 0x0F:
-        return "control_change"
-    if NOTE_ON <= status <= NOTE_ON + 0x0F:
-        return "note_on" if data2 > 0 else "note_off"
-    if AFTERTOUCH_POLY <= status <= AFTERTOUCH_POLY + 0x0F:
-        return "aftertouch_poly"
-    return None
+    return what
+
+
+class Traffic:
+    """A tally of what arrived on the wire, for the tools that report on a machine.
+
+    Every message goes through `dispatch` into a clock of its own, the same path `play`
+    takes. Keeps note-ons per channel and the clock's pulse count and timing."""
+
+    def __init__(self) -> None:
+        self.clock = MusicalClock()
+        #: `{channel: {note: count}}`, channels 0-based as on the wire.
+        self.notes: dict[int, dict[int, int]] = {}
+        self.pulses = 0
+        self._first: float | None = None
+        self._last: float | None = None
+
+    def take(self, event, now: float) -> str | None:
+        """Count one `[status, data1, data2, ...]` message. Returns what it was."""
+        status, data1, data2 = event[0], event[1], event[2]
+        what = dispatch(self.clock, status, data1, data2, now)
+        if what == "clock":
+            self.pulses += 1
+            if self._first is None:
+                self._first = now
+            self._last = now
+        elif what == "note_on":
+            per = self.notes.setdefault(status & 0x0F, {})
+            per[data1] = per.get(data1, 0) + 1
+        return what
+
+    def tempo(self) -> tuple[float, float] | None:
+        """`(BPM, seconds)` from the pulses counted between the first and the last, or None
+        until there is more than a beat of them."""
+        if self.pulses <= MusicalClock.PPQN or self._last <= self._first:
+            return None
+        span = self._last - self._first
+        return MusicalClock.bpm_from(self.pulses - 1, span), span
+
+    def note_lines(self) -> list[str]:
+        """One line per channel, shown 1-based: `channel 10  36:4, 38:2`."""
+        return [f"  channel {ch + 1:<3} "
+                + ", ".join(f"{n}:{c}" for n, c in sorted(self.notes[ch].items()))
+                for ch in sorted(self.notes)]
 
 
 def _dial_or_raise(name: str) -> str:
-    """A dial name, checked for being one at all. **Not checked against a list of them.**
+    """A dial name, checked only for being non-empty.
 
-    Which dials exist is a property of the loaded model, and this runs before any model is
-    open. Checking against a fixed table refused every foreign model's whole MODEL block --
-    and silently undid learned bindings, which are written in this flag's own words and read
-    back through here.
-
-    A name no loaded model turns out to have is reported by `EncoderMap.unreachable`, beside
-    the preset rules the same model cannot run."""
+    Which dials exist depends on the loaded model, and mappings are parsed before any model
+    is open. A name the loaded model lacks is reported by `EncoderMap.unreachable` instead."""
     name = name.strip()
     if not name:
         raise ValueError("a mapping needs a dial after the '=', as in '16=noise', "
@@ -164,7 +215,7 @@ def format_controls(controls: dict[tuple[int, int], str]) -> str:
 class Nrpn:
     """The four-CC state machine, per channel: 99 and 98 name a parameter, 6 and 38 carry it.
 
-    14-bit against a CC's 7, so a slow latent walk stops stair-stepping. Emits on 6 with the
+    14-bit against a CC's 7, so a slow latent walk does not stair-step. Emits on 6 with the
     low byte at zero and again on 38 with it filled, since a device may send either alone."""
 
     def __init__(self) -> None:
@@ -192,26 +243,22 @@ class Nrpn:
 
 
 class EncoderMap:
-    """Knobs on the machine holding dials, through the seam a hand on the strip uses."""
+    """Knobs on the machine holding dials, through the same `PresetRunner.hold` the strip's
+    mouse uses. Also learns a binding from the next control that moves, and writes it down."""
 
+    #: The holder name these dials are held under, and its rank among holders.
     SOURCE = "encoder"
     PRIORITY = 0
     FLAG, THING = "--cc", "knob"
     #: Which of `Machine`'s settings switches this kind of control on.
     SETTING = "encoders"
 
-    @property
-    def SILENCE(self) -> str:                                               # noqa: N802
-        return (f"{self.FLAG} wired {len(self.controls)} {self.THING}(s) and not one reported. "
-                f"On {self.machine.name}, {self.machine.says(self.SETTING)}.")
-
-    def __init__(self, controls: dict[tuple[int, int], str], source: str = "",
-                 remember=None, machine=None) -> None:
+    def __init__(self, controls: dict[tuple[int, int], str], remember=None,
+                 machine=None) -> None:
         from ganlive.control.machine import GENERIC
 
         self.machine = machine or GENERIC
         self.controls = dict(controls)
-        self.source = source or self.SOURCE
         self.held: dict[str, float] = {}
         self.unmapped: dict[tuple[int, int], int] = {}
         self.seen = 0
@@ -221,9 +268,20 @@ class EncoderMap:
         self.learned: list[str] = []
         #: Bumped by every learn, so a poller can tell one from the last without counting.
         self.version = 0
+        #: Where learned bindings are written, or None to keep them for this run only.
         self.remember = remember
         self.trouble = ""
         self._unsaved = False
+
+    @property
+    def source(self) -> str:
+        """`SOURCE`, for callers that read it off an instance."""
+        return self.SOURCE
+
+    def silence(self) -> str:
+        """What to check when wired controls never reported, in this machine's words."""
+        return (f"{self.FLAG} wired {len(self.controls)} {self.THING}(s) and not one reported. "
+                f"On {self.machine.name}, {self.machine.says(self.SETTING)}.")
 
     def dial_for(self, channel: int, number: int) -> str | None:
         """What one control moves, or None. An any-channel entry is the fallback."""
@@ -231,30 +289,25 @@ class EncoderMap:
 
     def where(self, dial: str) -> str:
         """How the machine addresses this dial, in `--cc`'s own words, or "" if it does not.
-
-        **The strip has a routing grid for the drums and had nothing at all for the knobs.** A
-        map with eight bindings in it was invisible the moment each learn ended, and the only
-        way to find out which knob moved a dial was to turn all of them and watch."""
+        The strip shows this beside the dial."""
         return " ".join(control_name(ch, n) for (ch, n), held in sorted(self.controls.items())
                         if held == dial)
 
     def unreachable(self, layout) -> str:
         """The controls wired to a dial this model does not have, as one line, or "".
 
-        **Not an error, and not silence either.** A bank holds several families, and a knob
-        parked on the outgoing model's dial is right again the moment that model comes back --
-        so this is said on every switch rather than refused at the start. It has to be said,
-        because the other reading of a knob that moves nothing is a knob whose messages are not
-        arriving at all, and telling those two apart is what the rest of this class is for."""
+        Not an error: a bank holds several models, and a knob on the outgoing model's dial
+        works again when that model comes back. It is reported on every switch so that a knob
+        which moves nothing is not mistaken for one whose messages never arrive."""
         strays = sorted({dial for dial in self.controls.values() if dial not in layout})
         if not strays:
             return ""
-        return (f"{self.source}: {', '.join(strays)} not on this model, so "
+        return (f"{self.SOURCE}: {', '.join(strays)} not on this model, so "
                 f"{len(strays)} {self.THING}(s) move nothing until one that has them plays")
 
     def _bind(self, channel: int, number: int, dial: str) -> None:
-        """One control now moves `dial`, and nothing else does. Written down by `flush`, off
-        this thread: the clock is what the MIDI thread is for, not the disk."""
+        """One control now moves `dial`, and nothing else does. Written down later by `flush`,
+        so the MIDI thread never touches the disk."""
         self.controls = {k: d for k, d in self.controls.items() if d != dial}
         self.controls[(channel, number)] = dial
         self.learning = None
@@ -273,9 +326,9 @@ class EncoderMap:
         """The end-of-run lines about these controls: silence, strays, and what was learned."""
         out = []
         if self.controls and not self.seen:
-            out.append(f"NOTHING ARRIVED. {self.SILENCE}")
+            out.append(f"NOTHING ARRIVED. {self.silence()}")
         if self.unmapped:
-            out.append(f"unwired {self.source} seen: "
+            out.append(f"unwired {self.SOURCE} seen: "
                        + ", ".join(f"ch{c + 1} {number_name(n)} x{k}"
                                    for (c, n), k in sorted(self.unmapped.items())))
         if self.learned:
@@ -296,7 +349,7 @@ class EncoderMap:
             return None
         self.held[dial] = clamp01(value / top)
         self.seen += 1
-        runner.hold(self.source, self.held, self.PRIORITY)      # `hold` copies
+        runner.hold(self.SOURCE, self.held, self.PRIORITY)      # `hold` copies
         return dial
 
     def release(self, runner, dial: str | None = None) -> None:
@@ -305,14 +358,14 @@ class EncoderMap:
             self.held.clear()
         else:
             self.held.pop(dial, None)
-        runner.free(self.source, dial)
+        runner.free(self.SOURCE, dial)
 
 
 def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple[int, int], str]:
     """`"BD=noise,SD=dir1"` to `{(channel, pad note): dial}`, for `PressureMap`.
 
     The pad is named as a track -- `BD`, or its index -- and `notes` (`kit.parse_notes`)
-    says which note that track's pad presses on; a Rytm's press on 0 to 11."""
+    says which note that track's pad sends; without it, track `i` is note `i`."""
     from ganlive.control.kit import track_index
 
     note_of = {} if notes is None else {track: note for note, track in notes.items()}
@@ -324,7 +377,9 @@ def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple
 
 
 class PressureMap(EncoderMap):
-    """A pad leaned on holding a dial. `EncoderMap`'s mechanism at a different rank."""
+    """A pad leaned on (polyphonic aftertouch) holding a dial, at a higher rank than a knob.
+
+    The difference from a knob: a pad at zero pressure means "let go", not "zero"."""
 
     SOURCE = "pressure"
     PRIORITY = 5
@@ -341,10 +396,12 @@ class PressureMap(EncoderMap):
         return dial
 
 
-# A thread, not a callback: the frame loop must never wait on MIDI, nor MIDI on a frame.
-# Handler exceptions are caught PER MESSAGE -- an unguarded raise used to end MIDI silently.
 class ClockReader(threading.Thread):
-    """Polls MIDI inputs and drives a clock. Silent and harmless if there are none."""
+    """Polls MIDI inputs on its own thread and drives a clock. Silent and harmless if there
+    are none.
+
+    A thread rather than a callback, so the frame loop never waits on MIDI nor MIDI on a frame.
+    A handler that raises loses that one message, counted in `faults`, and reading goes on."""
 
     daemon = True
 
@@ -373,33 +430,32 @@ class ClockReader(threading.Thread):
         return out
 
     def run(self) -> None:
-        ports = self.open_ports()
-        if not ports:
+        opened = self.open_ports()
+        if not opened:
             return
         import pygame.midi
 
-        # PortMidi's clock, in ms, when it is running: then each message is placed at the time
-        # it was stamped rather than the time of this poll, and a batch read after a stall does
-        # not hand every clock pulse in it the same instant.
+        inputs = [port for _label, port in opened]
+        # With PortMidi's clock running, each message is placed at the time it was stamped
+        # rather than the time of this poll, so a batch read after a stall does not give every
+        # clock pulse in it the same instant.
         stamped = pygame.midi.get_init()
         while not self.stop_flag:
             now = time.perf_counter()
             stamp_now = pygame.midi.time() if stamped else None
-            for _label, port in ports:
-                while port.poll():
-                    for event, ts in port.read(128):
-                        at = now if stamp_now is None else now - max(0, stamp_now - ts) / 1000.0
-                        try:
-                            self._handle(event, at)
-                        except Exception as exc:                  # noqa: BLE001  see `faults`
-                            key = f"{type(exc).__name__}: {exc}"
-                            self.faults[key] = self.faults.get(key, 0) + 1
-                            if self.first_fault is None:
-                                self.first_fault = key
+            for event, ts in messages(inputs):
+                at = now if stamp_now is None else now - max(0, stamp_now - ts) / 1000.0
+                try:
+                    self._handle(event, at)
+                except Exception as exc:                          # noqa: BLE001  see `faults`
+                    key = f"{type(exc).__name__}: {exc}"
+                    self.faults[key] = self.faults.get(key, 0) + 1
+                    if self.first_fault is None:
+                        self.first_fault = key
             time.sleep(self.poll)
 
     def _handle(self, event, now: float) -> None:
-        """Classify one message and hand it on. Separate from `run` so it can be guarded."""
+        """Classify one message and hand it on."""
         what = dispatch(self.clock, event[0], event[1], event[2], now)
         if what:
             self.counts[what] = self.counts.get(what, 0) + 1

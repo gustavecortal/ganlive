@@ -1,10 +1,8 @@
-"""What SeFa must get right, on a generator small enough to build in a test.
+"""Deriving and measuring latent directions, on generators small enough to build in a test.
 
-Getting it wrong gives directions that look principled and behave like noise -- the first
-version returned the right singular vectors, orthonormal, ranked, and in the wrong space. Two
-things hold on any weights and are asserted here: the basis is orthonormal *in the latent*, and
-`dir 0` maximises the first layer's response. What a direction does to a finished picture is a
-property of a *trained* model and is measured on the checkpoint, not here.
+Two things hold on any weights and are asserted here: the basis is orthonormal in the latent,
+and `dir 0` maximises the first layer's response. What a direction does to a finished picture
+is a property of a trained model, and is not tested here.
 """
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ def net():
 
 
 def test_the_basis_spans_the_latent_and_not_the_layer_output(net):
-    """**The left singular vectors, not the right ones.**"""
+    """The left singular vectors, which live in the latent, not the right ones."""
     d = sefa(net, 32)
     assert d.nz == 32, f"a direction must be a latent, got width {d.nz}"
     assert len(d) == 32, "full_matrices=False gives one direction per latent dimension"
@@ -80,7 +78,7 @@ def test_the_leading_direction_maximises_the_first_layers_response(net):
     weight = module.weight.detach()
     rows = weight.reshape(weight.shape[0], -1).float()      # ConvTranspose2d: (nz, ...)
 
-    rows = rows / rows.norm(dim=0, keepdim=True)              # the reference's column norm
+    rows = rows / rows.norm(dim=0, keepdim=True)    # the original implementation's column norm
 
     d = sefa(net, 32)
     lead = (d.basis[0] @ rows).norm()
@@ -112,33 +110,24 @@ def _sg2(**over):
 
 
 def _banded(count: int = 8, **over):
-    """A StyleGAN2, a banded basis over its style ranges, and the seam zeroed ready to push.
-
-    `z_dim=net.z_dim` and a `push` shaped like `push_shape` are what a test gets wrong in
-    silence, so they are written once."""
-    import torch as _torch
-
+    """A StyleGAN2, a banded basis over its style ranges, and a cleared push buffer."""
     from ganlive.dials.derive import sefa_banded, split
     from ganlive.models import stylegan2 as S2
 
     net = _sg2(**over)
-    dirs = sefa_banded(S2.style_bands(net), split(count, len(S2.BANDS)), z_dim=net.z_dim)
-    net.mapping.push = _torch.zeros(dirs.push_shape)
+    dirs = sefa_banded(S2.style_bands(net), split(count, len(S2.BANDS)), z_dim=net.cfg.z_dim)
+    net.mapping.push = torch.zeros(dirs.push_shape)
     return net, dirs
 
 
 def _live_band(row, push_shape) -> list[int]:
-    """Which seats of the seam a row writes to. One is the whole point; two is a bug."""
+    """Which rows of the push buffer a row of the basis writes to. Exactly one, or it is a bug."""
     return (row.reshape(push_shape).abs().sum(dim=1) > 0).nonzero().flatten().tolist()
 
 
 def test_the_gram_of_symmetric_differences_is_the_jacobian_metric():
-    """**The claim `metric` rests on, checked where the answer is known.**
-
-    On a linear map the Jacobian is the matrix, so `J^T J` is available in closed form and the
-    estimator has to reproduce it to floating point. On a nonlinear one it is second-order, and
-    that is what sets `PROBE_EPS`: the error falls as `eps^2` until fp32 cancellation takes
-    over and it rises again."""
+    """On a linear map the Jacobian is the matrix, so `J^T J` is known in closed form and
+    `metric` has to reproduce it to floating point."""
     from ganlive.dials.derive import metric
 
     torch.manual_seed(0)
@@ -162,24 +151,21 @@ def test_a_metric_basis_lands_in_bands_like_the_factorised_one():
     from ganlive.dials.derive import active_banded, split
 
     net, sefa = _banded(6)
-    got = active_banded(net, sefa.band_names, split(6, len(sefa.band_names)), net.z_dim,
+    got = active_banded(net, sefa.band_names, split(6, len(sefa.band_names)), net.cfg.z_dim,
                         "cpu", torch.float32, into=net.mapping.push, seeds=1)
 
     assert len(got) == len(sefa) and got.ranges == sefa.ranges
     assert got.push_shape == sefa.push_shape and got.z_dim == sefa.z_dim
     assert torch.allclose(got.basis.norm(dim=1), torch.ones(len(got)), atol=1e-4)
-    # The same seat as the factorised basis's row for the same band, which is the invariant
-    # `_laid_out` exists to hold -- and reads it off that basis rather than restating the map.
+    # Each row writes the same push-buffer row as the factorised basis's row for its band.
     for mine, theirs in zip(got.basis, sefa.basis, strict=True):
         assert _live_band(mine, got.push_shape) == _live_band(theirs, sefa.push_shape)
-    assert float(net.mapping.push.abs().max()) == 0.0, "the seam was left pushed"
+    assert float(net.mapping.push.abs().max()) == 0.0, "the push buffer was left pushed"
 
 
 def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
-    """**The cache is a proposal, so the only thing it must never do is fit the wrong model.**
-
-    It carries no measured levels -- those belong to the load that measures them -- and a file
-    whose seam or latent width disagrees is refused rather than reshaped."""
+    """The cache is a proposal, so what it must never do is fit the wrong model. It carries
+    no measured levels, and a file whose push buffer or latent width disagrees is refused."""
     from ganlive.dials.derive import cache_path, rank, save, saved
 
     net, dirs = _banded()
@@ -199,8 +185,8 @@ def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
     assert saved(checkpoint, kept.z_dim, (99, 99), net) is None
     assert saved(tmp_path / "nothing.pt", kept.z_dim, kept.push_shape, net) is None
 
-    # **A path is not an identity.** A fine-tune written back over its own name keeps the width
-    # and the seam, so only the weights say the cached basis is no longer this model's.
+    # A path is not an identity: a fine-tune written over its own name keeps every shape, so
+    # only the weights say the cached basis is no longer this model's.
     moved = _sg2()
     with torch.no_grad():
         for p in moved.parameters():
@@ -209,16 +195,16 @@ def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
 
 
 def test_a_banded_basis_is_zero_outside_its_own_range():
-    """What lets one matrix-vector product on the host still produce the whole push."""
+    """What lets one matrix-vector product on the host produce the whole push."""
     from ganlive.dials.derive import sefa_banded, split
     from ganlive.models import stylegan2 as S2
 
     net = _sg2()
     counts = split(8, len(S2.BANDS))
     assert counts == (2, 3, 3)
-    d = sefa_banded(S2.style_bands(net), counts, z_dim=net.z_dim)
+    d = sefa_banded(S2.style_bands(net), counts, z_dim=net.cfg.z_dim)
 
-    assert d.space == "w" and d.bands == len(S2.BANDS) and d.nz == net.z_dim
+    assert d.space == "w" and len(d.band_names) == len(S2.BANDS) and d.nz == net.cfg.z_dim
     assert len(d) == 8
     assert d.push_shape == (len(S2.BANDS), net.cfg.w_dim)
     for i, row in enumerate(d.basis):
@@ -229,14 +215,14 @@ def test_a_banded_basis_is_zero_outside_its_own_range():
         assert abs(float(row.norm()) - 1.0) < 1e-5, "unit rows, in the space they live in"
 
 
-def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_seam():
+def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_push():
     """The two failure modes are opposite, so neither is allowed to happen quietly."""
     from ganlive.dials.derive import sefa, sefa_banded, split, verify
     from ganlive.models import stylegan2 as S2
 
     net = _sg2()
-    w = sefa_banded(S2.style_bands(net), split(8, len(S2.BANDS)), z_dim=net.z_dim)
-    z = sefa(net, net.z_dim, count=4)
+    w = sefa_banded(S2.style_bands(net), split(8, len(S2.BANDS)), z_dim=net.cfg.z_dim)
+    z = sefa(net, net.cfg.z_dim, count=4)
 
     net.mapping.push = torch.zeros(w.push_shape)
     with pytest.raises(ValueError, match="needs"):
@@ -247,8 +233,8 @@ def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_seam():
     levels = verify(net, w, "cpu", dtype=torch.float32, amount=2.0, into=net.mapping.push)
     assert len(levels) == 8 and all(x > 0 for x in levels)
     assert float(net.mapping.push.abs().max()) == 0.0, (
-        "the seam was left pushed after measuring, so every later frame carries the last "
-        "direction the gate happened to try")
+        "the push buffer was left pushed after measuring, so every later frame carries the "
+        "last direction measured")
 
 
 def test_ranking_a_banded_basis_keeps_each_range_together():
@@ -261,7 +247,8 @@ def test_ranking_a_banded_basis_keeps_each_range_together():
 
     bands = [int(row.reshape(d.push_shape).abs().sum(dim=1).argmax()) for row in ranked.basis]
     assert bands == sorted(bands), f"the ranges came back interleaved: {bands}"
-    assert ranked.bands == d.bands and ranked.z_dim == d.z_dim, "carried through the copy"
+    assert ranked.push_shape == d.push_shape and ranked.z_dim == d.z_dim, (
+        "carried through the copy")
     for lo in range(len(bands)):
         run = [ranked.levels[i] for i in range(len(bands)) if bands[i] == bands[lo]]
         assert run == sorted(run, reverse=True), "inside a range it is strongest first"
@@ -286,7 +273,7 @@ def test_equalising_gives_a_w_basis_the_size_a_latent_basis_gets_for_free():
 
 
 def test_the_range_a_row_came_from_survives_the_drop_that_reorders_the_rows():
-    """**The label has to ride on the basis, because the basis is what gets shortened.**"""
+    """The range label rides on the basis, because the basis is what gets shortened."""
     from ganlive.dials.derive import rank
     from ganlive.models import stylegan2 as S2
 
@@ -334,10 +321,9 @@ def test_a_direction_that_does_what_a_random_one_does_is_dropped(net):
     assert "none of these beat it" in nothing.report()
 
 
-def test_the_seam_is_empty_before_every_reference_image_and_not_just_the_first():
-    """**Three of four readings were measured against another direction.** The seam was zeroed
-    outside the latent loop, so only the first reference was the model at rest; every later one
-    carried the previous row's push, and the error moved with the candidate set's size."""
+def test_the_push_buffer_is_empty_before_every_reference_image():
+    """Every latent's image at rest must be rendered with nothing in the push buffer, or the
+    readings after it measure one direction against another."""
     from ganlive.dials.derive import verify
 
     net, d = _banded()
@@ -352,26 +338,23 @@ def test_the_seam_is_empty_before_every_reference_image_and_not_just_the_first()
     finally:
         net.mapping.forward = forward
 
-    # One reference plus one render per row, per latent. Every reference must see an empty seam.
+    # One reference plus one render per row, per latent. Every reference must see it empty.
     per_latent = 1 + len(d)
     references = [seen[k * per_latent] for k in range(4)]
     assert references == [0.0] * 4, (
-        f"a reference image was rendered with {max(references)} still in the seam; the levels "
-        f"measured after it are one direction against another, not against the model at rest")
+        f"a reference image was rendered with {max(references)} still in the push buffer")
 
 
 def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
-    """The baseline has to live where the candidate lives. `random_like` cycled one flat list
-    of templates, so a basis longer than `RANDOM_PROBES` never reached its later bands and
-    those rows were judged against the sensitivity of the bands above them."""
+    """Each band's bar is measured in that band, however many rows the basis has."""
     from ganlive.dials.derive import RANDOM_PROBES, random_like, sefa_banded, split
     from ganlive.models import stylegan2 as S2
 
     net = _sg2()
     names = [name for name, _lo, _hi in S2.BANDS]
-    # Deliberately longer than the probe count -- the shape that broke it.
+    # Longer than the probe count.
     long = sefa_banded(S2.style_bands(net), split(3 * RANDOM_PROBES + 6, len(S2.BANDS)),
-                       z_dim=net.z_dim)
+                       z_dim=net.cfg.z_dim)
     probes = random_like(long)
 
     assert len(probes) == RANDOM_PROBES * len(names)
@@ -390,8 +373,7 @@ def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
 
 
 def test_each_band_is_held_to_its_own_bar_and_the_report_says_what_they_were():
-    """One pooled bar asked half the dials to clear a number that was never theirs: on FFHQ a
-    random direction moves 6.2, 4.3 and 6.7 levels through the three bands."""
+    """The bands are not equally sensitive, so each has its own bar, and the report names it."""
     from ganlive.dials.derive import rank
     from ganlive.models import stylegan2 as S2
 
@@ -404,16 +386,13 @@ def test_each_band_is_held_to_its_own_bar_and_the_report_says_what_they_were():
     assert all(level > 0 for _name, level in kept.random_by_range)
     for name, level in kept.random_by_range:
         assert f"{name} {level:.1f}" in kept.report()
-    # The push belongs in the report too: the ratio is not scale-invariant, so a bare "3x
-    # random" does not say what was measured.
+    # The push belongs in the report too: the ratio to random changes with it.
     assert kept.amount == 2.0 and "at a push of 2" in kept.report()
 
 
 def test_a_dial_is_judged_on_both_halves_of_its_travel(net):
-    """**The strip's travel is symmetric and the gate saw one side of it.** The encoder goes
-    both ways from centre and an eigenvector's sign is whatever `eigh` returned, so which half
-    got measured was arbitrary -- `gv-2048-ft` ships rows at 48.7 levels one way and 31.1 the
-    other."""
+    """A direction dial travels both ways from centre and an eigenvector's sign is arbitrary,
+    so both halves are measured."""
     from ganlive.dials.derive import orient, rank, sefa, travel
 
     d = sefa(net, 32, count=8)
@@ -421,9 +400,7 @@ def test_a_dial_is_judged_on_both_halves_of_its_travel(net):
     assert len(up) == len(down) == 8
     assert up != down, "an untrained generator's rows are not perfectly symmetric"
 
-    # `rank` scores the mean of the two, which is never above the stronger half alone. The
-    # level is read off the halves rather than stored beside them, so what is worth pinning is
-    # that the formula is the mean: on a lopsided row, one half alone would read higher.
+    # `rank` scores the mean of the two halves: on a lopsided row, below the stronger half.
     kept = rank(net, d, "cpu", torch.float32, amount=2.0, relative=0.0, floor=0.0)
     for level, (strong, weak) in zip(kept.levels, kept.halves, strict=True):
         assert weak <= level <= strong or strong == weak
@@ -442,8 +419,7 @@ def test_a_dial_is_judged_on_both_halves_of_its_travel(net):
 
 
 def test_the_pool_is_wider_than_the_strip_and_measurement_picks_from_it(net):
-    """SeFa's eigenvalue order is a poor selector in W-space, so `rank` is handed a pool and
-    caps what survives rather than being handed the answer."""
+    """`rank` is handed a pool wider than the strip and caps what survives."""
     from ganlive.dials.derive import CANDIDATES, rank, sefa, shortlist
 
     assert CANDIDATES > 4, "a pool the size of the strip is not a pool"

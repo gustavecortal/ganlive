@@ -1,4 +1,4 @@
-"""The FastGAN generator, in plain PyTorch."""
+"""The FastGAN generator, in plain PyTorch, and loading a checkpoint of it."""
 
 from __future__ import annotations
 
@@ -11,13 +11,15 @@ from torch.nn.utils import spectral_norm
 
 from ganlive.models.common import BASE, Ladder
 
+#: Channel width per stage height, as a multiple of `ngf`.
 G_WIDTH = {4: 16, 8: 8, 16: 4, 32: 2, 64: 2, 128: 1, 256: 0.5, 512: 0.25, 1024: 0.125,
            2048: 0.125}
 
 SUPPORTED_SIZES = (256, 512, 1024, 2048)
 
+
 def check_buildable(ladder: Ladder) -> Ladder:
-    """Refuse a size *this* generator cannot climb to. Only this family has the rule."""
+    """Refuse a size this generator cannot climb to."""
     if ladder.height not in SUPPORTED_SIZES:
         raise ValueError(f"height must be one of {SUPPORTED_SIZES}, got {ladder.height}")
     step = ladder.height // BASE
@@ -49,7 +51,9 @@ def gated() -> nn.Module:
 
 
 class NoiseInjection(nn.Module):
-    """Per-pixel Gaussian noise with a learned scalar gain, StyleGAN-style."""
+    """Per-pixel Gaussian noise with a learned scalar gain, StyleGAN-style.
+
+    Frozen by `freeze_noise`: one seeded pattern per layer, drawn at the first forward."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,11 +66,8 @@ class NoiseInjection(nn.Module):
         b, _, h, w = x.shape
         if self.freeze:
             if self.frozen is None or self.frozen.shape[-2:] != (h, w):
-                if self.generator is None:
-                    self.frozen = torch.randn(1, 1, h, w, device=x.device, dtype=x.dtype)
-                else:
-                    self.frozen = torch.randn(
-                        1, 1, h, w, generator=self.generator).to(x.device, x.dtype)
+                self.frozen = torch.randn(
+                    1, 1, h, w, generator=self.generator).to(x.device, x.dtype)
             return x + self.weight * self.frozen.to(dtype=x.dtype)
         noise = torch.randn(b, 1, h, w, device=x.device, dtype=x.dtype)
         return x + self.weight * noise
@@ -95,7 +96,7 @@ def pixel_norm(z: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 
 class MappingNetwork(nn.Module):
-    """StyleGAN1's `z -> w` MLP. The untested candidate for the popping."""
+    """StyleGAN1's `z -> w` MLP, for checkpoints trained with `mapping_depth`."""
 
     def __init__(self, nz: int, depth: int) -> None:
         super().__init__()
@@ -171,7 +172,7 @@ class Generator(nn.Module):
         self.mapping = MappingNetwork(nz, mapping_depth) if mapping_depth else None
 
         def sub(rung: int) -> bool:
-            """Whether the block *producing* `rung` uses a sub-pixel convolution."""
+            """Whether the block producing `rung` uses a sub-pixel convolution."""
             return bool(pixelshuffle_from) and rung >= pixelshuffle_from
 
         self.init = InitLayer(nz, w[4], self.ladder.at(BASE))
@@ -198,12 +199,8 @@ class Generator(nn.Module):
             self.feat_2048 = up_block_comp(w[1024], w[2048], sub(2048))
 
     def forward(self, z: torch.Tensor) -> list[torch.Tensor]:
-        """`z -> images`, through the mapping network if there is one."""
-        return self.synthesise(self.mapping(z) if self.mapping is not None else z)
-
-    def synthesise(self, w: torch.Tensor) -> list[torch.Tensor]:
-        """`w -> images`, skipping the mapping network. The synthesis half alone."""
-        f4 = self.init(w)
+        """`z -> [image, 128-high image]`, through the mapping network if there is one."""
+        f4 = self.init(self.mapping(z) if self.mapping is not None else z)
         f8 = self.feat_8(f4)
         f16 = self.feat_16(f8)
         f32 = self.feat_32(f16)
@@ -221,9 +218,10 @@ class Generator(nn.Module):
         return [torch.tanh(self.to_big(feat)), torch.tanh(self.to_small(f128))]
 
 
-def freeze_noise(net: nn.Module, *, seed: int | None = None) -> nn.Module:
-    """Pin every `NoiseInjection` layer, so the same `z` gives the same pixels."""
-    generator = None if seed is None else torch.Generator(device="cpu").manual_seed(seed)
+def freeze_noise(net: nn.Module, *, seed: int) -> nn.Module:
+    """Pin every `NoiseInjection` layer to a seeded pattern, so the same `z` gives the same
+    pixels."""
+    generator = torch.Generator(device="cpu").manual_seed(seed)
     for m in net.modules():
         if isinstance(m, NoiseInjection):
             m.freeze = True
@@ -232,11 +230,9 @@ def freeze_noise(net: nn.Module, *, seed: int | None = None) -> nn.Module:
     return net
 
 
-
-
 @dataclass(frozen=True)
 class Config:
-    """The architecture a FastGAN checkpoint was trained with -- all a player needs of it."""
+    """The architecture a FastGAN checkpoint was trained with: all a player needs of it."""
 
     nz: int = 256
     ngf: int = 64
@@ -254,13 +250,17 @@ class Config:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
 
-def _config_from(saved: dict) -> Config:
+def _open(checkpoint: str | Path) -> tuple[dict, Config]:
+    """A checkpoint, with its weights left on disk until touched, and its config."""
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
     known = {f.name for f in fields(Config)}
-    return Config(**{k: v for k, v in saved.items() if k in known})
+    saved = ckpt.get("config", {})
+    return ckpt, Config(**{k: v for k, v in saved.items() if k in known})
 
 
 def _strip_compile_prefix(state: dict) -> dict:
-    """Drop `_orig_mod.` from every key that has it, so compiled checkpoints still load."""
+    """Drop `_orig_mod.` from every key that has it, so a checkpoint saved from a compiled
+    net still loads."""
     prefix = "_orig_mod."
     if not any(k.startswith(prefix) for k in state):
         return state
@@ -269,8 +269,7 @@ def _strip_compile_prefix(state: dict) -> dict:
 
 def config_of(checkpoint: str | Path) -> Config:
     """What a checkpoint was trained with, without building the generator."""
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
-    return _config_from(ckpt.get("config", {}))
+    return _open(checkpoint)[1]
 
 
 def load(checkpoint: str | Path, device=None) -> tuple[Generator, Config]:
@@ -278,11 +277,8 @@ def load(checkpoint: str | Path, device=None) -> tuple[Generator, Config]:
     from ganlive.device import detect_backend
 
     target = torch.device(device) if device is not None else torch.device(detect_backend())
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
-    cfg = _config_from(ckpt.get("config", {}))
+    ckpt, cfg = _open(checkpoint)
     net = Generator(**cfg.generator_kwargs).to(target)
     net.load_state_dict(_strip_compile_prefix(ckpt["g_ema"]))
     net.eval().requires_grad_(False)
     return net, cfg
-
-

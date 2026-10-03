@@ -371,16 +371,6 @@ def test_a_smaller_generator_installs_the_rungs_it_has_and_no_others():
     knobs.set("sle.se_512", 2.0)          # dropped, not raised: no KeyError mid-performance
 
 
-def test_an_explicitly_named_setting_the_model_lacks_is_still_refused():
-    """A caller with a list -- the ONNX export names its graph inputs -- has to be told,
-    because a silently dropped name there is a dial that is not in the exported graph."""
-    from ganlive.dials.steer import install
-
-    with pytest.raises(RuntimeError, match="sle.se_512"):
-        install(_stub_net(gates=("se_64", "se_128")), "cpu", torch.float32,
-                wanted={"sle.se_64", "sle.se_512"})
-
-
 def test_only_the_settings_something_can_write_are_installed():
     """Thirteen of twenty-two knobs used to be installed with nothing able to write them, and
     ten of those wrapped a rung in a module that multiplies its whole feature map by a live
@@ -540,7 +530,7 @@ def test_use_model_relayouts_at_startup_not_only_on_a_switch():
         layout: object
         dials_live: frozenset
 
-    foreign = S.adopted(("gain_128",), (0.5,), ((0.0, 0.1), (1.0, 2.0)), (30.0,))
+    foreign = S.adopted(("gain_128",), (0.5,), ((0.1, 1.0, 2.0),), (30.0,))
     runner = PresetRunner(Preset(name="t", blurb=""), {}, 60.0)
     # The spine, not this project's own table: a runner with no model yet has the dials
     # every model has, and `adopt` brings the loaded one's.
@@ -555,25 +545,18 @@ def test_use_model_relayouts_at_startup_not_only_on_a_switch():
         "a FastGAN dial survived onto a foreign model's surface, so the write path and the "
         "strip disagree about which dials exist")
 
-    # And the shape that caused it: a bare set of names carries no layout, so accepting one
-    # could only ever half-apply the model. It is refused by name now rather than quietly
-    # doing less than the call reads as doing.
-    with pytest.raises(TypeError, match="takes the Model"):
-        runner.use_model(frozenset({"gain_128"}))
-
 
 def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
     """**The bank grows after launch.** The shelf loads a model mid-session through `Bank.add`,
     so a setting `build` took and `add` did not would change the instrument under the hand
-    with nothing on the strip to explain it. `exact` was exactly that: `build` accepted it and
-    `Bank.add` called `_prepare` without it, so a StyleGAN2 added from the shelf ran half
-    precision however it had been asked for. One object carries them all now, and this asserts
-    the structure rather than the list -- a seventh setting cannot be forgotten the way the
-    fourth was."""
+    with nothing on the strip to explain it. One object carries them all, and this asserts the
+    structure rather than the list, so a new setting is covered the day it is added."""
     import inspect
 
     from ganlive import bank as R
+    from ganlive import families as FA
     from ganlive.dials.derive import RANDOM_FLOOR
+    from ganlive.dials.gate import directions_for
 
     assert R.LoadOptions().direction_floor == RANDOM_FLOOR, (
         "the default has to be the measured one, not a second opinion about it")
@@ -581,9 +564,8 @@ def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
         "a mutable Load would let one model's settings follow the next one's")
 
     # Every load path takes the whole object, so none of them can take a subset of it.
-    # By annotation rather than by name: the parameter was called `load` until it shadowed
-    # `fastgan.load` inside `_prepare_fastgan` and broke every FastGAN load.
-    for fn in (R._prepare, R._prepare_onnx, R._prepare_stylegan2, R._prepare_fastgan):
+    loaders = (R._prepare, FA._prepare_onnx, FA._prepare_stylegan2, FA._prepare_fastgan)
+    for fn in loaders:
         taken = [p for p in inspect.signature(fn).parameters.values()
                  if "LoadOptions" in str(p.annotation)]
         assert taken, fn.__name__
@@ -593,16 +575,14 @@ def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
     assert "self.options" in inspect.getsource(R.Bank.add), (
         "a model loaded from the shelf mid-session would get stock settings")
 
-    # And no setting has been left behind as a loose parameter on the way down. Read off the
-    # dataclass rather than listed, so an eighth setting is covered the day it is added and a
-    # renamed one cannot leave this assertion guarding a name nothing uses.
+    # And no setting has been left behind as a loose parameter on the way down.
     stale = {f.name for f in dataclasses.fields(R.LoadOptions)}
-    for fn in (R._prepare, R._prepare_onnx, R._prepare_stylegan2, R._prepare_fastgan):
+    for fn in loaders:
         left = stale & set(inspect.signature(fn).parameters)
         assert not left, f"{fn.__name__} still takes {sorted(left)} beside the Load"
 
     # The floor reaches `rank` as the relative bar, which is the only thing that spends it.
-    assert "relative=floor" in inspect.getsource(R.directions_for)
+    assert "relative=floor" in inspect.getsource(directions_for)
 
 
 def test_a_direction_dial_turns_proportionally_to_what_it_changes():

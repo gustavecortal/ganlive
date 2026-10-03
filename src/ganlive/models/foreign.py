@@ -1,4 +1,8 @@
-"""Getting a generator from somewhere else, and finding out what it is by asking it."""
+"""Getting a generator from a Hugging Face repository, and finding out what it is by running it.
+
+`from_hub` imports the repository's own model code (only when trusted), finds the class that
+turns a latent into a picture, and `export` writes it as an ONNX graph for `onnx_adopt`.
+"""
 from __future__ import annotations
 
 import importlib.util
@@ -37,19 +41,13 @@ class Fetched:
                 f"{self.size[1]}x{self.size[0]}")
 
 
-# No `token` parameter anywhere here. It was threaded through all five of these functions,
-# twelve mentions, and no caller in the repo ever passed one -- `tools/adopt.py` has no flag
-# for it. `huggingface_hub` reads `HF_TOKEN` from the environment itself, so a private repo
-# still works; what the parameter bought was a ternary and five wider signatures.
-def files_of(repo: str) -> list[str]:
+def graph_in(repo: str) -> str | None:
+    """An ONNX file already in the repo, if there is one. Then none of the rest is needed.
+
+    A private repository needs `HF_TOKEN` in the environment, which `huggingface_hub` reads."""
     from huggingface_hub import HfApi
 
-    return HfApi().list_repo_files(repo)
-
-
-def graph_in(repo: str) -> str | None:
-    """An ONNX file already in the repo, if there is one. Then none of the rest is needed."""
-    return next((f for f in files_of(repo) if f.endswith(".onnx")), None)
+    return next((f for f in HfApi().list_repo_files(repo) if f.endswith(".onnx")), None)
 
 
 def _config(repo: str) -> dict:
@@ -137,12 +135,8 @@ def probe(net, widths=WIDTHS) -> tuple[int, tuple[int, int]] | None:
 
 
 def from_hub(repo: str, trust: bool = False) -> Fetched:
-    """One generator out of a Hub repository, identified by what it does.
-
-    No `revision`: it took one and passed it to none of the three calls that fetch, so
-    pinning a commit downloaded the branch tip and said nothing. Wiring it through means
-    threading it into `_import_code`, `_config` and each `from_pretrained`, and nothing here
-    asks for it yet -- an argument that is not honoured is worse than one that is absent."""
+    """One generator out of a Hub repository, at its default branch, identified by what it
+    does: every class with `from_pretrained` is loaded and handed latents."""
     if not trust:
         raise PermissionError(f"{repo}: {TRUST}")
     modules = _import_code(repo)

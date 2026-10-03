@@ -1,4 +1,8 @@
-"""Making a take line up with the multitrack in the DAW."""
+"""Lining a recorded take up with the multitrack in a DAW.
+
+`Guide` writes, beside each take, a mono WAV of the audio input and a JSON sidecar marking
+where every bar line fell in both the video and the audio, so the two can be aligned.
+"""
 from __future__ import annotations
 
 import math
@@ -10,30 +14,39 @@ from pathlib import Path
 
 import numpy as np
 
-from ganlive.timing import write_metrics
-from ganlive.walk import BEATS_PER_BAR
+from ganlive.clock import BEATS_PER_BAR
+from ganlive.files import write_json
 
+#: How many audio blocks may wait for the writer thread before new ones are dropped.
 DEPTH = 64
 
+#: Float audio to 16-bit PCM.
 FULL_SCALE = 32767.0
 
+#: A guide whose peak stays below this is reported as silent.
 SILENT = 1e-4
 
 
 class Guide:
-    """The mono guide track and the beat map for one take."""
+    """The mono guide track and the beat map for one take.
+
+    The audio thread only copies each block into a queue; a writer thread does the disk work.
+    `position` counts every sample the input has delivered, recording or not, so a take's
+    start can be given as a sample index into the stream."""
 
     def __init__(self, depth: int = DEPTH) -> None:
         self.sr = 0
         self.channels = 0
         self.position = 0
-        self.blocks = 0
-        self.dropped = 0
         self.attached = False
 
         self._q: queue.Queue = queue.Queue(maxsize=max(1, depth))
         self._thread: threading.Thread | None = None
         self._path: Path | None = None
+        self._reset_take()
+
+    def _reset_take(self) -> None:
+        """Clear everything one take accumulates."""
         self._about: dict = {}
         self._head: dict = {}
         self._marks: list[dict] = []
@@ -43,14 +56,13 @@ class Guide:
         self._first_wall: float | None = None
         self._samples = 0
         self._peak = 0.0
+        self.blocks = self.dropped = 0
         self._error: str | None = None
-
 
     def listen_to(self, extractor) -> None:
         """Take every block this extractor is pushed, and its samplerate and channel count."""
         if getattr(extractor, "tap", None) is not None:
-            raise RuntimeError("that extractor already has a tap; it holds exactly one, and "
-                               "a second would silently displace the first")
+            raise RuntimeError("that extractor already has a tap, and it holds only one")
         self.sr, self.channels = int(extractor.sr), int(extractor.n)
         extractor.tap = self.push
         self.attached = True
@@ -68,7 +80,6 @@ class Guide:
             return
         self.blocks += 1
 
-
     @property
     def running(self) -> bool:
         return self._path is not None
@@ -85,18 +96,13 @@ class Guide:
               at: float | None = None, about: dict | None = None) -> str:
         """Begin a guide beside `take`, and say in one line what will be written."""
         self._path = Path(take)
+        self._reset_take()
         self._head = {"started": time.strftime("%Y-%m-%dT%H:%M:%S"),
                       "bpm": round(float(bpm), 3), "beat": round(float(beat), 4),
                       "beat_source": beat_source}
         self._about = dict(about or {})
-        self._marks = []
         self._next_mark = math.floor(float(beat) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
         self._t0 = time.perf_counter() if at is None else float(at)
-        self._first = self._first_wall = None
-        self._samples = 0
-        self._peak = 0.0
-        self.blocks = self.dropped = 0
-        self._error = None
         if not self.attached:
             return f"{self.sidecar_path.name} -- no audio input, so bar lines only"
         self._thread = threading.Thread(target=self._run, name=f"guide {self._path.stem}",
@@ -107,8 +113,8 @@ class Guide:
     def mark(self, beat: float) -> None:
         """Called every frame; records a mark only when a bar line has been crossed.
 
-        The next line is re-aimed from wherever the clock is now, so a machine stopped and
-        restarted mid-take (beats back to 0) or a song-position jump keeps marking, once."""
+        The next bar line is recomputed from wherever the clock is now, so a transport restart
+        (beats back to 0) or a song-position jump keeps marking, once per bar."""
         if self._path is None:
             return
         if beat >= self._next_mark:
@@ -134,7 +140,7 @@ class Guide:
             self._thread.join(timeout=5.0)
             self._thread = None
         report = self.report(video)
-        write_metrics(self.sidecar_path, report)
+        write_json(self.sidecar_path, report)
         self._path = None
         return report
 
@@ -199,8 +205,10 @@ class Guide:
             line += f" The writer failed: {audio['error']}"
         return line
 
-
     def _run(self) -> None:
+        """The writer thread: each queued block, mixed to mono, into a 16-bit WAV, until the
+        `None` that `stop` sends. On a failure it keeps draining so the audio thread never
+        blocks."""
         wav = self.wav_path
         wav.parent.mkdir(parents=True, exist_ok=True)
         handle = wave.open(str(wav), "wb")

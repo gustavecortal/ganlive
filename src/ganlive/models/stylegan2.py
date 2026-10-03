@@ -1,4 +1,8 @@
-"""StyleGAN2 synthesis, written so that `torch.compile` can capture it in one graph."""
+"""StyleGAN2, written so that `torch.compile` captures it in one graph.
+
+Loads NVIDIA's StyleGAN2-ADA weights under their own names, once `ganlive import-stylegan2`
+has converted the pickle, and matches their generator to float rounding.
+"""
 from __future__ import annotations
 
 import functools
@@ -16,24 +20,19 @@ LRELU_GAIN = math.sqrt(2.0)
 SQRT_HALF = math.sqrt(0.5)
 #: Every StyleGAN2-ADA checkpoint published uses this resample filter.
 TAPS = (1.0, 3.0, 3.0, 1.0)
-#: The three style ranges every StyleGAN paper and every user of one talks in. The bounds are absolute
-#: rather than proportional because they are about *resolution*.
+#: The three style ranges StyleGAN is described in, as `(name, first w, end w)`. The bounds
+#: are absolute rather than proportional because they are about resolution.
 BANDS = (("w_coarse", 0, 4), ("w_mid", 4, 8), ("w_fine", 8, 1 << 30))
 
-#: Which pixel stages each range actually drives, as a phrase anything showing a person a dial can use.
+#: Which pixel stages each range drives, as a phrase for a dial's description.
 BAND_PIXELS = {"w_coarse": "the 4, 8 and 16 pixel stages",
                "w_mid": "the 16, 32 and 64 pixel stages",
                "w_fine": "everything from 64 pixels up to native"}
-#: Written into every converted file. A StyleGAN2 and one of this project's own checkpoints
-#: are both `.pt`, and the instrument has to tell them apart before it opens either.
+#: Written into every converted file, so the instrument can tell it from a FastGAN `.pt`.
 FORMAT = "ganlive-stylegan2/1"
-#: The tag written under this project's earlier name. Read, never written, so a
-#: checkpoint converted before the rename still opens.
-FORMATS = (FORMAT, "smallgen-stylegan2/1")
 
-
-#: Config fields that describe how to *play* a checkpoint rather than what is in it. `save` drops them, so a
-#: converted file is byte-identical whether or not one was in force.
+#: Config fields that describe how to play a checkpoint rather than what is in it. `save`
+#: drops them.
 NOT_SAVED = ("half_from",)
 
 
@@ -61,8 +60,8 @@ class Config:
     num_layers: int = 8
     lr_multiplier: float = 0.01
     taps: tuple[float, ...] = TAPS
-    #: The lowest resolution to run in half precision, overriding NVIDIA's rule below. `None` is the
-    #: checkpoint as they shipped it.
+    #: The lowest resolution to run in half precision, overriding NVIDIA's rule below. `None`
+    #: is the checkpoint as they shipped it.
     half_from: int | None = None
 
     @property
@@ -85,9 +84,7 @@ class Config:
     def num_ws(self) -> int:
         return 2 * len(self.resolutions)
 
-    # The two names `bank` asks every checkpoint for, whatever kind of file it came from.
-    # Spelled here rather than wrapped in a third config class, because they are the same two
-    # numbers this already holds under the names NVIDIA gave them.
+    # The two names the bank asks every family's config for.
     @property
     def nz(self) -> int:
         return self.z_dim
@@ -102,7 +99,7 @@ class Config:
 def _open(path) -> dict:
     """A converted checkpoint, checked, with its weights left on disk until touched."""
     blob = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
-    if blob.get("format") not in FORMATS:
+    if blob.get("format") != FORMAT:
         raise RuntimeError(f"{path} is not a {FORMAT} checkpoint. "
                            f"`ganlive import-stylegan2` writes them.")
     return blob
@@ -114,7 +111,7 @@ def _rebuild(raw: dict, half_from: int | None = None) -> Config:
 
 
 def config_of(path) -> Config:
-    """What a converted checkpoint says about itself, without loading 133 MB of weights."""
+    """What a converted checkpoint says about itself, without loading its weights."""
     return _rebuild(_open(path)["config"])
 
 
@@ -131,7 +128,8 @@ def config_from(G) -> Config:
 
 
 class Dense(nn.Linear):
-    """`FullyConnectedLayer`. The gains stay outside the weight so the numbers match."""
+    """NVIDIA's `FullyConnectedLayer`. The gains stay outside the stored weight, so their
+    weights load as they are."""
 
     def __init__(self, n_in: int, n_out: int, activation: str = "linear",
                  lr_multiplier: float = 1.0, bias_init: float = 0.0) -> None:
@@ -142,15 +140,14 @@ class Dense(nn.Linear):
         self.weight_gain = float(lr_multiplier / math.sqrt(n_in))
         self.bias_gain = float(lr_multiplier)
         self.lrelu = activation == "lrelu"
-        #: `weight * weight_gain` and `bias * bias_gain` once the weights are final -- see
-        #: `freeze`. `None` scales them every forward, for a net built without `load`.
+        #: `weight * weight_gain` and `bias * bias_gain`, once `freeze` has run. `None`
+        #: scales them every forward, for a net built without `load`.
         self.register_buffer("scaled", None, persistent=False)
         self.register_buffer("scaled_bias", None, persistent=False)
 
     @torch.no_grad()
     def freeze(self) -> None:
-        """Scale the weights once. Inside the captured graph the two multiplies ran every
-        frame, over every affine: 26 of them on FFHQ-1024, each a 512x512 read and write."""
+        """Scale the weights once, rather than in every forward of the captured graph."""
         self.scaled, self.scaled_bias = self._scaled()
 
     def _scaled(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -185,8 +182,7 @@ def _fir(x: torch.Tensor, f: torch.Tensor, pad: tuple[int, int, int, int]) -> to
     x0, x1, y0, y1 = pad
     if x0 == x1 >= 0 and y0 == y1 >= 0:
         # The convolution's own zero padding, rather than `F.pad` writing a padded copy of the
-        # whole feature map first -- 0.3 ms a frame at 1024 for the same zeros. Every
-        # StyleGAN2 upsample is this case; see `_pads`.
+        # feature map first. Every StyleGAN2 upsample is this case; see `_pads`.
         return F.conv2d(x, f, padding=(y0, x0), groups=x.shape[1])
     x = F.pad(x, [max(x0, 0), max(x1, 0), max(y0, 0), max(y1, 0)])
     if min(x0, x1, y0, y1) < 0:
@@ -211,15 +207,13 @@ class SynthesisLayer(nn.Module):
         self.knob = None
 
         self.up, self.half = up, half
-        dtype = torch.float16 if half else torch.float32
         # NVIDIA renormalises the weight and the styles before a half-precision modulation so
-        # neither overflows. Demodulation divides any such scaling straight back out, so this
-        # buys range and changes no result -- and it runs only where it is needed.
+        # neither overflows. Demodulation divides any such scaling back out, so it changes no
+        # result.
         self.prenorm = float(1.0 / math.sqrt(in_ch * kernel * kernel)) if half else 0.0
-        self.dtype = dtype
-        #: The weight as every frame convolves with it, and its squared sum per `(out, in)` pair,
-        #: once the weights are final -- see `freeze`. `None` derives both every forward, for a
-        #: net built without `load`.
+        #: The weight as every frame convolves with it, and its squared sum per `(out, in)`
+        #: pair, once `freeze` has run. `None` derives both every forward, for a net built
+        #: without `load`.
         self.register_buffer("played", None, persistent=False)
         self.register_buffer("energy", None, persistent=False)
         self.pad = kernel // 2
@@ -227,14 +221,18 @@ class SynthesisLayer(nn.Module):
         if up > 1:
             ty, tx, *rest = _pads(kernel, up, len(taps), self.pad)
             self.tpad, self.fpad = (ty, tx), tuple(rest)
-            f = (fir(taps) * float(up * up)).flip([0, 1]).to(dtype)
+            f = (fir(taps) * float(up * up)).flip([0, 1]).to(self.dtype)
             self.register_buffer("upfir", f[None, None].repeat(out_ch, 1, 1, 1),
                                  persistent=False)
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """What this layer computes in."""
+        return torch.float16 if self.half else torch.float32
+
     @torch.no_grad()
     def freeze(self) -> None:
-        """Derive the played weight once. It is a function of constants alone, and inside the
-        captured graph it was being recomputed every frame -- see `_weights`."""
+        """Derive the played weight once, rather than in every forward of the captured graph."""
         self.played, self.energy = self._weights()
 
     def _weights(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -257,16 +255,12 @@ class SynthesisLayer(nn.Module):
         weight, energy = ((self.played, self.energy) if self.played is not None
                           else self._weights())
 
-        # **The styles scale the activations, not the weight** -- NVIDIA's own
-        # `fused_modconv=False`, which is the same arithmetic in another order: the input
-        # channels scaled before a plain convolution, the output channels demodulated after it.
-        # Modulating the weight instead wrote a styled copy of every conv weight every frame,
-        # and read it back, which on a 512-channel layer is 9 MB for a 32 KB activation; here
-        # the weight stays a constant, both scalings fuse into the elementwise work either side
-        # of the convolution, and demodulation is a `(n, in) @ (in, out)` product.
-        # Both scalings stay in float32 and round once, into the dtype the convolution reads or
-        # the store at the end of this layer: cast to half first, each rounded twice, and the
-        # frame drifted 30% further from full precision than the fused modulation's did.
+        # The styles scale the activations, not the weight: NVIDIA's `fused_modconv=False`,
+        # the same arithmetic in another order. The input channels are scaled before a plain
+        # convolution and the output channels demodulated after it, so the weight stays a
+        # constant and is never copied per frame.
+        # Both scalings stay in float32 and round once, into the dtype the convolution reads;
+        # rounding each to half first moves the frame measurably further from full precision.
         dcoefs = (styles.square() @ energy.t() + 1e-8).rsqrt()
         x = (x * styles[:, :, None, None]).to(self.dtype)
         if self.up > 1:
@@ -276,8 +270,8 @@ class SynthesisLayer(nn.Module):
             x = F.conv2d(x, weight, padding=self.pad)
         x = x * dcoefs[:, :, None, None]
 
-        # The two scalars multiply each other rather than the pattern, so a live gain costs one broadcast
-        # and not two.
+        # The two scalars multiply each other, not the pattern, so a live gain costs one
+        # broadcast rather than two.
         strength = self.noise_strength if self.knob is None else self.noise_strength * self.knob
         x = x.add_(self.noise_const * strength)
         x = F.leaky_relu(x + self.bias.to(x.dtype).reshape(1, -1, 1, 1), LRELU_SLOPE)
@@ -300,7 +294,7 @@ class ToRGB(nn.Module):
 
     def forward(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         styles = self.affine(w) * self.weight_gain
-        weight = self.weight                     # once: see the note in `SynthesisLayer`
+        weight = self.weight
         n, out_ch, in_ch = x.shape[0], *weight.shape[:2]
         m = (weight.unsqueeze(0) * styles.reshape(n, 1, -1, 1, 1)).to(x.dtype)
         x = F.conv2d(x.reshape(1, -1, *x.shape[2:]),
@@ -316,7 +310,6 @@ class Block(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, res: int, cfg: Config, half: bool) -> None:
         super().__init__()
         self.res, self.half = res, half
-        self.dtype = torch.float16 if half else torch.float32
         common = dict(w_dim=cfg.w_dim, resolution=res, conv_clamp=cfg.conv_clamp,
                       half=half, taps=cfg.taps)
         if in_ch == 0:
@@ -332,6 +325,11 @@ class Block(nn.Module):
                                  persistent=False)
             taps = len(cfg.taps)
             self.skippad = ((taps + 1) // 2, (taps - 2) // 2) * 2
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """What this block's features are computed in."""
+        return torch.float16 if self.half else torch.float32
 
     def forward(self, x, img, ws) -> tuple[torch.Tensor, torch.Tensor]:
         if self.conv0 is None:
@@ -358,17 +356,16 @@ class Mapping(nn.Module):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.num_ws = cfg.num_ws
-        #: A live truncation per style range, or `None` for the network as trained. Same rule
-        #: as `SynthesisLayer.knob`: a plain attribute, set before `torch.compile`.
+        #: A live truncation per style range, or `None` for the network as trained. A plain
+        #: attribute, set before `torch.compile`, like `SynthesisLayer.knob`.
         self.knob = None
-        #: A live offset per style range -- `(len(BANDS), w_dim)`, the direction dials' push.
+        #: The push buffer: a live offset per style range, `(len(BANDS), w_dim)`, written by
+        #: the direction dials. `None` for the network as trained.
         self.push = None
         band = torch.zeros(cfg.num_ws, len(BANDS))
         for i, (_name, lo, hi) in enumerate(BANDS):
             band[lo:min(hi, cfg.num_ws), i] = 1.0
-        # `[num_ws, 3] @ [3]` is a fifty-four element matmul that turns three dials into a
-        # truncation for every layer. Cheaper to say than to special-case three slices, and it
-        # is one op in the graph rather than three writes into a tensor.
+        # `bands @ per_range` spreads one value per style range over every `w`, in one op.
         self.register_buffer("bands", band, persistent=False)
         for i in range(cfg.num_layers):
             n_in = cfg.z_dim if i == 0 else cfg.w_dim
@@ -383,13 +380,12 @@ class Mapping(nn.Module):
         for layer in self.layers:
             x = layer(x)
         x = x.unsqueeze(1).repeat(1, self.num_ws, 1)
-        # **Truncation is the control this family is known for, and it is host arithmetic.** Below 1 the
-        # style is pulled toward the average the checkpoint was trained around and the picture becomes more
-        # typical; above it, less.
+        # Truncation: below 1 the style is pulled toward the average `w` and the picture
+        # becomes more typical; above it, less.
         if self.knob is not None:
             x = self.w_avg.lerp(x, (self.bands @ self.knob).reshape(1, -1, 1))
-        # **After the truncation and not before it.** Both orders are defensible on paper; only one of them
-        # makes an instrument.
+        # After the truncation, so a direction dial does not weaken when truncation is
+        # turned down.
         if self.push is not None:
             x = x + (self.bands @ self.push).unsqueeze(0)
         return x
@@ -401,7 +397,6 @@ class Generator(nn.Module):
     def __init__(self, cfg: Config = Config()) -> None:
         super().__init__()
         self.cfg = cfg
-        self.z_dim = cfg.z_dim
         self.mapping = Mapping(cfg)
         self.synthesis = nn.Module()
         blocks = []
@@ -412,7 +407,7 @@ class Generator(nn.Module):
             blocks.append(block)
         self.blocks = blocks
 
-    def forward(self, z: torch.Tensor, c=None) -> torch.Tensor:
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
         ws = self.mapping(z)
         x = img = None
         for i, block in enumerate(self.blocks):
@@ -450,9 +445,8 @@ def style_bands(net: Generator) -> list[tuple[str, torch.Tensor]]:
     out = []
     for name, lo, hi in BANDS:
         rows = [affine.weight.detach() for idx, _tag, affine in sites if lo <= idx < hi]
-        # `weight_gain` is `1 / sqrt(w_dim)` for every one of these -- the same scalar on
-        # every affine -- and a basis of unit vectors cannot be moved by a uniform scaling,
-        # so it is deliberately not applied here.
+        # `weight_gain` is the same scalar on every affine, and a uniform scaling does not
+        # change a basis of unit vectors, so it is not applied.
         out.append((name, torch.cat(rows, 0) if rows
                     else torch.zeros(0, net.mapping.w_avg.shape[0])))
     return out
@@ -476,11 +470,8 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
 
 
 def save(path, cfg: Config, state: dict) -> None:
-    """Write a checkpoint that this file alone can open. See `ganlive import-stylegan2`.
-
-    A generator, because a generator is the whole of what this project runs. A checkpoint
-    that carries a discriminator alongside -- a trainer's, say -- still opens here: the extra
-    keys are simply not read."""
+    """Write a generator checkpoint that this file alone can open; see `ganlive
+    import-stylegan2`. `from_file` ignores any other keys a checkpoint carries."""
     from dataclasses import asdict
 
     blob = {"format": FORMAT,
@@ -490,11 +481,8 @@ def save(path, cfg: Config, state: dict) -> None:
 
 
 def is_stylegan2(path) -> bool:
-    """Whether this `.pt` is one of these, without building anything.
-
-    Cached on the file's identity, like `onnx.dials_of`: the bank asks four times for
-    every model it loads -- the dispatcher, the layout, the capture gate, the shelf --
-    and each ask was opening the checkpoint again to read one string."""
+    """Whether this `.pt` is one of these, without building anything. Cached on the file's
+    identity, because the bank asks several times per model."""
     try:
         stat = Path(path).stat()
     except OSError:
@@ -508,10 +496,10 @@ def _is_stylegan2_cached(path: str, _mtime: int, _size: int) -> bool:
         blob = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     except Exception:                                                        # noqa: BLE001
         return False
-    return isinstance(blob, dict) and blob.get("format") in FORMATS
+    return isinstance(blob, dict) and blob.get("format") == FORMAT
 
 
-#: Every block NVIDIA's own rule would ever allow in half precision -- their formula floors at 8, so the
+#: Every block NVIDIA's rule would ever allow in half precision. It floors at 8, so the
 #: 4-pixel block stays fp32 whatever is asked for.
 HALF_EVERYWHERE = 8
 #: No block in half precision, whatever the checkpoint asked for.
@@ -521,10 +509,9 @@ SINGLE_EVERYWHERE = 1 << 30
 def half_from_for(dtype: torch.dtype, exact: bool = False) -> int | None:
     """Where the half-precision ladder starts for a session that plays in `dtype`.
 
-    Half everywhere on a card unless `exact` asks for the file's own rule: 16.76 ms to 14.87
-    on FFHQ-1024 for 0.26 mean 8-bit levels. Nowhere in a single-precision session -- the CPU,
-    see `device.playback_dtype` -- exact or not, since the file's own four half blocks would be
-    the slow path there."""
+    Half everywhere on a card unless `exact` asks for the file's own rule: 11% faster on
+    FFHQ-1024, for 0.26 mean 8-bit levels. Nowhere in a single-precision session (the CPU;
+    see `device.playback_dtype`), where half precision is the slow path."""
     if dtype is not torch.float16:
         return SINGLE_EVERYWHERE
     return None if exact else HALF_EVERYWHERE

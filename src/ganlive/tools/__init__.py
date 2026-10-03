@@ -1,28 +1,30 @@
-"""The commands `ganlive` dispatches to. One module each, each with `main(argv)`.
+"""The commands `ganlive` dispatches to, one module each with `main(argv)`, and their shared setup.
 
-**Two pieces of process setup live here, and they have to run before any subcommand's own
-imports.** Importing this package is what runs them, and Python runs a package's `__init__`
-before any module inside it -- so `ganlive.cli`'s `import_module`, a direct
-`python -m ganlive.tools.play`, and a test importing one of these all get them, in that
-order, with nothing to remember.
-
-They were copied into the tools themselves, six of the ten, each above a block of imports
-that then needed `# noqa: E402` to say why. Four copies of one line and three of the other,
-and the three had already drifted: one reconfigured stdout and left stderr to raise, and two
-of the three lacked the `hasattr` guard.
+Importing this package sets up the process before any tool's own imports run, because Python
+runs a package's `__init__` before any module inside it.
 """
 
+import argparse
 import os
 import sys
 
-#: `sounddevice` ships ASIO behind this and reads it **at import**, so it is no use to a tool
-#: that sets it after the import -- and ASIO is the only host API a Rytm's stems appear on.
-#: Ignored everywhere else, which is why it is unconditional rather than `sys.platform`-gated.
+#: `sounddevice` reads this at import to enable ASIO, the only host API some interfaces (an
+#: Elektron Rytm over Overbridge) appear on. Ignored on other platforms.
 os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
-# A Windows console is cp1252 by default, and the dynamo exporter prints a check mark when it
-# succeeds -- so an export used to die with a `UnicodeEncodeError` *after* doing all of the
-# work. Both streams, because a traceback goes to the other one.
+# A Windows console defaults to cp1252, and some libraries print non-ASCII marks; replace what
+# cannot be encoded rather than raise. Both streams, because a traceback goes to stderr.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def parser(name: str, doc: str) -> argparse.ArgumentParser:
+    """The argument parser for `ganlive <name>`, with the tool's docstring as its description."""
+    return argparse.ArgumentParser(prog=f"ganlive {name}", description=doc,
+                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+
+
+def add_device(ap, help: str = "default: whichever accelerator is there, else the CPU"):
+    """The `--device` option every tool that runs a generator takes."""
+    return ap.add_argument("--device", default=None, metavar="xpu|cuda|mps|cpu", help=help)
