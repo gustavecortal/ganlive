@@ -381,7 +381,12 @@ def saved(checkpoint, z_dim: int, push_shape, net: nn.Module) -> Directions | No
     path = cache_path(checkpoint)
     if not path.exists():
         return None
-    got = torch.load(path, weights_only=True)
+    try:
+        got = torch.load(path, weights_only=True)
+    except Exception as exc:                                         # noqa: BLE001
+        print(f"ignoring {path.name}: it cannot be read ({type(exc).__name__}), so the "
+              f"directions are derived again", flush=True)
+        return None
     back = Directions(basis=got["basis"], strength=got["strength"],
                       source=got["source"] + (f", {got['how']}" if got.get("how") else ""),
                       shape=tuple(got["shape"]), z_dim=got["z_dim"],

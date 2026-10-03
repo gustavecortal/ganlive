@@ -169,7 +169,7 @@ def main(argv=None) -> int:
 
     order = [t.strip().upper() for t in args.order.split(",") if t.strip()]
     try:
-        device, info, nch = pick_input(sd, args.device)
+        device, info, nch = pick_input(sd, args.device, samplerate=args.rate)
     except NoAudioDevice as exc:
         raise SystemExit(str(exc)) from exc
 

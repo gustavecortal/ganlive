@@ -9,9 +9,9 @@ their code, because `torch_utils.persistence` re-executes each class's pickled s
 writes needs nothing but torch.
 
 The check this rests on runs by default, and `--no-check` skips it: the same latent through
-both generators in full precision, reported in 8-bit levels. It measures 0.000 on `ffhq.pkl`
-and `afhqcat.pkl`. Anything else means the conversion is wrong -- fp32 against fp32 either
-agrees or does not.
+both generators in full precision, reported in 8-bit levels. The two compute the modulated
+convolution in a different order, so they differ by float rounding -- about 0.0001 levels on
+`ffhq.pkl`. A wrong weight differs by whole levels, so anything past `TOLERANCE` is refused.
 
 **A generator is what this writes.** A discriminator in the pickle is ignored: this project
 plays models, and the only thing a discriminator is for is adversarial finetuning, which
@@ -25,6 +25,9 @@ import sys
 from pathlib import Path
 
 from ganlive.models import stylegan2 as S2
+
+#: The largest fp32 difference from NVIDIA's generator, in 8-bit levels, that is still rounding.
+TOLERANCE = 0.01
 
 
 def open_pickle(pkl: Path, repo: Path):
@@ -97,8 +100,9 @@ def main(argv=None) -> int:
         mean, worst = check(G, cfg, state, args.seed)
         print(f"against the original, in fp32: {mean:.6f} mean {worst:.6f} max 8-bit levels",
               flush=True)
-        if worst > 0.0:
-            raise SystemExit("the conversion is not exact, so it is wrong. Nothing written.")
+        if worst > TOLERANCE:
+            raise SystemExit(f"the conversion differs by more than {TOLERANCE} levels, so it is "
+                             f"wrong. Nothing written.")
 
     S2.save(out, cfg, state)
     print(f"wrote {out} ({out.stat().st_size / 1e6:.0f} MB)\n"

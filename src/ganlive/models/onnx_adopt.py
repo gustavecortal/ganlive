@@ -43,7 +43,10 @@ HALF_LEVELS = 1.0
 
 
 def _shapes(model) -> dict[str, tuple[int, ...]]:
-    """Every tensor's static shape, from shape inference. Unknown dims are dropped."""
+    """Every tensor's static shape, from shape inference, with a symbolic batch read as 1.
+
+    A tensor with any other unknown dim is dropped. The batch is the one dim an exporter
+    routinely leaves symbolic (`dynamic_axes={"z": {0: "batch"}}`), and this plays one frame."""
     import onnx
 
     inferred = onnx.shape_inference.infer_shapes(model, strict_mode=False)
@@ -51,6 +54,8 @@ def _shapes(model) -> dict[str, tuple[int, ...]]:
     for group in (inferred.graph.value_info, inferred.graph.input, inferred.graph.output):
         for value in group:
             dims = _dims(value)
+            if len(dims) >= 2 and dims[0] <= 0:
+                dims[0] = 1
             if dims and all(d > 0 for d in dims):
                 out[value.name] = tuple(dims)
     return out
@@ -151,7 +156,7 @@ def _bands(graph, shapes, size) -> dict[tuple[int, int], tuple[str, int]]:
     """The last tensor at each spatial size, as `{(h, w): (tensor, node index)}`."""
     consumed = {name for node in graph.node for name in node.input}
     mine = _feeds(graph, graph.output[0].name)
-    rungs = _ladder(size) if size else None
+    rungs = _ladder(size) if any(size) else None
     out: dict[tuple[int, int], tuple[str, int]] = {}
     for i, node in enumerate(graph.node):
         for name in node.output:
@@ -230,7 +235,7 @@ def _baked_noise(graph, shapes, size) -> list[tuple[str, tuple[int, ...]]]:
                     and len(shape) >= 2 and len(feature) == 4
                     and shape[-2:] == feature[-2:]
                     and min(shape[-2:]) >= MIN_BAND
-                    and (not size or shape[-2] <= size[0])):
+                    and (not any(size) or shape[-2] <= size[0])):
                 out.append((name, tuple(shape)))
                 break
     return out
@@ -241,6 +246,13 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
     from onnx import TensorProto, helper
 
     graph = model.graph
+    halves = [t.name for t in graph.initializer if t.data_type == TensorProto.FLOAT16]
+    if halves:
+        raise RuntimeError(
+            f"this graph stores {len(halves)} weight(s) in half precision. The dials and the "
+            f"frozen noise are float32, which ONNX will not multiply into a float16 tensor. "
+            f"Export it in float32: the runtime chooses half precision itself, per device, "
+            f"once it has measured that the picture survives it.")
     shapes = _shapes(model)
     found = Adopted(nz=int(shapes[graph.input[0].name][-1]))
     out_shape = shapes.get(graph.output[0].name)
@@ -329,33 +341,34 @@ def usable_precision(path, backend: str, device: str) -> tuple[str, str, float, 
 
     z = _latent(config_of(path).nz)
     runner = open_graph(path, backend=backend, device=device, precision="FP32")
-    key = key_for(runner.backend, runner.asked)
-    frames = {"FP32": np.asarray(runner.infer(z), np.float32)}
+    key, backend, device = key_for(runner.backend, runner.asked), runner.backend, runner.asked
+    # A copy: the runner's output is a view into its own buffer, which is about to go.
+    frames = {"FP32": np.array(runner.infer(z), np.float32)}
     # Dropped before the next one is built. Otherwise two compiled copies of a six-megapixel
     # graph are resident on the card at once, and this card has frozen the whole machine at a
     # 13.92 GB peak rather than raising out of memory.
-    runner = open_graph(path, backend=runner.backend, device=runner.asked, precision="FP16")
+    del runner
+    runner = open_graph(path, backend=backend, device=device, precision="FP16")
     frames["FP16"] = np.asarray(runner.infer(z), np.float32)
     gap = levels(frames["FP16"], frames["FP32"])
     return key, ("FP16" if gap < HALF_LEVELS else "FP32"), gap, runner
 
 
 def adopt(source, out, seed: int = 0, target: float = TARGET_LEVELS,
-          measure: bool = True, device: str = "cpu",
-          re_adopt: bool = False) -> Adopted:
+          measure: bool = True, device: str = "cpu") -> Adopted:
     """Read a graph, give it dials, prove them, and write it back out ready to play."""
     import onnx
 
     source, out = Path(source), Path(out)
     model = onnx.load(str(source))
     already = onnx_dials(source)["settings"]
-    if already and not re_adopt:
+    if already:
         raise RuntimeError(
             f"{Path(source).name} already declares {len(already)} dial(s) "
             f"({', '.join(already[:4])}...). Adopting it again would insert a second "
             f"settings input and overwrite what is there -- and if those dials were tuned by "
-            f"hand rather than derived, that tuning is not recoverable from the file. Pass "
-            f"re_adopt=True if replacing them is what you want.")
+            f"hand rather than derived, that tuning is not recoverable from the file. Adopt the "
+            f"graph it was made from instead.")
 
     found = insert_dials(model, seed=seed)
     onnx.checker.check_model(model, full_check=False)

@@ -113,6 +113,7 @@ class Display:
                 # Asked every frame, not once at open: the floor is the loaded model's, and a
                 # switch to one with more dials raises it under a window that was already open.
                 floor = 0 if overlay is None or self.fullscreen else overlay.floor_height()
+                floor = min(floor, sh)                  # never taller than the screen
                 if floor and vh < floor:
                     win.size = (vw, floor)
                     vw, vh = win.size

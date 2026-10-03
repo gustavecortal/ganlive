@@ -281,6 +281,35 @@ def test_the_bar_lines_are_the_machine_s_and_not_the_take_s_own(tmp_path):
     assert [m["beat"] for m in guide.report()["marks"]] == [56.1, 60.0, 64.2]
 
 
+def test_the_bar_lines_keep_coming_after_the_machine_is_restarted(tmp_path):
+    """Stop then Start puts the beat back to 0. A next line that only moved forward stayed
+    at the old bar, and the rest of the take had no marks at all."""
+    from ganlive.record.sync import Guide
+
+    guide = Guide()
+    guide.start(tmp_path / "take-05.mp4", bpm=130.0, beat=30.0, beat_source="midi")
+    for beat in (31.0, 32.1, 0.0, 2.0, 4.05, 8.1):
+        guide.mark(beat)
+    assert [m["beat"] for m in guide.report()["marks"]] == [32.1, 4.05, 8.1]
+
+
+def test_a_take_whose_encoder_never_opens_reports_it_and_stops(tmp_path):
+    """An encoder this machine cannot open used to kill the writer before it drained anything,
+    so a realtime take filled its queue and `stop` waited on it for ever."""
+    import threading
+
+    from ganlive.record.video import Recorder
+
+    rec = Recorder(tmp_path / "x.mp4", 64, 64, 30.0, "no_such_encoder",
+                   realtime=True, depth=2).start()
+    for _ in range(6):
+        rec.offer(np.zeros((96, 64), np.uint8))
+    done = threading.Event()
+    threading.Thread(target=lambda: (rec.stop(), done.set()), daemon=True).start()
+    assert done.wait(10.0), "stop() blocked on a queue nothing was draining"
+    assert "no encoder opened" in rec.report()["error"]
+
+
 def test_the_sidecar_anchors_the_take_on_the_audio_stream(tmp_path):
     """**Where the guide's first sample sits on the stream is the writer's answer, not the
     render thread's.** Reading the counter at `start` races the audio thread -- it may be
@@ -303,7 +332,9 @@ def test_the_sidecar_anchors_the_take_on_the_audio_stream(tmp_path):
     report = _drained(guide).stop()
     assert report["audio"]["start_sample"] == 7 * 256, \
         "the anchor was read from the counter on the render thread, one block out"
-    assert report["audio"]["offset_ms"] > 0.0, report["audio"]
+    # The block arrived as its last sample did, so the first one is a block's length earlier.
+    block_ms = 256 / 48000 * 1000
+    assert -block_ms < report["audio"]["offset_ms"] < -block_ms + 2.0, report["audio"]
     assert not guide._q.qsize()
 
 

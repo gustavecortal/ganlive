@@ -336,3 +336,23 @@ def test_the_walk_hands_an_onnx_graph_its_latent_on_the_host():
         assert np.array_equal(np.asarray(on_card).reshape(-1), on_host), (
             f"the two hand-over paths disagree at beat {beats}, so one of them is not the "
             f"latent the other measured")
+
+
+def test_switching_back_to_a_model_clears_the_push_it_was_left_holding():
+    """The handed-over memo was the push alone. Pushed on A, switched to B, every dial back to
+    rest, then back to A: nothing was written, and A played offset with its dials centred."""
+    import numpy as np
+
+    from ganlive.walk import SlerpWalk, WalkConfig
+
+    a, b = torch.zeros(1, 4), torch.zeros(1, 4)
+    cfg = WalkConfig(directions=np.eye(2, 4, dtype=np.float32), amounts=(1.0, 0.0), push_into=a)
+    walk = SlerpWalk(8, "cpu", cfg, dtype=torch.float32)
+    walk._hand_over(walk._offset())
+    assert a.abs().sum() > 0
+    cfg.push_into = b
+    cfg.amounts = (0.0, 0.0)
+    walk._hand_over(walk._offset())
+    cfg.push_into = a
+    walk._hand_over(walk._offset())
+    assert a.abs().sum() == 0, "A kept the push it had when the bank switched away"

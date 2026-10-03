@@ -95,7 +95,7 @@ def measuring_on(device: str) -> tuple[str, str]:
     CUDA machine the verdict was measured on, and filed under, a runtime the dials never saw."""
     if device.lower() == "cpu":
         return "ort", "CPUExecutionProvider"
-    return "openvino", device
+    return "openvino", device.upper()           # OpenVINO's device names are case-sensitive
 
 
 def key_for(backend: str, device: str) -> str:

@@ -90,20 +90,20 @@ def cmd_meter(sd, seconds: float, device: int | None, rate: int | None,
     """Live per-channel levels. Hit one pad at a time and read which channel moves."""
     import numpy as np
 
-    try:
-        device, info, nch = pick_input(sd, device, pattern)
-    except NoAudioDevice as exc:
-        print(str(exc))
+    # Picked at the rate it will run at: a device locked to 44.1 kHz refuses a 48 kHz test.
+    trouble = None
+    for sr in (rate,) if rate else RATES:
+        try:
+            device, info, nch = pick_input(sd, device, pattern, samplerate=sr)
+            rate = sr
+            break
+        except NoAudioDevice as exc:
+            trouble = exc
+    else:
+        print(str(trouble))
+        print("  An exclusive API hands the device to one program at a time: a DAW or")
+        print("  a control panel holding it will lock this out. Close them and retry.")
         return 1
-
-    if rate is None:
-        rate = next((sr for sr in RATES
-                     if _openable(sd, device, nch, sr)), None)
-        if rate is None:
-            print("Could not open the device at any sample rate.")
-            print("  An exclusive API hands the device to one program at a time: a DAW or")
-            print("  a control panel holding it will lock this out. Close them and retry.")
-            return 1
 
     peak = np.zeros(nch, dtype=np.float64)
     rms_acc = np.zeros(nch, dtype=np.float64)

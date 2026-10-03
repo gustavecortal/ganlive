@@ -639,12 +639,16 @@ def main(argv=None) -> int:
             + ("" if was[2] == now[2] else "; same walk, new latent") + "]")
         print(f"model: {m.name}  ({r.index + 1} of {len(r.models)}){moved}{back}", flush=True)
 
-    #: A model change asked for from the window's thread, waiting for the frame's own.
-    pending_model = [0]
+    #: The model index asked for from the window's thread, waiting for the frame's own.
+    pending_model = [None]
 
-    def ask_model(delta):
-        """Record a model change from whichever thread the key or the click arrived on."""
-        pending_model[0] += delta
+    def ask_model(delta=0, to=None):
+        """Record a model change from whichever thread the key or the click arrived on.
+
+        A key steps from wherever the last request left off; a picker click names its model
+        outright, so two clicks during a stall land on the second, not on their sum."""
+        base = r.index if pending_model[0] is None else pending_model[0]
+        pending_model[0] = (base + delta if to is None else to) % len(r.models)
 
     def save_setting(found):
         """Write down what is at the controls, and carry on playing it."""
@@ -780,9 +784,10 @@ def main(argv=None) -> int:
                             switch_model(r.index_of(got.path) - r.index)
 
                 # Here, and not in the handler that asked for it: see `ask_model`.
-                if pending_model[0]:
-                    delta, pending_model[0] = pending_model[0], 0
-                    switch_model(delta)
+                if pending_model[0] is not None:
+                    want, pending_model[0] = pending_model[0], None
+                    if want != r.index:
+                        switch_model(want - r.index)
 
                 t0 = time.perf_counter()
                 # Before anything writes this frame's inputs: a captured generator reads its

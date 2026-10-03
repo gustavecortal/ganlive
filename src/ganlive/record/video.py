@@ -120,33 +120,41 @@ class Recorder:
         return out
 
 
-    def _run(self) -> None:
-        import av
-        import numpy as np
+    def _encoder(self, av, tb: Fraction) -> str:
+        """The first wanted encoder that actually opens at this size on this machine.
 
-        from ganlive.pixels import nv12_plane_views
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        container = av.open(str(self.path), "w")
-        stream = None
-        # `auto` tries the hardware encoders in turn and keeps the first this machine has.
-        # `libx264` is last and always opens, on the CPU, which at 4K costs most of the frame
-        # rate -- so a machine with no hardware encoder records, slowly, rather than failing.
+        Opened for real rather than looked up: `add_stream` only checks that the build knows
+        the name, so an NVENC encoder on a machine without an NVIDIA card is accepted there
+        and fails at the first frame, losing the take. `libx264` is last in `CODECS` and
+        always opens, on the CPU, so `auto` records slowly rather than not at all."""
         wanted = CODECS if self.codec == "auto" else (self.codec,)
         for name in wanted:
             try:
-                stream = container.add_stream(name, rate=round(self.fps))
-                self.codec = name
-                break
+                ctx = av.CodecContext.create(name, "w")
+                ctx.width, ctx.height, ctx.pix_fmt = self.width, self.height, "nv12"
+                ctx.time_base, ctx.framerate = tb, round(self.fps)
+                ctx.open()
+                return name
             except Exception:                                        # noqa: BLE001
                 continue
-        if stream is None:
-            raise RuntimeError(f"no encoder opened, tried {', '.join(wanted)}")
-        stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
-        tb = Fraction(1, round(self.fps))
-        pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]
-        views = [nv12_plane_views(f, self.height, self.width) for f in pool]
+        raise RuntimeError(f"no encoder opened, tried {', '.join(wanted)}")
+
+    def _run(self) -> None:
+        container = stream = None
         try:
+            import av
+            import numpy as np
+
+            from ganlive.pixels import nv12_plane_views
+
+            tb = Fraction(1, round(self.fps))
+            self.codec = self._encoder(av, tb)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            container = av.open(str(self.path), "w")
+            stream = container.add_stream(self.codec, rate=round(self.fps))
+            stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
+            pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]
+            views = [nv12_plane_views(f, self.height, self.width) for f in pool]
             while True:
                 item = self._q.get()
                 if item is None:
@@ -165,9 +173,11 @@ class Recorder:
             while self._q.get() is not None:        # keep the producer from blocking for ever
                 pass
         finally:
-            try:
-                for packet in stream.encode():
-                    container.mux(packet)
-            except BaseException as exc:            # noqa: BLE001
-                self.failed.append(exc)
-            container.close()
+            if container is not None:
+                try:
+                    if stream is not None:
+                        for packet in stream.encode():
+                            container.mux(packet)
+                except BaseException as exc:        # noqa: BLE001
+                    self.failed.append(exc)
+                container.close()

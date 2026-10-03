@@ -105,13 +105,17 @@ class Guide:
         return f"{self.sidecar_path.name} and {self.wav_path.name}"
 
     def mark(self, beat: float) -> None:
-        """Called every frame; records a mark only when a bar line has been crossed."""
-        if self._path is None or beat < self._next_mark:
+        """Called every frame; records a mark only when a bar line has been crossed.
+
+        The next line is re-aimed from wherever the clock is now, so a machine stopped and
+        restarted mid-take (beats back to 0) or a song-position jump keeps marking, once."""
+        if self._path is None:
             return
-        self._next_mark += BEATS_PER_BAR
-        self._marks.append({"beat": round(beat, 4),
-                            "video_s": round(time.perf_counter() - self._t0, 4),
-                            "audio_s": self._audio_seconds()})
+        if beat >= self._next_mark:
+            self._marks.append({"beat": round(beat, 4),
+                                "video_s": round(time.perf_counter() - self._t0, 4),
+                                "audio_s": self._audio_seconds()})
+        self._next_mark = math.floor(beat / BEATS_PER_BAR + 1) * BEATS_PER_BAR
 
     def _audio_seconds(self) -> float | None:
         """Seconds of input since the guide's first sample, or None when there is no audio."""
@@ -210,7 +214,8 @@ class Guide:
                     break
                 at, when, block = item
                 if self._first is None:
-                    self._first, self._first_wall = at, when
+                    # `when` is when the block arrived, which is when its LAST sample did.
+                    self._first, self._first_wall = at, when - block.shape[-1] / self.sr
                 mono = block.mean(axis=0) if block.ndim > 1 else block
                 peak = float(np.abs(mono).max()) if mono.size else 0.0
                 if peak > self._peak:

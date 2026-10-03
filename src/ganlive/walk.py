@@ -88,10 +88,14 @@ class MusicalClock:
         self._beats += dt * self._bpm / 60.0
 
     def on_pulse(self, now: float | None = None) -> None:
-        """One MIDI clock pulse. Takes over from the internal clock on the first call."""
+        """One MIDI clock pulse. Takes over from the internal clock on the first call.
+
+        A machine that keeps sending clock while stopped still sets the tempo, but the picture
+        stands still with the transport."""
         self._external = True
-        self._pulses += 1
-        self._beats = self._pulses / self.PPQN
+        if self.running:
+            self._pulses += 1
+            self._beats = self._pulses / self.PPQN
         if now is not None:
             if self._last_pulse is not None:
                 dt = now - self._last_pulse
@@ -203,9 +207,6 @@ class SlerpWalk:
             return
         self.nz = nz
         self._offset_key = self._offset_rows = self._offset_vec = None
-        # The `w` seam is a different tensor on the incoming model, so the "already handed
-        # over" memo has to go with it or the first frame after a switch writes nothing.
-        self._pushed = None
         self._scratch = np.zeros(nz, dtype=np.float32)
         self._staging, self._views = self._staging_ring()
         # The cached endpoints and the angle are the incoming width's, so they go. The clock does not:
@@ -317,10 +318,13 @@ class SlerpWalk:
         return self._staging[self._slot].to(self.device, non_blocking=True)
 
     def _hand_over(self, offset) -> None:
-        """Put a `w` push where the generator reads it, and only when it changed."""
-        if offset is self._pushed:
-            return
+        """Put a `w` push where the generator reads it, and only when it changed.
+
+        Remembered with the tensor it went into: a switch points `push_into` at another
+        model's seam, and switching back finds the first one still holding its old push."""
         into = self.cfg.push_into
+        if self._pushed is not None and self._pushed[0] is offset and self._pushed[1] is into:
+            return
         if into.device.type == "cpu":
             # A captured generator reads the push from this host twin: a numpy write, no torch
             # small-tensor overhead and nothing issued to the card.
@@ -330,7 +334,7 @@ class SlerpWalk:
             into.zero_()
         else:
             into.copy_(torch.from_numpy(offset).reshape(into.shape))
-        self._pushed = offset
+        self._pushed = (offset, into)
 
     def _offset(self):
         """The summed direction push, or `None` when every dial is at rest."""

@@ -824,3 +824,44 @@ def test_one_record_answers_every_question_about_a_model_file():
             assert callable(getattr(family, field)), f"{family.name}.{field}"
     assert [f.name for f in FAMILIES if not f.capturable] == ["onnx"], (
         "an ONNX graph runs under its own runtime, so a torch-stream recording holds nothing")
+
+
+def test_a_flat_folder_of_conversions_offers_every_one_and_no_dial_cache(tmp_path):
+    """`import-stylegan2` writes each conversion flat into `runs/stylegan2/`. Taking only the
+    last file by name hid every conversion but one, and a `.directions.pt` cache beside a
+    checkpoint is not a model."""
+    import torch
+
+    from ganlive.bank import Bank, Shelf
+
+    flat = tmp_path / "stylegan2"
+    flat.mkdir()
+    for name in ("afhq", "ffhq", "metfaces"):
+        torch.save({"config": {"nz": 256, "im_size": 64, "im_width": 64}, "g_ema": {}},
+                   flat / f"{name}.pt")
+    (flat / "ffhq.directions.pt").write_bytes(b"not a model")
+    bank = Bank(models=[], stage=FrameStage(64, 64, device="cpu"), device="cpu",
+                width=64, height=64)
+    found = sorted(p.name for p in Shelf(bank, tmp_path)._models())
+    assert found == ["afhq.pt", "ffhq.pt", "metfaces.pt"], found
+
+
+def test_a_captured_generator_s_dials_are_measured_against_a_frame_it_has_not_overwritten():
+    """A captured generator replays into one output buffer, so the frame at rest and the frame
+    with a dial pushed were the same tensor, and every MODEL dial measured 0 and went dark."""
+    import torch
+
+    from ganlive import bank as R
+    from ganlive.dials import steer as K
+    from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN, fastgan
+
+    knobs = K.Knobs(sorted(SETTINGS_WRITTEN), "cpu", torch.float32)
+    out = torch.zeros(1, 3, 8, 8)
+
+    class _Replayed(torch.nn.Module):
+        def forward(self, z):
+            out.copy_(torch.tanh(torch.zeros(1, 3, 8, 8) + (knobs.view("sle.se_256") - 1.0)))
+            return out
+
+    layout = R.measure_dials(_Replayed(), knobs, fastgan(), 4, "cpu", torch.float32)
+    assert layout["se_256"].measured > 1.0
