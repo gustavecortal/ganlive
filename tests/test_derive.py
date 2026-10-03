@@ -9,8 +9,30 @@ from __future__ import annotations
 import pytest
 import torch
 
-from ganlive.dials.derive import first_consumer, sefa, verify
+from ganlive.dials.derive import (
+    CANDIDATES,
+    RANDOM_PROBES,
+    active_banded,
+    cache_path,
+    equalise,
+    first_consumer,
+    metric,
+    orient,
+    random_like,
+    rank,
+    save,
+    saved,
+    sefa,
+    sefa_banded,
+    shortlist,
+    split,
+    travel,
+    verify,
+)
+from ganlive.models import stylegan2 as S2
 from ganlive.models.fastgan import Generator
+from ganlive.pixels import RANDOM_FLOOR
+from tests.support import tiny_stylegan2
 
 
 @pytest.fixture(scope="module")
@@ -101,9 +123,6 @@ def test_the_basis_is_a_property_of_the_weights_and_not_of_a_sample(net):
 
 def _sg2(**over):
     """A StyleGAN2 small enough for a test, with all three style ranges non-empty."""
-    from ganlive.models import stylegan2 as S2
-    from tests.support import tiny_stylegan2
-
     cfg = tiny_stylegan2(**{"img_resolution": 64, **over})
     torch.manual_seed(3)
     return S2.Generator(cfg).eval().requires_grad_(False)
@@ -111,9 +130,6 @@ def _sg2(**over):
 
 def _banded(count: int = 8, **over):
     """A StyleGAN2, a banded basis over its style ranges, and a cleared push buffer."""
-    from ganlive.dials.derive import sefa_banded, split
-    from ganlive.models import stylegan2 as S2
-
     net = _sg2(**over)
     dirs = sefa_banded(S2.style_bands(net), split(count, len(S2.BANDS)), z_dim=net.cfg.z_dim)
     net.mapping.push = torch.zeros(dirs.push_shape)
@@ -128,8 +144,6 @@ def _live_band(row, push_shape) -> list[int]:
 def test_the_gram_of_symmetric_differences_is_the_jacobian_metric():
     """On a linear map the Jacobian is the matrix, so `J^T J` is known in closed form and
     `metric` has to reproduce it to floating point."""
-    from ganlive.dials.derive import metric
-
     torch.manual_seed(0)
     nz, out = 12, 40
     w = torch.randn(out, nz)
@@ -148,8 +162,6 @@ def test_the_gram_of_symmetric_differences_is_the_jacobian_metric():
 def test_a_metric_basis_lands_in_bands_like_the_factorised_one():
     """The two derivations differ in where the basis comes from and in nothing else: same
     layout, same unit rows, same one-band-per-row, or `rank` and the strip disagree."""
-    from ganlive.dials.derive import active_banded, split
-
     net, sefa = _banded(6)
     got = active_banded(net, sefa.band_names, split(6, len(sefa.band_names)), net.cfg.z_dim,
                         "cpu", torch.float32, into=net.mapping.push, seeds=1)
@@ -166,8 +178,6 @@ def test_a_metric_basis_lands_in_bands_like_the_factorised_one():
 def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
     """The cache is a proposal, so what it must never do is fit the wrong model. It carries
     no measured levels, and a file whose push buffer or latent width disagrees is refused."""
-    from ganlive.dials.derive import cache_path, rank, save, saved
-
     net, dirs = _banded()
     kept = rank(net, dirs, "cpu", torch.float32, amount=2.0, relative=0.0, floor=0.0,
                 into=net.mapping.push)
@@ -196,9 +206,6 @@ def test_a_saved_basis_comes_back_and_one_for_another_model_does_not(tmp_path):
 
 def test_a_banded_basis_is_zero_outside_its_own_range():
     """What lets one matrix-vector product on the host produce the whole push."""
-    from ganlive.dials.derive import sefa_banded, split
-    from ganlive.models import stylegan2 as S2
-
     net = _sg2()
     counts = split(8, len(S2.BANDS))
     assert counts == (2, 3, 3)
@@ -217,9 +224,6 @@ def test_a_banded_basis_is_zero_outside_its_own_range():
 
 def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_push():
     """The two failure modes are opposite, so neither is allowed to happen quietly."""
-    from ganlive.dials.derive import sefa, sefa_banded, split, verify
-    from ganlive.models import stylegan2 as S2
-
     net = _sg2()
     w = sefa_banded(S2.style_bands(net), split(8, len(S2.BANDS)), z_dim=net.cfg.z_dim)
     z = sefa(net, net.cfg.z_dim, count=4)
@@ -237,27 +241,8 @@ def test_a_w_basis_and_a_latent_basis_each_refuse_the_others_push():
         "last direction measured")
 
 
-def test_ranking_a_banded_basis_keeps_each_range_together():
-    """Sorted inside a range, never across: three ranges are three different questions."""
-    from ganlive.dials.derive import rank
-
-    net, d = _banded()
-    ranked = rank(net, d, "cpu", torch.float32, amount=3.0, floor=0.0, relative=0.0,
-                  into=net.mapping.push)
-
-    bands = [int(row.reshape(d.push_shape).abs().sum(dim=1).argmax()) for row in ranked.basis]
-    assert bands == sorted(bands), f"the ranges came back interleaved: {bands}"
-    assert ranked.push_shape == d.push_shape and ranked.z_dim == d.z_dim, (
-        "carried through the copy")
-    for lo in range(len(bands)):
-        run = [ranked.levels[i] for i in range(len(bands)) if bands[i] == bands[lo]]
-        assert run == sorted(run, reverse=True), "inside a range it is strongest first"
-
-
 def test_equalising_gives_a_w_basis_the_size_a_latent_basis_gets_for_free():
     """`w` has no natural scale, so one scalar for the whole basis buys it a stated one."""
-    from ganlive.dials.derive import equalise, verify
-
     net, d = _banded()
     scaled = equalise(net, d, "cpu", torch.float32, amount=2.0, target=12.0,
                       into=net.mapping.push)
@@ -273,10 +258,8 @@ def test_equalising_gives_a_w_basis_the_size_a_latent_basis_gets_for_free():
 
 
 def test_the_range_a_row_came_from_survives_the_drop_that_reorders_the_rows():
-    """The range label rides on the basis, because the basis is what gets shortened."""
-    from ganlive.dials.derive import rank
-    from ganlive.models import stylegan2 as S2
-
+    """Ranking sorts inside a range, never across, and keeps the ranges in the ladder's order;
+    the range label rides on the basis, because the basis is what gets shortened."""
     net, d = _banded()
     assert d.ranges == ("w_coarse",) * 2 + ("w_mid",) * 3 + ("w_fine",) * 3
 
@@ -287,6 +270,11 @@ def test_the_range_a_row_came_from_survives_the_drop_that_reorders_the_rows():
         order.index(n) for n in ranked.ranges), (
         "the ranges came back out of ladder order; sorting on the *name* puts w_fine between "
         "w_coarse and w_mid, which is alphabetical and is not the ladder")
+    assert ranked.push_shape == d.push_shape and ranked.z_dim == d.z_dim, (
+        "carried through the copy")
+    for name in set(ranked.ranges):
+        run = [lv for lv, n in zip(ranked.levels, ranked.ranges, strict=True) if n == name]
+        assert run == sorted(run, reverse=True), "inside a range it is strongest first"
 
     # A floor high enough to kill some directions. The absolute one and nothing else: on an
     # untrained generator the relative bar drops all eight, and a partial drop is the point.
@@ -304,8 +292,6 @@ def test_the_range_a_row_came_from_survives_the_drop_that_reorders_the_rows():
 def test_a_direction_that_does_what_a_random_one_does_is_dropped(net):
     """The gate is relative: on an untrained generator no direction is special, so most of a
     derived set does what a random unit vector does. An empty set still reports."""
-    from ganlive.dials.derive import RANDOM_FLOOR, rank
-
     d = sefa(net, 32, count=8)
     kept = rank(net, d, "cpu", torch.float32, amount=2.0)
     assert kept.random_levels is not None and kept.random_levels > 0
@@ -321,22 +307,16 @@ def test_a_direction_that_does_what_a_random_one_does_is_dropped(net):
     assert "none of these beat it" in nothing.report()
 
 
-def test_the_push_buffer_is_empty_before_every_reference_image():
+def test_the_push_buffer_is_empty_before_every_reference_image(monkeypatch):
     """Every latent's image at rest must be rendered with nothing in the push buffer, or the
     readings after it measure one direction against another."""
-    from ganlive.dials.derive import verify
-
     net, d = _banded()
 
     seen = []
     forward = net.mapping.forward
-    net.mapping.forward = lambda z: (
-        seen.append(float(net.mapping.push.abs().max())) or forward(z))
-    try:
-        verify(net, d, "cpu", dtype=torch.float32, amount=2.0, seeds=4,
-               into=net.mapping.push)
-    finally:
-        net.mapping.forward = forward
+    monkeypatch.setattr(net.mapping, "forward", lambda z: (
+        seen.append(float(net.mapping.push.abs().max())) or forward(z)))
+    verify(net, d, "cpu", dtype=torch.float32, amount=2.0, seeds=4, into=net.mapping.push)
 
     # One reference plus one render per row, per latent. Every reference must see it empty.
     per_latent = 1 + len(d)
@@ -347,9 +327,6 @@ def test_the_push_buffer_is_empty_before_every_reference_image():
 
 def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
     """Each band's bar is measured in that band, however many rows the basis has."""
-    from ganlive.dials.derive import RANDOM_PROBES, random_like, sefa_banded, split
-    from ganlive.models import stylegan2 as S2
-
     net = _sg2()
     names = [name for name, _lo, _hi in S2.BANDS]
     # Longer than the probe count.
@@ -374,9 +351,6 @@ def test_every_band_gets_its_own_random_probes_however_long_the_basis_is():
 
 def test_each_band_is_held_to_its_own_bar_and_the_report_says_what_they_were():
     """The bands are not equally sensitive, so each has its own bar, and the report names it."""
-    from ganlive.dials.derive import rank
-    from ganlive.models import stylegan2 as S2
-
     net, d = _banded()
     kept = rank(net, d, "cpu", torch.float32, amount=2.0, into=net.mapping.push)
 
@@ -393,8 +367,6 @@ def test_each_band_is_held_to_its_own_bar_and_the_report_says_what_they_were():
 def test_a_dial_is_judged_on_both_halves_of_its_travel(net):
     """A direction dial travels both ways from centre and an eigenvector's sign is arbitrary,
     so both halves are measured."""
-    from ganlive.dials.derive import orient, rank, sefa, travel
-
     d = sefa(net, 32, count=8)
     up, down = travel(net, d, "cpu", torch.float32, amount=2.0)
     assert len(up) == len(down) == 8
@@ -420,8 +392,6 @@ def test_a_dial_is_judged_on_both_halves_of_its_travel(net):
 
 def test_the_pool_is_wider_than_the_strip_and_measurement_picks_from_it(net):
     """`rank` is handed a pool wider than the strip and caps what survives."""
-    from ganlive.dials.derive import CANDIDATES, rank, sefa, shortlist
-
     assert CANDIDATES > 4, "a pool the size of the strip is not a pool"
     pool = sefa(net, 32, count=CANDIDATES)
     kept = rank(net, pool, "cpu", torch.float32, amount=2.0, relative=0.0, floor=0.0,
@@ -441,9 +411,6 @@ def test_the_pool_is_wider_than_the_strip_and_measurement_picks_from_it(net):
 
 def test_a_wide_pool_keeps_each_band_its_own_share():
     """A pool is per band and so is the cap; one strong band must not eat the strip."""
-    from ganlive.dials.derive import CANDIDATES, rank, shortlist
-    from ganlive.models import stylegan2 as S2
-
     nbands = len(S2.BANDS)
     net, pool = _banded(CANDIDATES * nbands)
     assert len(pool) == CANDIDATES * nbands

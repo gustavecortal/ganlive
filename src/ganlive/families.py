@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import torch
 
 from ganlive.checkpoints import is_onnx
+from ganlive.device import playback_dtype
 from ganlive.dials import derive as D
 from ganlive.dials import fastgan_dials as F
 from ganlive.dials import steer as K
@@ -70,17 +71,15 @@ def is_stylegan2(path) -> bool:
 
 
 def open_stylegan2(path, device, exact: bool = False, dtype=None):
-    """A converted StyleGAN2 with its dials installed: `(net, knobs, push, bands)`.
+    """A converted StyleGAN2 with its dials installed: `(net, settings, push, bands)`.
 
     Shared with `ganlive dials`, so the basis it derives is for the model exactly as it plays.
     `dtype` is the session's precision, the device's by default; see `S2.half_from_for`."""
-    from ganlive.device import playback_dtype
-
     net = S2.from_file(path, device,
                        half_from=S2.half_from_for(dtype or playback_dtype(device), exact))
-    knobs = K.install_stylegan2(net, device)
+    settings = K.install_stylegan2(net, device)
     # Read off the module tree now; the compile that follows hides it.
-    return net, knobs, net.mapping.push, S2.style_bands(net)
+    return net, settings, net.mapping.push, S2.style_bands(net)
 
 
 def _compiled(net, nz: int, device, dtype, options: LoadOptions):
@@ -110,7 +109,7 @@ def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
 
 def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
     """A converted StyleGAN2 made ready to play, its dials swept rather than remembered."""
-    net, knobs, push, bands = open_stylegan2(path, device, exact=options.exact, dtype=dtype)
+    net, settings, push, bands = open_stylegan2(path, device, exact=options.exact, dtype=dtype)
     cfg = net.cfg
     net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
 
@@ -125,13 +124,13 @@ def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
 
     # Not gated on `measure_grain`: this sweep is where a StyleGAN2's MODEL dials come from,
     # since a derived dial's curve is its measurement.
-    found = A.measured(A.TorchProbe(net, knobs, cfg.nz, device, dtype), knobs.names,
+    found = A.measured(A.TorchProbe(net, settings, cfg.nz, device, dtype), settings.names,
                        size=(cfg.ladder.height, cfg.ladder.width))
     print(found.report(), flush=True)
     layout = S.stylegan2(found.names, [d.rest for d in found.dials],
                          [d.curve for d in found.dials],
                          [d.moved for d in found.dials], ranges)
-    return Prepared(net=net, cfg=cfg, knobs=knobs, layout=layout, directions=found_dirs,
+    return Prepared(net=net, cfg=cfg, knobs=settings, layout=layout, directions=found_dirs,
                     graphs=graphs, compile_s=secs, push=push)
 
 
@@ -139,13 +138,12 @@ def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
     """This project's own generator made ready to play."""
     net, cfg = FG.load(path, device)
     FG.freeze_noise(net, seed=options.noise_seed)
-    net = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16,
-                                fold=True)["net"]
+    net = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16)["net"]
 
-    knobs = K.install(net, device, dtype)
+    settings = K.install(net, device, dtype)
     net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
-    gains = K.calibrate_noise(net, knobs, cfg.nz, device, dtype) if options.measure_grain else None
-    return Prepared(net=net, cfg=cfg, knobs=knobs, layout=F.fastgan(noise_gains=gains),
+    gains = K.calibrate_noise(net, settings, cfg.nz, device, dtype) if options.measure_grain else None
+    return Prepared(net=net, cfg=cfg, knobs=settings, layout=F.fastgan(noise_gains=gains),
                     directions=directions_for(net, cfg.nz, device, dtype, path=path,
                                               floor=options.direction_floor),
                     graphs=graphs, compile_s=secs)

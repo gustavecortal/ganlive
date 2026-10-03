@@ -91,15 +91,12 @@ def fold_free_noise(net: nn.Module) -> int:
     return n
 
 
-def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
-                          fold: bool = True) -> dict:
+def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True) -> dict:
     """Bake, fold and cast a FastGAN for play. Reports what was applied, and the net under
     `"net"`. It does not compile.
 
     The order matters: the fold reads the frozen noise patterns, which the first forward
-    draws, and it has to come before anything compiles the net. `fold` is ignored and kept
-    only for callers that still pass it; the net is always folded."""
-    del fold
+    draws, and it has to come before anything compiles the net."""
     with torch.no_grad():
         net(torch.zeros(1, nz, device=device))       # draws the lazy frozen patterns
     report: dict = {"half": half}

@@ -82,9 +82,6 @@ class Replay:
             raise KeyError("no upload of that tensor was recorded; pass it in "
                            "`capture(feeds=)`") from None
 
-    #: The earlier name of `host_buffer`, still used by the bank.
-    twin = host_buffer
-
     def __call__(self, z):
         if (z.size if isinstance(z, np.ndarray) else z.numel()) != self._view.size:
             raise ValueError(

@@ -5,12 +5,16 @@ turns a latent into a picture, and `export` writes it as an ONNX graph for `onnx
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from torch import nn
 
 #: Latent widths to try when a config does not say. In the order they are common; the probe
 #: stops at the first that produces a picture, and a generator that takes none of them is
@@ -51,8 +55,6 @@ def graph_in(repo: str) -> str | None:
 
 
 def _config(repo: str) -> dict:
-    import json
-
     from huggingface_hub import hf_hub_download
 
     try:
@@ -100,8 +102,6 @@ def _import_code(repo: str) -> list[object]:
 
 def _candidates(modules) -> list[type]:
     """Classes that could be a generator: a module that knows how to load its own weights."""
-    from torch import nn
-
     seen: dict[str, type] = {}
     for module in modules:
         for name, obj in vars(module).items():
@@ -176,9 +176,6 @@ def from_hub(repo: str, trust: bool = False) -> Fetched:
 
 def export(fetched: Fetched, out: Path, opset: int = 18) -> Path:
     """The fetched generator as an ONNX graph, ready for `adopt`."""
-    import contextlib
-    import io
-
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     noise = io.StringIO()

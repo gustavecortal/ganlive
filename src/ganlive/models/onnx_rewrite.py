@@ -1,7 +1,7 @@
 """Rewrites made to a FastGAN on its way out to ONNX, and nowhere else.
 
 `split_gated_convs` replaces each `conv -> GLU` with two half-width convolutions, so the
-runtime never copies a tensor to split it. `bank_the_knobs` turns the live settings into a
+runtime never copies a tensor to split it. `settings_as_input` turns the live settings into a
 second graph input, `forward(z, k)`, because a tensor view would trace as a constant.
 """
 from __future__ import annotations
@@ -24,8 +24,8 @@ class GatedPair(nn.Module):
         self.value = _slice_conv(conv, 0, half)
         self.gate = _slice_conv(conv, half, conv.out_channels)
         self.noise = noise is not None
-        # A banked noise gain survives the split: both coefficient halves are scaled by the
-        # same slice of the settings input.
+        # A noise gain read from the settings input survives the split: both coefficient
+        # halves are scaled by the same slice of it.
         self.gain = noise.gain if isinstance(noise, ExportedNoise) else None
         if noise is not None:
             self.register_buffer("coeff_value", noise.coeff[:, :half].clone())
@@ -106,12 +106,12 @@ class SettingsVector(nn.Module):
 class ExportedSLE(nn.Module):
     """`SteerableSLE` reading its blend from the settings vector instead of from a view."""
 
-    def __init__(self, gate: nn.Module, bank: SettingsVector, index: int) -> None:
+    def __init__(self, gate: nn.Module, settings: SettingsVector, index: int) -> None:
         super().__init__()
-        self.gate, self.bank, self.index = gate, bank, index
+        self.gate, self.settings, self.index = gate, settings, index
 
     def forward(self, low: torch.Tensor, high: torch.Tensor) -> torch.Tensor:
-        blend = self.bank.vec[self.index:self.index + 1].reshape(1, 1, 1, 1)
+        blend = self.settings.vec[self.index:self.index + 1].reshape(1, 1, 1, 1)
         return high * (1.0 + blend * (self.gate(low) - 1.0))
 
 
@@ -119,14 +119,14 @@ class ExportedNoise(nn.Module):
     """`SteerableNoise` reading its gain from the settings vector instead of from a view."""
 
     def __init__(self, coeff: torch.Tensor, noise: torch.Tensor,
-                 bank: SettingsVector, index: int) -> None:
+                 settings: SettingsVector, index: int) -> None:
         super().__init__()
         self.register_buffer("coeff", coeff)
         self.register_buffer("noise", noise)
-        self.bank, self.index = bank, index
+        self.settings, self.index = settings, index
 
     def gain(self) -> torch.Tensor:
-        return self.bank.vec[self.index:self.index + 1].reshape(1, 1, 1, 1)
+        return self.settings.vec[self.index:self.index + 1].reshape(1, 1, 1, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.addcmul(x, self.coeff * self.gain(), self.noise)
@@ -135,43 +135,43 @@ class ExportedNoise(nn.Module):
 class Steerable(nn.Module):
     """The generator plus its settings, as a two-input graph: `forward(z, k)`."""
 
-    def __init__(self, net: nn.Module, bank: SettingsVector) -> None:
+    def __init__(self, net: nn.Module, settings: SettingsVector) -> None:
         super().__init__()
-        self.net, self.bank = net, bank
+        self.net, self.settings = net, settings
 
     def forward(self, z: torch.Tensor, k: torch.Tensor):
-        self.bank.vec = k
+        self.settings.vec = k
         return self.net(z)
 
 
-def bank_the_knobs(net: nn.Module, knobs) -> Steerable:
-    """Rewrite a net with installed `Knobs` so its settings come from a second argument."""
-    bank, reached = SettingsVector(), set()
+def settings_as_input(net: nn.Module, settings) -> Steerable:
+    """Rewrite a net with installed `Settings` so its settings come from a second argument."""
+    vector, reached = SettingsVector(), set()
     for parent in list(net.modules()):
         for child_name, child in list(parent.named_children()):
             if isinstance(child, SteerableSLE):
-                index = knobs.index[f"sle.{child_name}"]
-                setattr(parent, child_name, ExportedSLE(child.gate, bank, index))
+                index = settings.index[f"sle.{child_name}"]
+                setattr(parent, child_name, ExportedSLE(child.gate, vector, index))
             elif isinstance(child, SteerableNoise):
-                index = _slot_of(knobs, child.gain)
+                index = _slot_of(settings, child.gain)
                 setattr(parent, child_name,
-                        ExportedNoise(child.coeff, child.noise, bank, index))
+                        ExportedNoise(child.coeff, child.noise, vector, index))
             else:
                 continue
             reached.add(index)
     # Settings reached, not modules replaced: one noise setting drives several modules.
-    missing = [n for i, n in enumerate(knobs.names) if i not in reached]
+    missing = [n for i, n in enumerate(settings.names) if i not in reached]
     if missing:
         raise RuntimeError(
             f"{', '.join(missing)} reached no module, so {len(missing)} of "
-            f"{len(knobs.names)} settings would export as constants and the exported model "
+            f"{len(settings.names)} settings would export as constants and the exported model "
             f"would have dials that do nothing")
-    return Steerable(net, bank)
+    return Steerable(net, vector)
 
 
-def _slot_of(knobs, view: torch.Tensor) -> int:
+def _slot_of(settings, view: torch.Tensor) -> int:
     """Which slot of the settings vector a module's view points at."""
-    for i, name in enumerate(knobs.names):
-        if knobs.view(name).data_ptr() == view.data_ptr():
+    for i, name in enumerate(settings.names):
+        if settings.view(name).data_ptr() == view.data_ptr():
             return i
     raise RuntimeError("a steerable module holds a view into no known setting")

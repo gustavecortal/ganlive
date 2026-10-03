@@ -6,10 +6,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from ganlive.device import detect_backend, synchronize
 from ganlive.models.common import Ladder
 from ganlive.models.onnx_file import OnnxConfig, dials_of
 from ganlive.models.runtime import open_graph
-from ganlive.settings import Knobs
+from ganlive.pixels import pinned
+from ganlive.settings import Settings
 
 
 class OnnxGenerator:
@@ -21,15 +23,11 @@ class OnnxGenerator:
     def __init__(self, path, device: str | None = None) -> None:
         """`device` is where the frame is handed back: a torch device, or `cpu`. Default is
         whichever accelerator this machine has."""
-        from ganlive.device import detect_backend
-
         self.path = Path(path)
         self.device = device = device or detect_backend()
         # Touch the torch device before OpenVINO does: both runtimes drive the same card
         # through Level Zero, and torch has to initialise it first.
         if device and device != "cpu":
-            from ganlive.device import synchronize
-
             torch.zeros(1, device=device)
             synchronize(device)
         self.runner = open_graph(self.path)
@@ -46,7 +44,7 @@ class OnnxGenerator:
         self._z = np.zeros((1, self.nz), dtype=np.float32)
         # The generator owns its settings, so `net(z)` stays a one-argument call. On the host
         # in f32, because that is what the graph takes.
-        self.knobs = Knobs(self.settings, "cpu", torch.float32)
+        self.knobs = Settings(self.settings, "cpu", torch.float32)
         # The graph reads `committed()`, never `vec`, so a commit only has to write the host.
         self.knobs.feed_from(self.knobs.vec)
         #: Pinned memory the runtime writes each frame into, so the upload to the card is a
@@ -54,8 +52,6 @@ class OnnxGenerator:
         #: the runtime only hands back arrays of its own.
         self._landing = None
         if device != "cpu" and self.runner.land is not None:
-            from ganlive.pixels import pinned
-
             host = pinned(self.runner.shapes[0], torch.from_numpy(
                 np.zeros(0, self.runner.dtype)).dtype)
             if host.is_pinned():

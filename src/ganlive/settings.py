@@ -1,6 +1,6 @@
 """The generator's settings as one vector on the device, and getting them there cheaply.
 
-Plumbing, not dials: `Knobs` knows how many settings there are and what they are called,
+Plumbing, not dials: `Settings` knows how many settings there are and what they are called,
 and nothing about what they mean. It sits outside `dials` so that `models` can own one
 without importing anything above itself.
 """
@@ -13,7 +13,7 @@ import torch
 from ganlive.pixels import pinned
 
 
-class Knobs:
+class Settings:
     """The generator's whole control state as one vector, plus the names to address it by.
 
     Values are written into a pinned host buffer (`write`) and sent by `commit`. Every

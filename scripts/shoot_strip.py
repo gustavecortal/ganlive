@@ -14,6 +14,7 @@ import argparse
 import os
 from pathlib import Path
 
+from ganlive.checkpoints import slug_for
 from ganlive.control.kit import INDEX, channel_map
 from ganlive.control.midi import EncoderMap
 from ganlive.presets import DEFAULT, PresetRunner
@@ -108,7 +109,7 @@ def main(argv=None) -> int:
         runner.apply(since, {"density": 0.6, "energy": 0.45, "active": 0.3}, model.knobs)
 
         heights = args.heights or [panel.floor_height(), 1200]
-        slug = bank.slug_for(model.path)
+        slug = slug_for(model.path)
         for mode in MODES:
             panel.mode = mode
             for tall in heights:

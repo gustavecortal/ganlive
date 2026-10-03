@@ -27,9 +27,9 @@ import pygame
 from ganlive.control.kit import INDEX
 from ganlive.dials import table as S
 from ganlive.dials.fastgan_dials import fastgan
-from ganlive.presets import DEFAULT, PresetRunner
+from ganlive.presets import DEFAULT
 from ganlive.strip import WIDTH, DialPanel, floor_height
-from tests.support import FakeKnobs, _StubModel, headless_renderer, stub_bank
+from tests.support import FakeSettings, _runner, _StubModel, headless_renderer, stub_bank
 
 #: The layouts a bank can hold at once, including the awkward ones: a single direction, and a
 #: family whose MODEL block shares no dial name with this one.
@@ -103,7 +103,7 @@ def switch(bank, runner, layout, live, between=None):
 
 def build(layout, live, shelf):
     """A strip with a stub model behind it, wired the way `ganlive play` wires the real one."""
-    runner = PresetRunner(DEFAULT, INDEX, 60.0, layout=fastgan())
+    runner = _runner(DEFAULT)
     bank = stub_bank(None, models=[1, 2], index_of=lambda path: 0)
     switch(bank, runner, layout, live)
     return DialPanel(runner, bank=bank, shelf=shelf,
@@ -215,7 +215,7 @@ def run(renderer, rounds: int, seed: int, switch_odds: float = 0.06):
         else:
             # A frame of the preset writing through, so whatever a gesture set is read back.
             panel.runner.apply(np.full(len(INDEX), 1e6, dtype=np.float32),
-                               {"density": 0.4, "energy": 0.3, "active": 0.2}, FakeKnobs())
+                               {"density": 0.4, "energy": 0.3, "active": 0.2}, FakeSettings())
     return faults, reached
 
 

@@ -2,7 +2,7 @@
 
 `SlerpWalk` turns a musical position into the generator's latent. The clock and the timing
 of a move (`MusicalClock`, `shape`, `position`, `WalkConfig`) live in `clock`, which is
-torch-free, and are re-exported here.
+torch-free.
 """
 from __future__ import annotations
 
@@ -11,16 +11,8 @@ import math
 import numpy as np
 import torch
 
-from ganlive.clock import (  # noqa: F401  re-exported
-    BEATS_PER_BAR,
-    MusicalClock,
-    WalkConfig,
-    _ease_in,
-    _ease_out,
-    _smoothstep,
-    position,
-    shape,
-)
+from ganlive.clock import WalkConfig, position
+from ganlive.pixels import pinned
 
 
 def _angle(z0: np.ndarray, z1: np.ndarray) -> float:
@@ -70,7 +62,7 @@ class SlerpWalk:
         self._offset_key: tuple | None = None
         self._offset_rows = None
         self._offset_vec = None
-        #: The offset array last handed to a `w` seam, by identity. `_offset` returns the same
+        #: The offset array last handed to a `w` push buffer, by identity. `_offset` returns the same
         #: array while the amounts hold still, which keeps a host-to-device copy off the frame path.
         self._pushed = None
         self._slot = 0
@@ -81,8 +73,6 @@ class SlerpWalk:
 
     def _staging_ring(self):
         """The pinned host ring the latent is written into, at the current width."""
-        from ganlive.pixels import pinned
-
         bufs = [pinned((1, self.nz), self.dtype) for _ in range(self.STAGING)]
         return bufs, [buf.numpy().reshape(-1) for buf in bufs]
 
@@ -196,7 +186,7 @@ class SlerpWalk:
         """Put a `w` push where the generator reads it, and only when it changed.
 
         Remembered together with the tensor it went into: a model switch points `push_into` at
-        another model's seam, and switching back must still clear or rewrite the first one."""
+        another model's push buffer, and switching back must still clear or rewrite the first one."""
         into = self.cfg.push_into
         if self._pushed is not None and self._pushed[0] is offset and self._pushed[1] is into:
             return

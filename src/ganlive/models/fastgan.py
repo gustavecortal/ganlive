@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.nn.utils import spectral_norm
 
+from ganlive.device import detect_backend
 from ganlive.models.common import BASE, Ladder
 
 #: Channel width per stage height, as a multiple of `ngf`.
@@ -274,8 +275,6 @@ def config_of(checkpoint: str | Path) -> Config:
 
 def load(checkpoint: str | Path, device=None) -> tuple[Generator, Config]:
     """Rebuild the EMA generator and the architecture it was trained with."""
-    from ganlive.device import detect_backend
-
     target = torch.device(device) if device is not None else torch.device(detect_backend())
     ckpt, cfg = _open(checkpoint)
     net = Generator(**cfg.generator_kwargs).to(target)

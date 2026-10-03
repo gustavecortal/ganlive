@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import functools
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -472,8 +472,6 @@ def load(cfg: Config, state: dict, device="cpu") -> Generator:
 def save(path, cfg: Config, state: dict) -> None:
     """Write a generator checkpoint that this file alone can open; see `ganlive
     import-stylegan2`. `from_file` ignores any other keys a checkpoint carries."""
-    from dataclasses import asdict
-
     blob = {"format": FORMAT,
             "config": {k: v for k, v in asdict(cfg).items() if k not in NOT_SAVED},
             "state": {k: v for k, v in state.items() if not k.endswith("resample_filter")}}

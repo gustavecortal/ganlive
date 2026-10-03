@@ -17,6 +17,8 @@ import time
 from collections import defaultdict
 from typing import NamedTuple
 
+import numpy as np
+
 from ganlive.clock import MusicalClock
 from ganlive.control.audio import (
     DEFAULT_MATCH,
@@ -42,6 +44,7 @@ from ganlive.control.midi import (
 )
 from ganlive.files import CHANNEL_MAP, remember
 from ganlive.tools import parser
+from ganlive.tools.drum_map import Strikes, report, report_recall
 
 #: Sample rates tried, in order, when none is given.
 RATES = (48000, 44100, 96000)
@@ -265,8 +268,6 @@ def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
 
 def cmd_meter(sd, args, seconds: float) -> int:
     """Live per-channel levels. Hit one pad at a time and read which channel moves."""
-    import numpy as np
-
     try:
         device, info, nch, rate = _pick(sd, args, args.samplerate)
     except NoAudioDevice as exc:
@@ -516,8 +517,6 @@ def _verdict(watch: MidiWatch, marks: dict[str, Mark], drove: bool) -> int:
 def cmd_learn(sd, args, seconds: float) -> int:
     """`--learn`: hit every pad; each note-on names a drum, and the audio says where it is."""
     import pygame.midi
-
-    from ganlive.tools.drum_map import Strikes, report, report_recall
 
     order = [t.strip().upper() for t in args.order.split(",") if t.strip()]
     try:

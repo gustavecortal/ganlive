@@ -7,6 +7,7 @@ holding the card.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import sys
 from typing import Literal
@@ -88,8 +89,6 @@ _HIGH_PRIORITY_CLASS = 0x00000080
 def _raise_priority() -> str | None:
     """Put this process above the desktop's other work, in whatever the platform calls it."""
     if sys.platform == "win32":
-        import ctypes
-
         k32 = ctypes.windll.kernel32
         k32.GetCurrentProcess.restype = ctypes.c_void_p
         k32.GetCurrentProcess.argtypes = []

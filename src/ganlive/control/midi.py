@@ -7,7 +7,8 @@ import time
 from typing import NamedTuple
 
 from ganlive.clock import MusicalClock
-from ganlive.control.kit import pairs
+from ganlive.control.kit import pairs, track_index
+from ganlive.control.machine import GENERIC
 from ganlive.curves import clamp01
 from ganlive.files import remember
 
@@ -255,8 +256,6 @@ class EncoderMap:
 
     def __init__(self, controls: dict[tuple[int, int], str], remember=None,
                  machine=None) -> None:
-        from ganlive.control.machine import GENERIC
-
         self.machine = machine or GENERIC
         self.controls = dict(controls)
         self.held: dict[str, float] = {}
@@ -272,11 +271,6 @@ class EncoderMap:
         self.remember = remember
         self.trouble = ""
         self._unsaved = False
-
-    @property
-    def source(self) -> str:
-        """`SOURCE`, for callers that read it off an instance."""
-        return self.SOURCE
 
     def silence(self) -> str:
         """What to check when wired controls never reported, in this machine's words."""
@@ -366,8 +360,6 @@ def parse_pressure(text: str, notes: dict[int, int] | None = None) -> dict[tuple
 
     The pad is named as a track -- `BD`, or its index -- and `notes` (`kit.parse_notes`)
     says which note that track's pad sends; without it, track `i` is note `i`."""
-    from ganlive.control.kit import track_index
-
     note_of = {} if notes is None else {track: note for note, track in notes.items()}
     out: dict[tuple[int, int], str] = {}
     for name, dial in pairs(text):

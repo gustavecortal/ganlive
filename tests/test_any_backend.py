@@ -10,6 +10,8 @@ import torch
 
 from ganlive import bank
 from ganlive import device as dev
+from ganlive.dials import steer as K
+from ganlive.families import open_stylegan2
 from ganlive.frame import FrameStage
 from ganlive.models import capture as speedups
 from ganlive.models import stylegan2 as S2
@@ -31,10 +33,10 @@ def test_no_memory_report_where_there_is_no_allocator():
     assert dev.memory_report("cpu") is None
 
 
-def test_the_stage_and_the_rig_default_to_the_detected_backend():
+def test_the_stage_and_the_bank_default_to_the_detected_backend():
     assert FrameStage(4, 6).device == dev.detect_backend()
     r = bank.Bank(models=[], stage=FrameStage(4, 6, device="cpu"), device="cpu")
-    assert r.dtype is torch.float32, "a cpu rig built without a dtype must not play in half"
+    assert r.dtype is torch.float32, "a cpu bank built without a dtype must not play in half"
 
 
 def test_a_compile_that_fails_plays_eager_and_says_so(monkeypatch, capsys):
@@ -68,13 +70,11 @@ def test_a_single_precision_session_has_no_half_block():
 
 
 def test_the_opener_takes_the_devices_precision_when_not_told(monkeypatch):
-    from ganlive.dials import steer as K
-
     asked = []
     monkeypatch.setattr(S2, "from_file",
                         lambda path, device, half_from=None: asked.append(half_from) or
                         SimpleNamespace(mapping=SimpleNamespace(push=None)))
     monkeypatch.setattr(K, "install_stylegan2", lambda net, device: None)
     monkeypatch.setattr(S2, "style_bands", lambda net: [])
-    bank.open_stylegan2("x.pt", "cpu")
+    open_stylegan2("x.pt", "cpu")
     assert asked == [S2.SINGLE_EVERYWHERE]
