@@ -1,36 +1,44 @@
 [project]
 name = "ganlive"
-# Read from `ganlive.__version__` rather than written here too. Both said 0.1.0 with nothing
-# keeping them equal, which is one edit away from a wheel that misreports itself.
-dynamic = ["version"]
-description = "Real-time latent-space exploration: any GAN, any accelerator, any MIDI controller."
+dynamic = ["version"]  # read from ganlive.__version__
+description = "Play a GAN like an instrument: any generator, live, in time with your drum machine."
 readme = "README.md"
-requires-python = ">=3.10"
+# pygame 2.6 has no wheel for Python 3.14 yet.
+requires-python = ">=3.10,<3.14"
 license = "MIT"
 license-files = ["LICENSE"]
-# Two. `torch` is deliberately not here: which build you need depends on your
-# accelerator, so the README installs it from the right index first. Everything else is an
-# extra, and the instrument runs without any of them.
-dependencies = ["numpy>=1.26", "pygame>=2.5"]
+authors = [{ name = "Gustave Cortal" }]
+keywords = ["gan", "stylegan2", "fastgan", "latent-space", "midi", "vj", "live-visuals",
+            "generative-art", "real-time", "onnx"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Sound/Audio :: MIDI",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# torch is not listed: the right build depends on your GPU, so the README installs it first.
+dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6"]
+
+[project.urls]
+Homepage = "https://github.com/gustavecortal/ganlive"
+Issues = "https://github.com/gustavecortal/ganlive/issues"
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
 record = ["av>=13"]
-# The portable ONNX runtime. `models/runtime.py` tries TensorRT, CUDA, ROCm, MIGraphX,
-# CoreML and DirectML in turn, so this reaches most cards; `onnx-intel` swaps in the
-# OpenVINO build, which is the one the timings in the README were taken on.
-# `onnxscript` is here and not only under `hub` because `ganlive export-onnx` exports through
-# the dynamo path, which needs it -- and the README tells you to install `onnx` and then
-# advertises that command, so it was an advertised command the advertised install could not run.
+# ONNX Runtime picks TensorRT, CUDA, ROCm, MIGraphX, CoreML or DirectML where present.
 onnx = ["onnx>=1.17", "onnxruntime>=1.20", "onnxscript>=0.7"]
-onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6",
-              "onnxscript>=0.7"]
-# `ganlive adopt hf:...` fetches a generator from the Hub before dialling it.
-# `psutil` lets `adopt` refuse to start while another job holds the card, `play` put its
-# submission thread on a performance core, and both report free host RAM. Advisory only:
-# without it each says so rather than passing quietly.
-hub = ["huggingface_hub>=0.25", "onnxscript>=0.7", "psutil>=6"]
-dev = ["pytest>=8", "ruff>=0.6", "psutil>=6"]
+# The same through OpenVINO: the fastest path on Intel GPUs.
+onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6", "onnxscript>=0.7"]
+hub = ["ganlive[onnx]", "huggingface_hub>=0.25"]
+all = ["ganlive[audio,record,onnx,hub]"]
+dev = ["ganlive[all]", "pytest>=8", "ruff>=0.6", "pillow>=10"]
 
 [project.scripts]
 ganlive = "ganlive.cli:main"
