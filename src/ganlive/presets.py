@@ -182,8 +182,11 @@ class PresetRunner:
 
     def load(self, preset: Preset) -> None:
         """Swap in a different preset without rebuilding anything that addresses this runner."""
+        # Copies of the rules themselves, not only of the lists: the routing grid edits an
+        # impulse's amount in place, and that edit belongs to this performance until it is saved.
         self.preset = replace(preset, dials=dict(preset.dials),
-                             impulses=list(preset.impulses), macros=list(preset.macros))
+                             impulses=[replace(i) for i in preset.impulses],
+                             macros=[replace(m) for m in preset.macros])
         preset = self.preset
         base = dict(self.surface.layout.rests)
         impulses, dropped = [], []

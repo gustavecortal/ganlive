@@ -376,13 +376,21 @@ class ClockReader(threading.Thread):
         ports = self.open_ports()
         if not ports:
             return
+        import pygame.midi
+
+        # PortMidi's clock, in ms, when it is running: then each message is placed at the time
+        # it was stamped rather than the time of this poll, and a batch read after a stall does
+        # not hand every clock pulse in it the same instant.
+        stamped = pygame.midi.get_init()
         while not self.stop_flag:
             now = time.perf_counter()
+            stamp_now = pygame.midi.time() if stamped else None
             for _label, port in ports:
                 while port.poll():
-                    for event, _ts in port.read(128):
+                    for event, ts in port.read(128):
+                        at = now if stamp_now is None else now - max(0, stamp_now - ts) / 1000.0
                         try:
-                            self._handle(event, now)
+                            self._handle(event, at)
                         except Exception as exc:                  # noqa: BLE001  see `faults`
                             key = f"{type(exc).__name__}: {exc}"
                             self.faults[key] = self.faults.get(key, 0) + 1

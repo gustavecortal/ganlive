@@ -76,8 +76,8 @@ def slug_for(path) -> str:
 
 def index_of(models, path) -> int | None:
     """Where a checkpoint sits in a bank, or None."""
-    path = Path(path)
-    return next((i for i, m in enumerate(models) if m.path == path), None)
+    path = Path(path).resolve()
+    return next((i for i, m in enumerate(models) if m.path.resolve() == path), None)
 
 
 def is_stylegan2(path) -> bool:
@@ -299,7 +299,8 @@ def measure_dials(net, knobs, layout, nz: int, device, dtype=torch.float16, seed
         return first_image(net(z))
 
     z = latent(nz, seed, device, dtype)
-    base = frame(z)
+    # A copy: a captured generator replays into one buffer, so `base` would be every frame.
+    base = frame(z).clone()
     out = []
     for knob in layout.knobs:
         if not knob.writes or knob.measured is not None:
@@ -455,10 +456,13 @@ def parse_height(text: str) -> int | None:
     if text == "native":
         return 0
     try:
-        return int(text)
+        height = int(text)
     except ValueError:
+        height = -1
+    if height <= 0:
         raise argparse.ArgumentTypeError(
-            f"{text!r} is not a height; use auto, native, or a number of pixels") from None
+            f"{text!r} is not a height; use auto, native, or a number of pixels")
+    return height
 
 
 def screen_size():
@@ -510,15 +514,22 @@ def fit_height(native_h: int, native_w: int, want: int | None, screen=None) -> i
     return max(2, min(want, native_h)) // 2 * 2 if want else native_h
 
 
+def checkpoints_in(folder: Path) -> list[Path]:
+    """Every checkpoint in one folder, sorted by name, leaving out the dial caches beside them."""
+    from ganlive.dials.derive import CACHE_SUFFIX
+
+    return sorted(p for p in Path(folder).glob("*.pt") if not p.name.endswith(CACHE_SUFFIX))
+
+
 def checkpoint_for(target: Path) -> Path:
-    """The one model a path means: a file, a run whose newest checkpoint is wanted, or a folder of exported
-    graphs, whose newest is wanted the same way."""
+    """The one model a path means: a file; a run, whose last checkpoint by name is wanted; or a
+    folder of exported graphs, whose last by name is wanted the same way."""
     target = Path(target)
     if target.is_file():
         return target
     inner = target / "checkpoints"
     folder = inner if inner.is_dir() else target
-    found = sorted(folder.glob("*.pt")) + sorted(folder.glob(f"*{ONNX}"))
+    found = checkpoints_in(folder) or sorted(folder.glob(f"*{ONNX}"))
     if not found:
         raise FileNotFoundError(f"no checkpoint or exported graph at {target}")
     return found[-1]
@@ -652,11 +663,14 @@ class Bank:
         admit(self.models, path)
         stage = self.stage
         model = _prepare(path, self.device, self.dtype, self.options)
+        try:
+            warmed = _warm(stage, model, self.device, self.dtype, self.size_of(model))
+        finally:
+            stage.resize(self.height, self.width)
+        # Joined only once it has run: a model whose warm-up raised is not left half in the bank.
         self.models.append(model)
-        self.graphs += model.graphs
+        self.graphs += model.graphs + warmed
         self.compile_s += model.compile_s
-        self.graphs += _warm(stage, model, self.device, self.dtype, self.size_of(model))
-        stage.resize(self.height, self.width)
         return model
 
     def report(self) -> str:
@@ -680,7 +694,7 @@ class Bank:
         config = config if config is not None else WalkConfig()
         # Attached here: a walk built without them has eight dials that move nothing. Remembered, so
         # `use` can re-point it when the model changes under the walk.
-        if config not in self._walk_cfgs:
+        if not any(c is config for c in self._walk_cfgs):
             self._walk_cfgs.append(config)
         # The latent in the precision the bank plays in, unless asked otherwise.
         walk = SlerpWalk(self.cfg.nz, self.device, config, dtype=dtype or self.dtype)
@@ -758,15 +772,11 @@ class Shelf:
             return []
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
-            # Every graph, plus the newest checkpoint. Both, not one or the other: a folder
-            # holding an export beside its checkpoints used to show only the exports.
             found += sorted(folder.glob(f"*{ONNX}"))
-            try:
-                newest = checkpoint_for(folder)
-            except (FileNotFoundError, OSError):
-                continue                          # not a run, or nothing saved yet
-            if not is_onnx(newest):
-                found.append(newest)
+            # A training run keeps its history under `checkpoints/` and offers its last one; a
+            # flat folder -- `runs/stylegan2/`, one file per conversion -- offers every file.
+            history = folder / "checkpoints"
+            found += checkpoints_in(history)[-1:] if history.is_dir() else checkpoints_in(folder)
         return found
 
     def request(self, entry: Shelved) -> None:
@@ -786,7 +796,7 @@ class Shelf:
             self.note = f"{label_for(want)}: {exc}"                 # frame loop
             return None
         self._listing = self._scan()
-        self.note = f"loaded {model.name} in {model.compile_s:.1f}s"
+        self.note = f"loaded {model.name}, {model.compile_s:.1f}s to compile"
         return model
 
 

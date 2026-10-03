@@ -102,7 +102,7 @@ def main(argv=None) -> int:
             panel = DialPanel(runner, bank=r, shelf=shelf, encoders=knobs,
                               actions={"preset": lambda d: None, "save": lambda f: None,
                                        "record": lambda: None, "still": lambda: None,
-                                       "model": lambda d: None})
+                                       "model": lambda delta=0, to=None: None})
             panel.attach(renderer)
         dressed(runner, model, knobs)
         # What `_grid_gesture` does after it wires one. Without it the grid draws the rules the

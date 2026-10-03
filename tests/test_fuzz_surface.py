@@ -146,7 +146,7 @@ def build(layout, live, shelf):
     panel = DialPanel(runner, bank=bank, shelf=shelf,
                       actions={"preset": lambda delta: None, "save": lambda found: None,
                                "record": lambda: None, "still": lambda: None,
-                               "model": lambda delta: None})
+                               "model": lambda delta=0, to=None: None})
     return panel
 
 

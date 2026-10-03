@@ -387,10 +387,10 @@ def adopted(names, rests, curves, levels, directions: int = DIRECTIONS) -> Layou
         height = name.partition("_")[2]
         blurb = DERIVED_BLURB.get(family, "a setting this graph declares.")
         rest = float(rests[i]) if i < len(rests) else 0.5
-        level = float(levels[i]) if i < len(levels) else 0.0
+        level = float(levels[i]) if i < len(levels) else None
         knobs.append(Knob(
             name, rest, blurb.format(h=height), group="MODEL",
-            writes=(Write(name, evenly(curves[i])),) if i < len(curves) else (),
+            writes=(Write(name, evenly(curves[i])),) if i < len(curves) and len(curves[i]) else (),
             # Every derived dial rests at what the model was trained to do, whichever end of its travel
             # that is, because rest is always a gain of 1.0. Reading "off" there says the opposite.
             poles=("down", "up", "as trained"), measured=level))

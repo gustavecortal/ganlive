@@ -184,7 +184,7 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float,
         where = " ".join(f"{p}={wire.by_phase[p][kind]}"
                          for p in ("listening", "driven", "after") if wire.by_phase[p][kind])
         print(f"{kind:<20}{wire.total(kind):>8}   {where}")
-    if not wire.by_phase:
+    if not wire.kinds():
         print(f"  NOTHING AT ALL -- is {machine.name} on this port? If it is, "
               f"{machine.says('clock')} and {machine.transport}.")
     if drove:
@@ -202,7 +202,8 @@ def report(wire: Wire, marks: dict[str, Mark], drove: bool, span: float,
             windows.append(("driven", "drive0", "drive1"))
         for label, a, b in windows:
             hits = marks[b].hits - marks[a].hits
-            struck = ", ".join(f"{TRACKS[i]}:{int(n)}" for i, n in enumerate(hits) if n)
+            struck = ", ".join(f"{TRACKS[i] if i < len(TRACKS) else f'ch{i + 1}'}:{int(n)}"
+                               for i, n in enumerate(hits) if n)
             print(f"audio, {label}: {int(hits.sum())} onsets over "
                   f"{marks[b].heard - marks[a].heard:.1f}s   {struck or 'silence'}")
 

@@ -313,6 +313,7 @@ class DialPanel:
             raise KeyError(f"{', '.join(sorted(unknown))} is not a key this strip offers; "
                            f"have {', '.join(sorted(ACTIONS))}")
         self._drag: str | None = None
+        self._model_seen = runner.model
         self._focus = next(iter(self.dials))
         self._was_held: set[str] = set()
         self._learns_seen = 0
@@ -459,9 +460,11 @@ class DialPanel:
         return {name: values[name] for name in names if name in values}
 
     def settings(self) -> dict[str, float]:
-        """What your hands are holding, as a line to paste into a preset."""
-        return {name: round(value, 3)
-                for name, value in sorted(self.runner.held_by(SOURCE).items())}
+        """What your hands are holding -- on the strip and on the machine's knobs -- as dial
+        values to fold into a preset. The strip wins where both hold one dial."""
+        held = {} if self.encoders is None else self.runner.held_by(self.encoders.source)
+        held.update(self.runner.held_by(SOURCE))
+        return {name: round(value, 3) for name, value in sorted(held.items())}
 
     def preset_now(self):
         """The whole setting as it stands at the controls: the preset with your hands folded in."""
@@ -506,6 +509,11 @@ class DialPanel:
         layout = self.dials
         if (w, h) != self._size or layout.groups != self._laid:
             self._resize(w, h)
+        # A switch re-resolves which rules fire on the incoming model; the grid has to follow,
+        # or a click on a cell drawn empty removes a rule that is firing.
+        if self.runner.model is not self._model_seen:
+            self._model_seen = self.runner.model
+            self.reload()
         live = self.live(layout)
         self._follow_the_hand(layout)
         now = time.perf_counter()
@@ -953,7 +961,7 @@ class DialPanel:
         where = self.bank.index_of(entry.path) if self.bank is not None else None
         if entry.loaded:
             if act is not None and where is not None:
-                act(where - self.bank.index)
+                act(to=where)
         else:
             self.shelf.request(entry)
         self._dirty = True

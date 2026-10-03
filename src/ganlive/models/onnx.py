@@ -242,9 +242,11 @@ class OnnxGenerator:
     def __call__(self, z) -> list[torch.Tensor]:
         """One frame, on `device`, as a torch generator would return it."""
         frame = self.infer(z)
+        host = self._landing if self._landing is not None else torch.from_numpy(frame)
         # Blocking, so the upload has read the buffer before the next frame is written into it.
-        return [(self._landing if self._landing is not None
-                 else torch.from_numpy(frame)).to(self.device)]
+        out = host.to(self.device)
+        # On the CPU `.to` is a no-op, and the runtime writes the next frame into this buffer.
+        return [out.clone() if out.data_ptr() == host.data_ptr() else out]
 
     def infer(self, z) -> np.ndarray:
         """One frame as OpenVINO left it: a view into host-visible memory."""
