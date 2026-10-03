@@ -2,7 +2,7 @@
 
 **Plug-and-play GAN exploration in real time.**
 
-Load a GAN. ganlive automatically derives dials to explore its latent space.
+Load a GAN. Explore its latent space with automatically derived dials, by hand or with MIDI.
 
 <p align="center">
   <img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials" width="860">
