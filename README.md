@@ -1,17 +1,12 @@
 # ganlive
 
-**Explore GAN latent spaces in real time.**
+**Plug-and-play GAN exploration in real time.**
 
-ganlive is a Python tool for exploring generative adversarial network (GAN) latent spaces
-with your mouse or MIDI controller.
+Load a GAN. ganlive automatically derives dials to explore its latent space.
 
 <p align="center">
-  <img src="docs/demo.webp" alt="Exploring GAN images with dials and MIDI controls" width="860">
+  <img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials" width="860">
 </p>
-
-- **Automatic dials.** Each model gets controls for its latent space.
-- **Mouse or MIDI.** Move dials with your mouse, controller knobs, or MIDI notes.
-- **Live visuals.** Sync to music, switch models, and save images or videos.
 
 ## Quick start
 
@@ -41,6 +36,7 @@ Try NVIDIA's StyleGAN2 face model:
 
 ```bash
 git clone --depth 1 https://github.com/NVlabs/stylegan2-ada-pytorch
+uv pip install requests click setuptools
 curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
 uv run --no-sync ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
 ```

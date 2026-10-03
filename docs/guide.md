@@ -2,12 +2,72 @@
 
 [Back to the README](../README.md)
 
-[Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
-[Models](#models) · [Recording](#recording) · [Performance](#speed) ·
-[Installation](#install) · [Development](#development)
+Load a model to get dials for its latent space. Use them with your mouse or MIDI controller.
+
+[Models](#models) · [Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
+[Recording](#recording) · [Performance](#speed) · [Installation](#install) ·
+[Development](#development)
 
 Commands assume an active project environment. Otherwise, prefix `ganlive` with
 `uv run --no-sync` from the project directory.
+
+## Models
+
+Pass a checkpoint or run directory with `--checkpoint`.
+Repeat the option to load several models, then switch with `[` and `]`.
+Models can have different resolutions and latent dimensions.
+
+### StyleGAN2
+
+Convert NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository.
+Install the dependencies needed to read NVIDIA's model file:
+
+```bash
+uv pip install requests click setuptools
+ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch
+ganlive play --checkpoint runs/stylegan2/model.pt --console
+```
+
+See the [README](../README.md#quick-start) for a complete example.
+The converted model runs without NVIDIA's custom CUDA kernels.
+
+### FastGAN
+
+Load a checkpoint trained with [smallgen](https://github.com/gustavecortal/smallgen),
+or download the [published FastGAN model](https://huggingface.co/gustavecortal/ganlive-fastgan-3072)
+into `runs/gv-2048-ft`:
+
+```bash
+ganlive play --checkpoint runs/gv-2048-ft --console
+```
+
+### Other generators
+
+Install the `onnx` extra and import a compatible ONNX generator:
+
+```bash
+ganlive adopt model.onnx --out runs/onnx/model.onnx
+ganlive play --checkpoint runs/onnx/model.onnx --console
+```
+
+For a Hugging Face repository, install `hub` and use:
+
+```bash
+ganlive adopt hf:owner/repo --out runs/onnx/model.onnx
+```
+
+If the repository requires its own Python code, add `--trust-remote-code` only for code
+you trust. Import needs a generator that accepts a latent and returns an image.
+Models with extra inputs or unsupported operations may need a custom ONNX export.
+
+Import creates and calibrates controls, then saves them with the graph for later use.
+
+### Additional tools
+
+| Command | Use |
+|---|---|
+| `ganlive dials runs/stylegan2/model.pt` | Find directions using the whole generator and save them for later launches |
+| `ganlive export-onnx --checkpoint runs/my-run` | Export a FastGAN checkpoint with its controls |
 
 ## The interface
 
@@ -111,62 +171,6 @@ To try music-driven visuals without hardware, install the `audio` extra and add
 
 Audio defaults target an Elektron Analog Rytm through Overbridge.
 Adjust the input and channel mapping for other devices.
-
-## Models
-
-Pass a checkpoint or run directory with `--checkpoint`.
-Repeat the option to load several models, then switch with `[` and `]`.
-Models can have different resolutions and latent dimensions.
-
-### StyleGAN2
-
-Convert NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository:
-
-```bash
-ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch
-ganlive play --checkpoint runs/stylegan2/model.pt --console
-```
-
-See the [README](../README.md#quick-start) for a complete example.
-The converted model runs without NVIDIA's custom CUDA kernels.
-
-### FastGAN
-
-Load a checkpoint trained with [smallgen](https://github.com/gustavecortal/smallgen),
-or download the [published FastGAN model](https://huggingface.co/gustavecortal/ganlive-fastgan-3072)
-into `runs/gv-2048-ft`:
-
-```bash
-ganlive play --checkpoint runs/gv-2048-ft --console
-```
-
-### Other generators
-
-Install the `onnx` extra and import a compatible ONNX generator:
-
-```bash
-ganlive adopt model.onnx --out runs/onnx/model.onnx
-ganlive play --checkpoint runs/onnx/model.onnx --console
-```
-
-For a Hugging Face repository, install `hub` and use:
-
-```bash
-ganlive adopt hf:owner/repo --out runs/onnx/model.onnx
-```
-
-If the repository requires its own Python code, add `--trust-remote-code` only for code
-you trust. Import needs a generator that accepts a latent and returns an image.
-Models with extra inputs or unsupported operations may need a custom ONNX export.
-
-Import creates and calibrates controls, then saves them with the graph for later use.
-
-### Additional tools
-
-| Command | Use |
-|---|---|
-| `ganlive dials runs/stylegan2/model.pt` | Find directions using the whole generator and save them for later launches |
-| `ganlive export-onnx --checkpoint runs/my-run` | Export a FastGAN checkpoint with its controls |
 
 ## How the dials are found
 
