@@ -791,3 +791,21 @@ def test_the_described_dial_survives_a_model_that_does_not_have_it():
     assert panel.focus in panel.dials
     panel._colour(panel.focus)
     assert panel.dials[panel.focus].blurb
+
+
+def test_the_model_keys_work_on_a_layout_whose_brackets_need_altgr():
+    """On AZERTY `]` is AltGr plus a key whose own keycode is not a bracket: the typed
+    character or the key's position must still switch models."""
+    import types
+
+    import pygame
+
+    from ganlive.strip import model_step
+
+    def ev(key, unicode="", scancode=0):
+        return types.SimpleNamespace(key=key, unicode=unicode, scancode=scancode)
+
+    assert model_step(pygame, ev(pygame.K_RIGHTBRACKET)) == 1
+    assert model_step(pygame, ev(pygame.K_5, unicode="[")) == -1           # AltGr+5 on AZERTY
+    assert model_step(pygame, ev(pygame.K_DOLLAR, scancode=48)) == 1      # the key right of `^`
+    assert model_step(pygame, ev(pygame.K_g, unicode="g")) == 0

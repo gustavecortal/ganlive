@@ -121,6 +121,20 @@ BUILT_IN = (None, MINE, NEEDS_SHELF, NEEDS_ENCODERS)
 ACTIONS = frozenset(a for _keys, _label, a in HELP if a not in BUILT_IN)
 
 
+def model_step(pg, ev) -> int:
+    """+1 for `]`, -1 for `[`, else 0, on any keyboard layout.
+
+    By typed character, by US keycode, or by the two keys right of `P`: on AZERTY and other
+    layouts the brackets need AltGr, and SDL then reports neither bracket keycode."""
+    by_char = {"]": 1, "[": -1}.get(getattr(ev, "unicode", "") or "")
+    if by_char:
+        return by_char
+    if ev.key in (pg.K_RIGHTBRACKET, pg.K_LEFTBRACKET):
+        return 1 if ev.key == pg.K_RIGHTBRACKET else -1
+    scancode = getattr(ev, "scancode", None)
+    return {48: 1, 47: -1}.get(scancode, 0)    # SDL_SCANCODE_RIGHTBRACKET / LEFTBRACKET
+
+
 def _breakable(words, font, width: int):
     """Split any word wider than the strip, so a line can always be made to fit."""
     for word in words:
@@ -988,8 +1002,8 @@ class DialPanel:
         elif ev.key == pg.K_TAB and self.offers("preset"):
             act("preset")(-1 if ev.mod & pg.KMOD_SHIFT else 1)
             self.reload()
-        elif ev.key in (pg.K_LEFTBRACKET, pg.K_RIGHTBRACKET) and self.offers("model"):
-            act("model")(1 if ev.key == pg.K_RIGHTBRACKET else -1)
+        elif (step := model_step(pg, ev)) and self.offers("model"):
+            act("model")(step)
             self._dirty = True
         else:
             return False
