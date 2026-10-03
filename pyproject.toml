@@ -1,7 +1,7 @@
 [project]
 name = "ganlive"
 dynamic = ["version"]  # read from ganlive.__version__
-description = "Explore GAN latent spaces in real time with automatic dials, mouse controls, and MIDI."
+description = "Plug-and-play interface for real-time GAN latent-space exploration."
 readme = "README.md"
 # pygame 2.6 has no wheel for Python 3.14 yet.
 requires-python = ">=3.10,<3.14"
@@ -10,7 +10,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Gustave Cortal" }]
 keywords = ["gan", "stylegan2", "fastgan", "latent-space", "midi", "vj", "live-visuals",
             "generative-art", "real-time", "onnx", "generative-adversarial-networks",
-            "latent-space-exploration", "midi-controller"]
+            "latent-space-exploration", "plug-and-play"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: GPU",
