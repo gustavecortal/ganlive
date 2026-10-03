@@ -11,8 +11,14 @@ import dataclasses
 
 import pytest
 import torch
+import torch.nn.functional as F
 
+from ganlive import bank
+from ganlive.dials import steer as K
+from ganlive.families import LoadOptions, config_of, is_stylegan2, layout_for
 from ganlive.models import stylegan2 as S2
+from ganlive.models.common import latent
+from tests.support import fastgan_stub_checkpoint, tiny_stylegan2_file
 from tests.support import tiny_stylegan2 as tiny
 
 
@@ -40,23 +46,9 @@ def test_it_renders_the_size_it_was_asked_for():
     assert out.dtype is torch.float32
 
 
-def test_weights_load_under_their_own_names():
-    """A round trip through a `state_dict`, which is how a converted checkpoint arrives."""
-    torch.manual_seed(0)
-    cfg = tiny()
-    made = S2.Generator(cfg)
-    z = torch.randn(1, cfg.z_dim)
-    with torch.no_grad():
-        want = made(z)
-        got = S2.load(cfg, made.state_dict())(z)
-    assert torch.equal(want, got)
-
-
 def _fused(layer, x, w):
     """The modulated convolution as NVIDIA's `fused_modconv=True` writes it, one image at a time:
     the styles folded into a copy of the weight, which is then demodulated."""
-    import torch.nn.functional as F
-
     styles = layer.affine(w)
     out = []
     for i in range(x.shape[0]):
@@ -91,7 +83,8 @@ def test_the_styles_scale_the_activations_and_it_is_the_same_convolution(up, fro
 
 
 def test_a_frozen_net_is_the_net_it_was_frozen_from():
-    """`load` freezes every derived weight; the frame must not know it happened."""
+    """`load` freezes every derived weight, from a `state_dict` as a converted checkpoint
+    arrives; the frame must not know it happened."""
     torch.manual_seed(1)
     cfg = tiny(num_fp16_res=0)
     made = S2.Generator(cfg)
@@ -136,8 +129,6 @@ def test_it_captures_in_one_graph():
 
 def test_a_neutral_dial_is_the_network_as_trained():
     """Installing steering must not change what the checkpoint does when nothing is touched."""
-    from ganlive.dials import steer as K
-
     torch.manual_seed(0)
     cfg = tiny()
     net = S2.Generator(cfg)
@@ -150,13 +141,13 @@ def test_a_neutral_dial_is_the_network_as_trained():
     z = torch.randn(1, cfg.z_dim)
     with torch.no_grad():
         before = net(z)
-        knobs = K.install_stylegan2(net, "cpu")
-        knobs.reset()
+        settings = K.install_stylegan2(net, "cpu")
+        settings.reset()
         after = net(z)
     assert torch.equal(before, after)
 
-    knobs.set("noise_16", 40.0)
-    knobs.commit()
+    settings.set("noise_16", 40.0)
+    settings.commit()
     with torch.no_grad():
         moved = float((net(z) - before).abs().mean() * 127.5)
     assert moved > 1.0, f"a noise dial that reaches the model moved {moved:.3f} levels"
@@ -164,45 +155,23 @@ def test_a_neutral_dial_is_the_network_as_trained():
 
 def test_one_dial_per_resolution_not_per_layer():
     """Both convolutions in a block are the same grain at the same scale."""
-    from ganlive.dials import steer as K
-
     net = S2.Generator(tiny())
-    knobs = K.install_stylegan2(net, "cpu")
-    assert knobs.names == ["w_coarse", "w_mid", "w_fine",
-                           "noise_4", "noise_8", "noise_16", "noise_32"]
-    assert knobs.sites == {"noise": 7, "style": 3}   # one block has one convolution, three two
+    settings = K.install_stylegan2(net, "cpu")
+    assert settings.names == ["w_coarse", "w_mid", "w_fine",
+                              "noise_4", "noise_8", "noise_16", "noise_32"]
+    assert settings.sites == {"noise": 7, "style": 3}   # one block has one conv, three two
     assert net.blocks[1].conv0.knob is net.blocks[1].conv1.knob
 
     # The style dials must be a view into the settings vector, not a copy, or `commit` never
     # reaches the module.
-    knobs.reset()
-    knobs.set("w_mid", 0.25)
-    knobs.commit()
+    settings.reset()
+    settings.set("w_mid", 0.25)
+    settings.commit()
     assert float(net.mapping.knob[1]) == 0.25
-
-
-def test_a_converted_file_is_told_apart_from_one_of_ours(tmp_path):
-    """Two kinds of checkpoint share the `.pt` suffix, and the instrument opens both."""
-    from ganlive import bank
-
-    cfg = tiny()
-    path = tmp_path / "converted.pt"
-    S2.save(path, cfg, S2.Generator(cfg).state_dict())
-    assert bank.is_stylegan2(path)
-    assert bank.config_of(path).nz == cfg.z_dim
-    assert bank.config_of(path).ladder.height == cfg.img_resolution
-
-    # Anything else is not one, including a file that is not a checkpoint at all.
-    other = tmp_path / "ours.pt"
-    torch.save({"config": {"im_size": 256}, "g_ema": {}}, other)
-    assert not bank.is_stylegan2(other)
-    assert not bank.is_stylegan2(tmp_path / "missing.pt")
 
 
 def test_the_instrument_opens_one(tmp_path, capsys):
     """The whole load path: install, measure, equalise, and a surface built from the result."""
-    from ganlive import bank
-
     torch.manual_seed(0)
     cfg = tiny()
     net = S2.Generator(cfg)
@@ -213,8 +182,7 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     path = tmp_path / "tiny.pt"
     S2.save(path, cfg, net.state_dict())
 
-    model = bank._prepare(path, "cpu", torch.float32,
-                         bank.LoadOptions(compile_net=False))
+    model = bank._prepare(path, "cpu", torch.float32, LoadOptions(compile_net=False))
     assert model.knobs.names[:3] == ["w_coarse", "w_mid", "w_fine"]
     assert model.knobs.names[3:] == ["noise_4", "noise_8", "noise_16", "noise_32"]
     block = [k for k in model.layout.knobs if k.group == "MODEL"]
@@ -227,7 +195,7 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     # `--stock-grain` is a question about grain strength, not about which dials exist: the
     # sweep that builds this family's dials runs either way.
     bare = bank._prepare(path, "cpu", torch.float32,
-                        bank.LoadOptions(compile_net=False, measure_grain=False))
+                         LoadOptions(compile_net=False, measure_grain=False))
     assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.knobs.names
     assert all(k.measured is not None
                for k in bare.layout.knobs if k.group == "MODEL")
@@ -235,20 +203,16 @@ def test_the_instrument_opens_one(tmp_path, capsys):
 
 
 def test_without_a_measurement_it_shows_the_shared_blocks_and_nothing_else(tmp_path):
-    """No measurement, no MODEL block -- and specifically not this project's own dials. A
-    derived dial's curve is its measurement, so before the sweep there is nothing to draw."""
-    from ganlive import bank
-
-    cfg = tiny()
+    """No measurement, no MODEL block -- and specifically not FastGAN's dials. A derived
+    dial's curve is its measurement, so before the sweep there is nothing to draw."""
     path = tmp_path / "tiny.pt"
-    S2.save(path, cfg, S2.Generator(cfg).state_dict())
+    tiny_stylegan2_file(path)
 
-    layout = bank.layout_for(path)
+    layout = layout_for(path)
     assert [k.name for k in layout.knobs if k.group == "MODEL"] == []
     assert {k.name for k in layout.knobs} >= {"reaction", "speed", "dir1"}
-    # and without the dispatch it is the hand-tuned surface, whose MODEL block names five
-    # gates and a grain band that live in this project's architecture and in no other.
-    fallback = bank.layout_for(tmp_path / "ours.pt")
+    # Any other `.pt` is a FastGAN, whose MODEL block is its own gates and grain.
+    fallback = layout_for(tmp_path / "ours.pt")
     assert [k.name for k in fallback.knobs if k.group == "MODEL"] == ["se_256", "se_512",
                                                                      "se_128", "se_64",
                                                                      "noise"]
@@ -305,8 +269,6 @@ def test_a_range_with_no_affines_is_reported_empty_rather_than_dropped():
 
 def test_the_style_push_reaches_the_picture_and_the_latent_push_cannot():
     """Why a StyleGAN2's directions push `w`: the mapping's pixel norm cancels a `z` scaling."""
-    from ganlive.models.common import latent
-
     net = S2.Generator(tiny()).eval().requires_grad_(False)
     z = latent(net.cfg.z_dim, 0, "cpu", torch.float32)
     with torch.no_grad():
@@ -324,8 +286,6 @@ def test_the_style_push_reaches_the_picture_and_the_latent_push_cannot():
 
 def test_the_push_lands_after_the_truncation_and_not_before_it():
     """A direction dial must not get weaker because a different dial was turned down."""
-    from ganlive.models.common import latent
-
     # 64px, so all three ranges are non-empty: `tiny()` alone has an empty `w_fine`.
     net = S2.Generator(tiny(img_resolution=64)).eval().requires_grad_(False)
     mapping = net.mapping
@@ -344,22 +304,27 @@ def test_the_push_lands_after_the_truncation_and_not_before_it():
             assert torch.allclose(moved - plain, wanted, atol=1e-5), (
                 f"at truncation {trunc} the push arrived scaled by the truncation")
 
-def test_a_saved_checkpoint_is_a_generator_and_nothing_else(tmp_path):
-    """This project plays models, so a generator is the whole of what it writes."""
-    cfg = tiny()
-    path = tmp_path / "g.pt"
-    S2.save(path, cfg, S2.Generator(cfg).state_dict())
+def test_a_converted_file_is_a_generator_and_is_told_apart_from_one_of_ours(tmp_path):
+    """Two kinds of checkpoint share the `.pt` suffix, and the instrument opens both. A
+    converted one holds a generator and nothing else."""
+    path = tmp_path / "converted.pt"
+    cfg = tiny_stylegan2_file(path)
+    assert set(torch.load(path, weights_only=True)) == {"format", "config", "state"}
+    assert S2.from_file(path).cfg == cfg
+    assert is_stylegan2(path)
+    assert config_of(path).nz == cfg.z_dim
+    assert config_of(path).ladder.height == cfg.img_resolution
 
-    blob = torch.load(path, weights_only=True)
-    assert set(blob) == {"format", "config", "state"}
-    assert S2.is_stylegan2(path) and S2.from_file(path).cfg == cfg
+    # Anything else is not one, including a file that is not a checkpoint at all.
+    other = fastgan_stub_checkpoint(tmp_path / "ours.pt", im_size=256)
+    assert not is_stylegan2(other)
+    assert not is_stylegan2(tmp_path / "missing.pt")
 
 
 def test_a_checkpoint_that_carries_more_than_a_generator_still_opens(tmp_path):
     """A trainer writes a discriminator beside it. That is its business; this half reads past it."""
-    cfg = tiny()
     path = tmp_path / "pair.pt"
-    S2.save(path, cfg, S2.Generator(cfg).state_dict())
+    cfg = tiny_stylegan2_file(path)
     blob = torch.load(path, weights_only=True)
     blob["d_config"] = {"img_resolution": 32}
     blob["d_state"] = {"b4.out.bias": torch.zeros(1)}
@@ -369,8 +334,3 @@ def test_a_checkpoint_that_carries_more_than_a_generator_still_opens(tmp_path):
     assert S2.from_file(path).cfg == cfg
 
 
-def test_this_repository_has_no_discriminator_at_all():
-    """This package plays models; training code, a discriminator included, lives elsewhere."""
-    for gone in ("Discriminator", "DConfig", "load_d", "d_config_from",
-                 "discriminator_from_file", "DBlock", "Epilogue"):
-        assert not hasattr(S2, gone), f"{gone} is training code"

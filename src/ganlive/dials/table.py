@@ -9,7 +9,7 @@ from __future__ import annotations
 import collections
 from dataclasses import dataclass, replace
 
-from ganlive.curves import at, clamp01, evenly  # noqa: F401  re-exported
+from ganlive.curves import at, clamp01, evenly
 
 #: How many latent directions to expose: one page of eight encoders on the drum machine.
 DIRECTIONS = 8
@@ -174,9 +174,10 @@ class Surface:
         self.values = {name: self.values.get(name, rest)
                        for name, rest in layout.rests.items()}
 
-    def set_held(self, values) -> None:
-        """Put these dials where they are asked and stop `set` moving them."""
-        self.held = frozenset(values)
+    def set_held(self, values, names: frozenset[str] | None = None) -> None:
+        """Put these dials where they are asked and stop `set` moving them. `names` is
+        `frozenset(values)`, for a caller that holds the same dials frame after frame."""
+        self.held = frozenset(values) if names is None else names
         for name, value in values.items():
             if name in self.values:
                 self.values[name] = clamp01(value)

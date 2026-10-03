@@ -12,36 +12,16 @@ from pathlib import Path
 
 import torch
 
-from ganlive.checkpoints import (  # noqa: F401 -- re-exported
-    ONNX,
-    admit,
-    checkpoint_for,
-    checkpoints_in,
-    index_of,
-    is_onnx,
-    label_for,
-    run_step,
-    slug_for,
-)
-from ganlive.dials.gate import (  # noqa: F401 -- re-exported
-    directions_for,
-    live_dials,
-    measure_dials,
-    verified,
-)
-from ganlive.families import (  # noqa: F401 -- re-exported
-    FAMILIES,
-    Family,
-    LoadOptions,
-    config_of,
-    family_of,
-    is_stylegan2,
-    layout_for,
-    open_stylegan2,
-)
+from ganlive.checkpoints import ONNX, admit, checkpoint_for, checkpoints_in, index_of, label_for
+from ganlive.clock import WalkConfig
+from ganlive.device import detect_backend, playback_dtype
+from ganlive.dials.gate import verified
+from ganlive.families import LoadOptions, config_of, family_of
 from ganlive.frame import FrameStage
-from ganlive.pixels import RANDOM_FLOOR, compiled_conversions  # noqa: F401 -- re-exported
-from ganlive.window import fit_height, parse_height, screen_size  # noqa: F401 -- re-exported
+from ganlive.models.capture import Replay, capture
+from ganlive.pixels import compiled_conversions
+from ganlive.walk import SlerpWalk
+from ganlive.window import fit_height
 
 
 def frame_size(cfg, want: int | None, screen=None) -> tuple[int, int]:
@@ -92,17 +72,15 @@ def _prepare(path, device, dtype, options: LoadOptions) -> Model:
     # Captured after every sweep above, which read the module tree or hold two frames side by
     # side, and before the gate, so the gate measures the graph that will actually play.
     if options.capture and family.capturable:
-        from ganlive.models.capture import Replay, capture
-
         feeds = [got.knobs.vec] + ([got.push] if got.push is not None else [])
         got.net, said = capture(got.net, got.cfg.nz, device, dtype, feeds=feeds)
         print(f"graph: {said}", flush=True)
         if isinstance(got.net, Replay):
             # The graph reads its settings and push from host buffers of its own, so a dial
             # write and a walk step become host writes into those; see `Replay`.
-            got.knobs.feed_from(got.net.twin(got.knobs.vec))
+            got.knobs.feed_from(got.net.host_buffer(got.knobs.vec))
             if got.push is not None:
-                got.push = got.net.twin(got.push)
+                got.push = got.net.host_buffer(got.push)
     model = Model(path=Path(path), net=got.net, cfg=got.cfg, knobs=got.knobs,
                   layout=got.layout, graphs=got.graphs, compile_s=got.compile_s,
                   directions=got.directions, push=got.push)
@@ -140,8 +118,6 @@ class Bank:
 
     def __post_init__(self) -> None:
         if self.dtype is None:
-            from ganlive.device import playback_dtype
-
             self.dtype = playback_dtype(self.device)
 
     @property
@@ -226,9 +202,6 @@ class Bank:
 
     def walk(self, config=None, dtype=None):
         """A walk wired to the playing model's directions, kept wired across switches."""
-        from ganlive.clock import WalkConfig
-        from ganlive.walk import SlerpWalk
-
         config = config if config is not None else WalkConfig()
         walk = SlerpWalk(self.cfg.nz, self.device, config, dtype=dtype or self.dtype)
         self._walks.append(walk)
@@ -331,8 +304,6 @@ def build(checkpoints: list, device: str | None = None, height: int | None = 0, 
 
     `device` and `dtype` default to this machine's accelerator and the precision it plays
     fastest in; see `device.playback_dtype`. `height` is as `window.parse_height` returns."""
-    from ganlive.device import detect_backend, playback_dtype
-
     device = device or detect_backend()
     dtype = dtype or playback_dtype(device)
     options = options or LoadOptions()

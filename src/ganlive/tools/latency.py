@@ -22,10 +22,13 @@ from ganlive.control.features import FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.control.simulate import MachineSim, StemFeeder
 from ganlive.dials.fastgan_dials import fastgan
+from ganlive.families import LoadOptions
 from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
+from ganlive.strip import DialPanel
 from ganlive.timing import drift_ms, stat_ms
 from ganlive.tools import add_device, parser
+from ganlive.window import Display, parse_height, screen_size
 
 
 def _far(rest: float) -> float:
@@ -85,9 +88,6 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     with `bgra_bytes` and a `publish` that wakes the window thread, which then uploads a
     texture, draws the strip and presents -- work that holds the GIL and lands on this
     thread's next frame, so it has to be measured with the window really open."""
-    from ganlive.strip import DialPanel
-    from ganlive.window import Display
-
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
     display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
                       fullscreen=False)
@@ -145,7 +145,7 @@ def main(argv=None) -> int:
     add_device(ap)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--fps", type=int, default=60)
-    ap.add_argument("--height", type=bank.parse_height, default=0,
+    ap.add_argument("--height", type=parse_height, default=0,
                     metavar="auto|native|PIXELS",
                     help="what the window is sent, as `ganlive play` takes it. 'native' (the "
                          "default here) is the generator's own size; 'auto' is what `play` "
@@ -172,8 +172,8 @@ def main(argv=None) -> int:
           f"({args.blocksize / take.samplerate * 1000:.2f} ms)", flush=True)
 
     r = bank.build(args.checkpoint, args.device, height=args.height,
-                   screen=bank.screen_size(),
-                   options=bank.LoadOptions(capture=args.capture))
+                   screen=screen_size(),
+                   options=LoadOptions(capture=args.capture))
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)

@@ -8,6 +8,8 @@ from pathlib import Path
 
 #: The one suffix that means "an exported graph, not a checkpoint".
 ONNX = ".onnx"
+#: The suffix of the derived directions saved beside a checkpoint (`dials.derive.cache_path`).
+CACHE_SUFFIX = ".directions.pt"
 
 
 def is_onnx(path) -> bool:
@@ -51,9 +53,6 @@ def admit(models, path) -> None:
 
 def checkpoints_in(folder) -> list[Path]:
     """Every checkpoint in one folder, sorted by name, leaving out the dial caches beside them."""
-    # Deferred: `derive` imports torch, and this module stays light.
-    from ganlive.dials.derive import CACHE_SUFFIX
-
     return sorted(p for p in Path(folder).glob("*.pt") if not p.name.endswith(CACHE_SUFFIX))
 
 

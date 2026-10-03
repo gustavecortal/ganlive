@@ -7,9 +7,10 @@ import contextlib
 import torch
 import torch.nn.functional as F
 
+from ganlive.device import detect_backend, streams, synchronize
 from ganlive.models.common import first_image
+from ganlive.pixels import PinnedRing, to_nv12
 from ganlive.pixels import to_bgra as _eager_bgra
-from ganlive.pixels import to_nv12
 from ganlive.pixels import to_rgb as _eager_rgb
 
 
@@ -67,8 +68,6 @@ class FrameStage:
 
     def __init__(self, height: int, width: int, to_yuv=None, to_rgb=None,
                  to_bgra=None, device: str | None = None) -> None:
-        from ganlive.device import detect_backend, streams
-
         self.height, self.width = int(height), int(width)
         self.device = device or detect_backend()
         self._streams = streams(self.device)
@@ -118,8 +117,6 @@ class FrameStage:
         key = (name, tuple(tensor.shape), tensor.dtype)
         ring = self._rings.get(key)
         if ring is None:
-            from ganlive.pixels import PinnedRing
-
             ring = self._rings[key] = PinnedRing(depth, self.device)
         if self._side is not None:
             self._read = self._streams.Event()
@@ -131,8 +128,6 @@ class FrameStage:
 
     def sync(self) -> None:
         """Wait for every copy this stage has started, on the device it started them on."""
-        from ganlive.device import synchronize
-
         synchronize(self.device)
 
     def deferred(self) -> _Deferred:

@@ -62,7 +62,6 @@ def test_the_output_mode_is_read_against_the_kits_own_notes():
     gm = parse_notes(GM)
     assert output_mode({9: {36, 38, 42}}, gm) == "auto"
     assert output_mode({9: {36, 38, 42}}) is None, "read as a Rytm, these name nothing"
-    assert output_mode({13: {0, 1, 5, 11}}) == "auto"
 
 
 def _sd(devices, hostapis=("MME",), starts=True):

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ganlive.control.kit import TRACKS
+
 #: `since` for a track that has never fired.
 NEVER = 1e6
 
@@ -229,8 +231,6 @@ class NoteFeatures(_Source):
         Derived from the wiring rather than the twelve names: a General MIDI kit wired with
         `--notes 36=BD,38=SD,42=CH,46=OH` reaches four, so the strip draws four drum lights
         and the end-of-run report checks four tracks."""
-        from ganlive.control.kit import TRACKS
-
         reached = set(self.notes.values())
         if self.channels is not None:
             reached |= set(self.channels.values())

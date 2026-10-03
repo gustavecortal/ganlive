@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import statistics
 
-from ganlive.files import write_json as write_metrics  # noqa: F401  re-exported
-
 
 def stat_ms(samples, budget_ms: float | None = None) -> dict:
     """The summary every timing loop here reports, with `over_budget` if a budget is given."""

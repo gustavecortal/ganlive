@@ -4,6 +4,9 @@ Torch-free: the frame arrives as BGRA bytes, which is what an SDL streaming text
 """
 from __future__ import annotations
 
+import argparse
+import ctypes
+import os
 import sys
 import threading
 import traceback
@@ -19,8 +22,6 @@ PAN_KEYS = {"left": (-PAN_STEP, 0.0), "right": (PAN_STEP, 0.0),
 
 def parse_height(text: str) -> int | None:
     """A height argument: `auto` is None (fit the screen), `native` is 0, or a number of pixels."""
-    import argparse
-
     if text == "auto":
         return None
     if text == "native":
@@ -61,8 +62,6 @@ def screen_size():
 
 
 def _win32_screen():
-    import ctypes
-
     user32 = ctypes.windll.user32
     return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
 
@@ -126,8 +125,6 @@ class Display:
 
     def _open(self, title: str) -> None:
         """Window, renderer, texture, and the overlay attached. Raises if there is no display."""
-        import os
-
         if sys.platform == "win32":
             # Windows only: SDL refuses this driver name everywhere else.
             os.environ.setdefault("SDL_VIDEODRIVER", "windows")

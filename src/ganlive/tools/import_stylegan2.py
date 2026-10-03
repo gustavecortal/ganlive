@@ -17,12 +17,17 @@ Only the generator is written; a discriminator in the pickle is ignored.
 """
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
+
 from ganlive.models import stylegan2 as S2
+from ganlive.models.common import host_latent
+from ganlive.pixels import levels, worst_levels
+from ganlive.tools import parser
 
 #: The largest fp32 difference from NVIDIA's generator, in 8-bit levels, that is still rounding.
 TOLERANCE = 0.01
@@ -38,7 +43,6 @@ def open_pickle(pkl: Path, repo: Path):
         raise SystemExit(f"--repo {repo} is not a checkout of NVlabs/stylegan2-ada-pytorch "
                          f"({exc}). Opening one of their pickles runs their code; there is "
                          f"no way around it, which is why this is a one-time conversion.") from exc
-    import numpy as np
 
     with dnnlib.util.open_url(str(pkl)) as f:
         blob = legacy.load_network_pkl(f)
@@ -57,11 +61,6 @@ def open_pickle(pkl: Path, repo: Path):
 def check(G, cfg: S2.Config, state: dict, seed: int) -> tuple[float, float]:
     """Both networks, one latent, full precision on the host: the mean and the largest
     difference, in 8-bit levels."""
-    import torch
-
-    from ganlive.models.common import host_latent
-    from ganlive.pixels import levels, worst_levels
-
     z = torch.from_numpy(host_latent(cfg.z_dim, seed))
     ours = S2.load(dataclasses.replace(cfg, half_from=S2.SINGLE_EVERYWHERE), state)
     with torch.no_grad():
@@ -70,8 +69,7 @@ def check(G, cfg: S2.Config, state: dict, seed: int) -> tuple[float, float]:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="ganlive import-stylegan2", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = parser("import-stylegan2", __doc__)
     p.add_argument("pickle", type=Path, help="an NVIDIA StyleGAN2-ADA .pkl")
     p.add_argument("--repo", type=Path, default=Path("stylegan2-ada-pytorch"),
                    help="a checkout of NVlabs/stylegan2-ada-pytorch")

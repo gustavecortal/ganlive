@@ -2,38 +2,69 @@
 
 from __future__ import annotations
 
+import pathlib
 import time
 
 import pytest
 
-from ganlive.dials import table as _surface  # noqa: E402
-from ganlive.dials.fastgan_dials import fastgan
-from ganlive.presets import Preset
-from ganlive.walk import (
-    MusicalClock,
+import ganlive.tools
+from ganlive.clock import MusicalClock
+from ganlive.control import midi
+from ganlive.control.kit import INDEX
+from ganlive.control.machine import GENERIC, KNOWN, RYTM, profile
+from ganlive.control.midi import (
+    AFTERTOUCH_POLY,
+    CONTROL_CHANGE,
+    DATA_LSB,
+    DATA_MSB,
+    NOTE_ON,
+    NRPN_LSB,
+    NRPN_MSB,
+    ClockReader,
+    EncoderMap,
+    Nrpn,
+    PressureMap,
+    control_name,
+    dispatch,
+    format_controls,
+    nrpn_number,
+    number_name,
+    parse_controls,
+    parse_pressure,
 )
+from ganlive.dials import table as _surface
+from ganlive.presets import Preset
+from ganlive.tools import doctor
+from ganlive.tools.doctor import MidiWatch, name_of
+from ganlive.tools.play import silence_words
 from tests.support import _runner
 
 
-def test_midi_pulses_take_over_from_the_internal_clock():
-    """The fallback must become invisible the moment real clock arrives, so a driver can call
-    `advance` unconditionally without checking who is in charge."""
-    c = MusicalClock(120.0)
-    c.advance(1.0)
-    assert c.source == "internal"
-    for _ in range(MusicalClock.PPQN):
-        c.on_pulse()
-    assert c.source == "midi"
-    assert c.beats == pytest.approx(1.0)                  # 24 pulses is one quarter note
-    c.advance(10.0)                                       # must now be ignored
-    assert c.beats == pytest.approx(1.0)
+class FakePort:
+    """A MIDI input that hands over one burst of messages, then nothing. `on_empty` runs each
+    time it is polled with nothing left, which is how a test stops a reader's own loop."""
+
+    def __init__(self, events, on_empty=None):
+        self._events = [list(e) for e in events]
+        self.on_empty = on_empty
+        self.closed = False
+
+    def poll(self):
+        if not self._events and self.on_empty is not None:
+            self.on_empty()
+        return bool(self._events)
+
+    def read(self, _n):
+        out, self._events = self._events, []
+        return [[e, 0] for e in out]
+
+    def close(self):
+        self.closed = True
 
 
 def test_the_five_midi_messages_that_matter_reach_the_clock():
     """Each one answers a different question, and getting any of them wrong produces video
     that still looks smooth. They are checked as pure arithmetic, with no hardware."""
-    from ganlive.control import midi
-
     clock = MusicalClock(120.0)
     for _ in range(MusicalClock.PPQN * 2):
         assert midi.dispatch(clock, midi.CLOCK) == "clock"
@@ -57,8 +88,6 @@ def test_the_five_midi_messages_that_matter_reach_the_clock():
 def test_anything_else_on_the_wire_is_ignored():
     """A drum machine sends note-ons and controller moves down the same cable as its clock;
     they are classified but none of them may disturb the position."""
-    from ganlive.control import midi
-
     clock = MusicalClock(120.0)
     for _ in range(MusicalClock.PPQN):
         midi.dispatch(clock, midi.CLOCK)
@@ -76,28 +105,13 @@ def test_anything_else_on_the_wire_is_ignored():
 def test_the_reader_hands_pressure_on_and_not_just_notes_and_knobs():
     """The reader delivers poly aftertouch to its pressure handler, alongside notes and CCs.
     Other tests cover classifying the byte and acting on it; this covers the link between."""
-    from ganlive.control.midi import AFTERTOUCH_POLY, CONTROL_CHANGE, NOTE_ON, ClockReader
-
     got = {"pressure": [], "note": [], "control": []}
     reader = ClockReader(MusicalClock(120.0),
                          on_pressure=lambda c, n, v: got["pressure"].append((c, n, v)),
                          on_note=lambda c, n, v: got["note"].append((c, n, v)),
                          on_control=lambda c, n, v, _top: got["control"].append((c, n, v)))
 
-    class _Port:
-        """One burst, then nothing -- the shape `run`'s drain loop reads."""
-
-        def __init__(self, events):
-            self._events = list(events)
-
-        def poll(self):
-            return bool(self._events)
-
-        def read(self, _n):
-            out, self._events = self._events, []
-            return [[e, 0] for e in out]
-
-    port = _Port([[AFTERTOUCH_POLY + 13, 3, 90, 0], [NOTE_ON + 13, 5, 100, 0],
+    port = FakePort([[AFTERTOUCH_POLY + 13, 3, 90, 0], [NOTE_ON + 13, 5, 100, 0],
                   [CONTROL_CHANGE + 13, 35, 64, 0]])
     reader.open_ports = lambda: [("fake", port)]
     reader.start()
@@ -116,8 +130,6 @@ def test_the_reader_hands_pressure_on_and_not_just_notes_and_knobs():
 def test_a_reader_with_no_ports_says_so_rather_than_failing():
     """No MIDI input is a normal setup (some machines offer USB audio or USB MIDI, not both),
     so the reader must fall back to the internal tempo and say so."""
-    from ganlive.control.midi import ClockReader
-
     reader = ClockReader(MusicalClock(120.0), port_match="nothing-matches-this")
     assert reader.open_ports() == []
     said = reader.describe()
@@ -128,9 +140,6 @@ def test_a_reader_with_no_ports_says_so_rather_than_failing():
 def test_a_midi_port_filter_that_matched_nothing_says_so():
     """A typo in `--midi-port` gets its own message, naming the ports it missed, distinct from
     a machine with no MIDI ports at all; both otherwise look like a picture at its own tempo."""
-    from ganlive.control.midi import ClockReader
-    from ganlive.walk import MusicalClock
-
     empty = ClockReader(MusicalClock(), "rytmm")
     assert "no input ports at all" in empty.describe()
 
@@ -150,9 +159,6 @@ def test_a_midi_port_filter_that_matched_nothing_says_so():
 def test_the_preflight_tools_count_through_the_dispatch_the_live_tool_runs():
     """`doctor` answers whether the clock reaches the instrument, so it must classify
     messages with the same code `play` runs rather than a copy of its own."""
-    from ganlive.control import midi
-    from ganlive.tools import doctor
-
     assert doctor.Traffic is midi.Traffic
     for name in ("CONTINUE", "SPP", "SONG_POSITION"):
         assert not hasattr(doctor, name), f"{name} is a second copy of a midi.py constant"
@@ -171,41 +177,16 @@ def test_the_preflight_tools_count_through_the_dispatch_the_live_tool_runs():
 
 
 def test_every_status_has_a_name_and_the_instruments_kinds_are_classifys():
-    from ganlive.control import midi
-    from ganlive.tools.doctor import name_of
-
     assert name_of(midi.CLOCK) == "clock" and name_of(midi.NOTE_ON, 0) == "note_off"
     assert name_of(0x80) == "note_off" and name_of(0xE3) == "pitch_bend"
     assert name_of(0xFE) == "active_sensing" and name_of(0xF1) == "system_0xf1"
 
 
-class _Port:
-    """A MIDI input that hands over one burst of messages, then nothing."""
-
-    def __init__(self, events):
-        self._events = [list(e) for e in events]
-        self.closed = False
-
-    def poll(self):
-        return bool(self._events)
-
-    def read(self, _n):
-        out, self._events = self._events, []
-        return [[e, 0] for e in out]
-
-    def close(self):
-        self.closed = True
-
-
 def test_the_doctors_midi_watch_counts_and_reports_what_arrived(capsys):
     """`doctor --listen`, `--drive`, `--meter --midi` and `--learn` all read MIDI through one
     watch: kinds per phase, transport, knobs, and note-ons handed to `--learn`."""
-    from ganlive.control import midi
-    from ganlive.control.machine import GENERIC
-    from ganlive.tools.doctor import MidiWatch
-
     watch = MidiWatch("nothing-matches-this", GENERIC)
-    port = _Port([[midi.START, 0, 0, 0], [midi.NOTE_ON + 9, 36, 100, 0],
+    port = FakePort([[midi.START, 0, 0, 0], [midi.NOTE_ON + 9, 36, 100, 0],
                   [midi.CONTROL_CHANGE, 16, 64, 0], [0xFE, 0, 0, 0]])
     watch.inputs = [("fake", port)]
     struck = []
@@ -222,11 +203,8 @@ def test_the_doctors_midi_watch_counts_and_reports_what_arrived(capsys):
 
 
 def test_a_doctor_that_hears_nothing_says_what_to_check(capsys):
-    from ganlive.control.machine import RYTM
-    from ganlive.tools.doctor import MidiWatch
-
     watch = MidiWatch("nothing-matches-this", RYTM)
-    watch.inputs = [("fake", _Port([]))]
+    watch.inputs = [("fake", FakePort([]))]
     watch.poll()
     watch.report()
     said = capsys.readouterr().out
@@ -236,8 +214,6 @@ def test_a_doctor_that_hears_nothing_says_what_to_check(capsys):
 def test_a_dial_says_which_knob_is_on_it_and_not_only_which_drum():
     """A dial can report which knob (CC or NRPN, in `--cc` spelling) is bound to it, so the
     strip can show a binding after it is learned."""
-    from ganlive.control.midi import EncoderMap, control_name, nrpn_number, parse_controls
-
     knobs = EncoderMap(parse_controls("16=noise,2:17=se_256,n1.3=dir1,3:16=noise"))
     assert knobs.where("se_256") == "2:17"
     assert knobs.where("dir1") == control_name(-1, nrpn_number(1, 3)) == "n1.3"
@@ -248,11 +224,9 @@ def test_a_dial_says_which_knob_is_on_it_and_not_only_which_drum():
     assert parse_controls("2:17=se_256") == {(1, 17): "se_256"}
 
 
-def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
+def test_a_knob_holds_a_dial_through_the_same_hold_a_hand_does():
     """A hardware knob holds a dial through the same mechanism as the other holders (mouse,
     knobs, pads), so the frame loop needs no special case and the strip shows it as held."""
-    from ganlive.control.midi import EncoderMap, parse_controls
-
     runner = _runner()
     knobs = EncoderMap(parse_controls("16=noise, 2:17=se_256"))
 
@@ -280,13 +254,11 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     """Parsing accepts any dial name, since mappings are read before a model is loaded; dials
     the loaded model lacks are reported by `unreachable` instead. A learned binding to a
     model-specific dial must therefore survive a save and reload."""
-    from ganlive.control.midi import EncoderMap, format_controls, parse_controls
-
     assert parse_controls("") == {}
     assert parse_controls("16=noise") == {(-1, 16): "noise"}
     assert parse_controls(" 3:22 = se_64 ") == {(2, 22): "se_64"}
     assert parse_controls("16=w_fine") == {(-1, 16): "w_fine"}, (
-        "a converted StyleGAN2's own dial, which this used to refuse outright")
+        "a converted StyleGAN2's own dial")
     with pytest.raises(ValueError):
         parse_controls("16=")               # a mapping with no dial at all is still a typo
 
@@ -309,8 +281,6 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
 def test_a_handler_that_raises_drops_one_message_and_not_every_message_after_it():
     """A handler that raises loses only its own message: the reader thread keeps running and
     reports the fault, rather than silently ignoring all MIDI for the rest of the run."""
-    from ganlive.control.midi import NOTE_ON, ClockReader, MusicalClock
-
     seen = []
 
     def explodes(_channel, note, _velocity):
@@ -320,24 +290,10 @@ def test_a_handler_that_raises_drops_one_message_and_not_every_message_after_it(
 
     reader = ClockReader(MusicalClock(), on_note=explodes)
 
-    class _OneBurst:
-        """One burst, then it stops the reader -- `run` polls until `stop_flag`."""
-
-        def __init__(self, events):
-            self._events = list(events)
-
-        def poll(self):
-            if not self._events:
-                reader.stop_flag = True
-                return False
-            return True
-
-        def read(self, _n):
-            out, self._events = self._events, []
-            return [[e, 0] for e in out]
-
-    reader.open_ports = lambda: [
-        ("fake", _OneBurst([[NOTE_ON, 1, 100], [NOTE_ON, 2, 100], [NOTE_ON, 3, 100]]))]
+    # `run` polls until `stop_flag`, so the port raises it once the burst is read.
+    burst = FakePort([[NOTE_ON, 1, 100], [NOTE_ON, 2, 100], [NOTE_ON, 3, 100]],
+                     on_empty=lambda: setattr(reader, "stop_flag", True))
+    reader.open_ports = lambda: [("fake", burst)]
     reader.run()
 
     assert seen == [1, 2, 3], "the messages after the raising one never arrived"
@@ -346,12 +302,9 @@ def test_a_handler_that_raises_drops_one_message_and_not_every_message_after_it(
     assert "boom" in reader.trouble(), reader.trouble()
 
 
-def test_pressure_is_classified_at_all_which_it_previously_was_not():
+def test_pressure_is_classified_and_does_not_move_the_clock():
     """`dispatch` classifies polyphonic aftertouch on any channel, without moving the clock;
     it is the pads' one continuous gesture."""
-    from ganlive.control.midi import AFTERTOUCH_POLY, dispatch
-    from ganlive.walk import MusicalClock
-
     clock = MusicalClock()
     assert dispatch(clock, AFTERTOUCH_POLY, 3, 90) == "aftertouch_poly"
     assert dispatch(clock, AFTERTOUCH_POLY + 0x0D, 3, 90) == "aftertouch_poly", "any channel"
@@ -361,12 +314,7 @@ def test_pressure_is_classified_at_all_which_it_previously_was_not():
 def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
     """Unlike a knob parked at zero, which holds zero, a released pad lets go of its dial; and
     an actively pressed pad outranks a parked knob on the same dial."""
-    from ganlive.control.kit import INDEX
-    from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
-    from ganlive.presets import PresetRunner
-
-    runner = PresetRunner(Preset(name="t", blurb="", dials={"noise": 0.1, "se_256": 0.1}), INDEX,
-                         60.0, layout=fastgan())
+    runner = _runner(Preset(name="t", blurb="", dials={"noise": 0.1, "se_256": 0.1}))
     pads = PressureMap(parse_pressure("BD=noise,SD=se_256"))
     assert pads.controls == {(-1, INDEX["BD"]): "noise", (-1, INDEX["SD"]): "se_256"}
 
@@ -395,9 +343,6 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
 def test_a_pressure_wiring_refuses_a_name_that_is_not_a_track():
     """An unknown track name is refused at parse time, since no model could make that pad fire;
     unknown dial names are left for the loaded model to report."""
-    from ganlive.control.kit import INDEX
-    from ganlive.control.midi import parse_pressure
-
     assert parse_pressure("BD=w_fine") == {(-1, INDEX["BD"]): "w_fine"}
     with pytest.raises(ValueError, match="unknown track"):
         parse_pressure("XX=noise")
@@ -407,8 +352,6 @@ def test_a_pressure_wiring_refuses_a_name_that_is_not_a_track():
 
 def test_nrpn_arrives_as_one_fourteen_bit_control():
     """Four CCs in, one control out, with the low byte as an update rather than a wait."""
-    from ganlive.control.midi import DATA_LSB, DATA_MSB, NRPN_LSB, NRPN_MSB, Nrpn, nrpn_number
-
     n = Nrpn()
     assert n.feed(0, NRPN_MSB, 1) is None
     assert n.feed(0, NRPN_LSB, 3) is None
@@ -419,8 +362,6 @@ def test_nrpn_arrives_as_one_fourteen_bit_control():
 
 
 def test_the_reader_routes_nrpn_and_plain_ccs_to_the_same_handler():
-    from ganlive.control.midi import CONTROL_CHANGE, ClockReader, nrpn_number
-
     got = []
     reader = ClockReader(MusicalClock(120.0), on_control=lambda *a: got.append(a))
     for cc, value in ((99, 1), (98, 3), (6, 64), (38, 5), (17, 100)):
@@ -433,8 +374,6 @@ def test_the_reader_routes_nrpn_and_plain_ccs_to_the_same_handler():
 
 
 def test_the_knob_map_reads_nrpns_and_writes_itself_back_in_the_same_words():
-    from ganlive.control.midi import format_controls, nrpn_number, number_name, parse_controls
-
     assert parse_controls("n1.3=dir1") == {(-1, nrpn_number(1, 3)): "dir1"}
     assert parse_controls("2:N1.3=dir1") == {(1, nrpn_number(1, 3)): "dir1"}
     assert number_name(nrpn_number(1, 3)) == "n1.3"
@@ -445,8 +384,6 @@ def test_the_knob_map_reads_nrpns_and_writes_itself_back_in_the_same_words():
 
 def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp_path):
     """Click a dial, turn a knob: the pair is the map now, on disk, in `--cc`'s own words."""
-    from ganlive.control.midi import EncoderMap, parse_controls
-
     runner = _runner()
     saved = tmp_path / "cc.txt"
     knobs = EncoderMap({(-1, 16): "noise"}, remember=saved)
@@ -476,9 +413,6 @@ def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp
 def test_a_machine_nobody_named_gets_advice_about_itself():
     """An unrecognised machine gets generic advice; menu paths are given only for a machine
     the port or audio device name identifies, since others do not have those menus."""
-    from ganlive.control.machine import GENERIC, RYTM, profile
-    from ganlive.control.midi import EncoderMap
-
     assert profile("") is GENERIC and profile("launchkey") is GENERIC
     assert profile("rytm") is RYTM, "matched on the words the user already typed"
     assert profile("Elektron Analog Rytm MKII") is RYTM, "anywhere in the port name"
@@ -494,9 +428,6 @@ def test_a_machine_nobody_named_gets_advice_about_itself():
 
 def test_every_silence_a_tool_reports_is_in_the_machines_own_words():
     """The generic profile must never leak a menu path from the one known machine."""
-    from ganlive.control.machine import GENERIC, KNOWN
-    from ganlive.tools.play import silence_words
-
     menus = [w for m in KNOWN for w in (m.clock, m.transport, m.notes, m.encoders)]
     for notes in (True, False):
         for audio in (True, False):
@@ -508,11 +439,6 @@ def test_every_silence_a_tool_reports_is_in_the_machines_own_words():
 def test_no_tool_spells_a_known_machines_menu_itself():
     """No tool's source hard-codes a known machine's menu words; only the machine profile may
     say them, so every tool gives the same machine-appropriate advice."""
-    import pathlib
-
-    import ganlive.tools
-    from ganlive.control.machine import KNOWN
-
     words = {"MIDI CONFIG", "TRANSPORT SEND", "CLOCK SEND", "ENCODER DEST", "TRK SEND"}
     words |= {w for m in KNOWN for w in (m.clock, m.transport, m.notes, m.encoders, m.stems) if w}
     for source in pathlib.Path(ganlive.tools.__file__).parent.glob("*.py"):

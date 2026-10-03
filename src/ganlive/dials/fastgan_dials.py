@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ganlive.curves import clamp01, evenly
 from ganlive.dials import table
 
 
@@ -25,7 +26,7 @@ class Span:
     @property
     def points(self) -> tuple[tuple[float, float], ...]:
         """The three values as a curve."""
-        return table.evenly((self.lo, self.mid, self.hi))
+        return evenly((self.lo, self.mid, self.hi))
 
 
 #: The skip-layer gates, each blended toward identity below 1 and past its trained value
@@ -79,10 +80,10 @@ MODEL = tuple(s.dial for s in SPANS) + ("noise",)
 def noise_for(x: float, gains: dict[str, float] | None = None) -> list[tuple[str, float]]:
     """The `noise` dial at `x`, as a gain for each noise band. Each band holds at 1 until
     its start, then ramps to its full gain over `NOISE_RAMP`."""
-    x = table.clamp01(x)
+    x = clamp01(x)
     gains = gains or {}
     return [(name, 1.0 + (gains.get(name, NOISE_FALLBACK_GAIN[name]) - 1.0)
-             * table.clamp01((x - start) / NOISE_RAMP))
+             * clamp01((x - start) / NOISE_RAMP))
             for name, _target, start in NOISE_BANDS]
 
 

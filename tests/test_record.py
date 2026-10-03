@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
+import wave
 
 import numpy as np
-import pytest
 
-from ganlive.walk import (
-    MusicalClock,
-)
-from tests.support import _drained, _pulses
+from ganlive.files import next_path
+from ganlive.record.sync import Guide
+from ganlive.record.video import Recorder, save_still
+from tests.support import _drained
 
 
 class _TapSource:
@@ -23,6 +24,15 @@ class _TapSource:
         self.n, self.sr = n, sr
 
 
+def _started_guide(take, channels: int, bpm: float = 130.0, beat: float = 0.0,
+                   beat_source: str = "internal"):
+    """A guide listening to a `channels`-wide input, recording `take` from now."""
+    guide = Guide()
+    guide.listen_to(_TapSource(n=channels))
+    guide.start(take, bpm=bpm, beat=beat, beat_source=beat_source)
+    return guide
+
+
 def _guide_blocks(guide, count, channels=10, frames=256, level=0.5):
     """Push `count` blocks of the shape an ASIO callback hands over."""
     block = np.full((channels, frames), level, dtype=np.float32)
@@ -30,21 +40,9 @@ def _guide_blocks(guide, count, channels=10, frames=256, level=0.5):
         guide.push(block)
 
 
-def test_changing_tempo_mid_performance_moves_the_position_immediately():
-    """Turning the tempo encoder must retime the video, and exactly."""
-    c = MusicalClock(128.0)
-    t = _pulses(c, 128.0, 4 * 4 * 60 / 128)
-    _pulses(c, 160.0, 4 * 4 * 60 / 160, t0=t)
-    assert c.beats == pytest.approx(32.0, abs=1e-9)
-
-
 def test_a_take_drops_frames_rather_than_making_the_picture_wait():
     """A realtime recorder drops a frame when its queue is full, so a slow encoder cannot pace
     the instrument. No thread is started: this tests the queue policy alone."""
-    import numpy as np
-
-    from ganlive.record.video import Recorder
-
     rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True, depth=2)
     plane = np.zeros((12, 8), dtype=np.uint8)
     assert rec.offer(plane) is True
@@ -60,12 +58,6 @@ def test_a_take_drops_frames_rather_than_making_the_picture_wait():
 def test_a_dropped_frame_costs_the_take_a_held_frame_not_its_length():
     """A realtime take stamps frames by wall clock, so a dropped frame becomes a held frame and
     the file keeps the performance's length; counted stamps would make it play back fast."""
-    import time
-
-    import numpy as np
-
-    from ganlive.record.video import Recorder
-
     rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True, depth=64)
     plane = np.zeros((12, 8), dtype=np.uint8)
     rec.offer(plane)
@@ -83,10 +75,6 @@ def test_a_dropped_frame_costs_the_take_a_held_frame_not_its_length():
 
 
 def test_a_take_is_a_playable_file_with_a_trailer(tmp_path):
-    import numpy as np
-
-    from ganlive.record.video import Recorder
-
     out = tmp_path / "take.mp4"
     rec = Recorder(out, 128, 64, 30.0, "libx264", realtime=True, depth=8).start()
     rng = np.random.default_rng(0)
@@ -106,10 +94,6 @@ def test_a_take_is_a_playable_file_with_a_trailer(tmp_path):
 
 
 def test_a_still_is_written_by_the_time_its_thread_is_joined(tmp_path):
-    import numpy as np
-
-    from ganlive.record.video import save_still
-
     rgb = np.zeros((16, 24, 3), dtype=np.uint8)
     rgb[:, :, 0] = 200
     path = tmp_path / "shot.png"
@@ -123,8 +107,6 @@ def test_a_still_is_written_by_the_time_its_thread_is_joined(tmp_path):
 
 
 def test_serial_names_do_not_collide_and_sort_in_the_order_they_were_made(tmp_path):
-    from ganlive.files import next_path
-
     made = []
     for _ in range(3):
         path = next_path(tmp_path, "take", ".mp4")
@@ -137,10 +119,6 @@ def test_serial_names_do_not_collide_and_sort_in_the_order_they_were_made(tmp_pa
 def test_the_encoder_can_be_made_to_open_before_the_clock_starts(tmp_path):
     """An encoder opens on its first frame, which for some (e.g. `av1_qsv`, about 1.5 s holding
     the GIL) stalls the render thread. `drain` lets a caller pay that before the clock starts."""
-    import numpy as np
-
-    from ganlive.record.video import Recorder
-
     rec = Recorder(tmp_path / "warm.mp4", 64, 64, 30.0, "libx264",
                    realtime=True, depth=4).start()
     plane = np.zeros((96, 64), dtype=np.uint8)
@@ -157,13 +135,7 @@ def test_the_encoder_can_be_made_to_open_before_the_clock_starts(tmp_path):
 def test_a_guide_is_the_length_that_was_played_and_cannot_clip(tmp_path):
     """The guide WAV holds every block played, mixed by averaging channels so ten channels at
     full scale stay in range; clipping would flatten the peaks a DAW's waveform match reads."""
-    import wave
-
-    from ganlive.record.sync import Guide
-
-    guide = Guide()
-    guide.listen_to(_TapSource(n=10))
-    guide.start(tmp_path / "take-01.mp4", bpm=130.0, beat=0.0, beat_source="internal")
+    guide = _started_guide(tmp_path / "take-01.mp4", 10)
     _guide_blocks(guide, 20, level=1.0)                   # every channel pinned at full scale
     _guide_blocks(guide, 20, level=-1.0)                  # ...and at the other end of it
     report = _drained(guide).stop()
@@ -182,20 +154,14 @@ def test_the_guide_header_is_written_once_and_not_per_block(tmp_path):
     """The WAV header is patched only at close, not per block (`wave.writeframes` patches it
     on every call, and each seek flushes the buffer, too slow for the writer to keep up).
     Mid-take most data is still buffered; after close the frame count on disk is right."""
-    import wave
-
-    from ganlive.record.sync import Guide
-
-    guide = Guide()
-    guide.listen_to(_TapSource(n=2))
-    guide.start(tmp_path / "take-07.mp4", bpm=130.0, beat=0.0, beat_source="internal")
+    guide = _started_guide(tmp_path / "take-07.mp4", 2)
     _guide_blocks(guide, 9, channels=2)
     _drained(guide)
     wav = tmp_path / "take-07.wav"
     handed = 9 * 256 * 2
     assert wav.stat().st_size < handed // 2, (
         f"{wav.stat().st_size} bytes of {handed} on disk mid-take -- the header is being "
-        f"patched per block again, and every preset flushes the buffer")
+        f"patched per block, and every patch flushes the buffer")
     guide.stop()
     with wave.open(str(wav)) as f:
         assert f.getnframes() == 9 * 256, "close did not fix the header up"
@@ -204,8 +170,6 @@ def test_the_guide_header_is_written_once_and_not_per_block(tmp_path):
 def test_the_audio_thread_drops_a_block_rather_than_waiting_for_the_disk(tmp_path):
     """A full guide queue drops the block rather than blocking the audio callback, which would
     cost the extractor hits. No writer is started: this tests the queue policy alone."""
-    from ganlive.record.sync import Guide
-
     guide = Guide(depth=3)
     guide.attached = True                                 # ...but never started, so no writer
     guide._path = tmp_path / "take-01.mp4"
@@ -219,8 +183,6 @@ def test_the_audio_thread_drops_a_block_rather_than_waiting_for_the_disk(tmp_pat
 def test_a_take_with_no_audio_still_gets_the_bar_lines(tmp_path):
     """With no audio input (`--triggers midi`, `--no-audio`), the sidecar is still written with
     tempo, start beat and bar marks, which alone place the take in a DAW."""
-    from ganlive.record.sync import Guide
-
     guide = Guide()                                       # never attached: no stream was open
     armed = guide.start(tmp_path / "take-02.mp4", bpm=130.0, beat=0.0, beat_source="internal")
     assert "no audio input" in armed, armed
@@ -240,8 +202,6 @@ def test_a_take_with_no_audio_still_gets_the_bar_lines(tmp_path):
 def test_the_sidecar_owns_its_own_field_names(tmp_path):
     """The sidecar's fields come from named parameters of `start`; caller extras are nested
     under `about`, so a caller key like `marks` cannot overwrite the sidecar's own."""
-    from ganlive.record.sync import Guide
-
     guide = Guide()
     guide.start(tmp_path / "take-08.mp4", bpm=99.6, beat=0.5417, beat_source="midi",
                 about={"marks": "not the real ones", "model": "gv-warm-lr3"})
@@ -258,8 +218,6 @@ def test_the_sidecar_owns_its_own_field_names(tmp_path):
 def test_the_bar_lines_are_the_machine_s_and_not_the_take_s_own(tmp_path):
     """Marks fall on the machine's bar lines (multiples of four beats), not four beats from
     wherever recording started, so they match the DAW's grid."""
-    from ganlive.record.sync import Guide
-
     guide = Guide()
     guide.start(tmp_path / "take-03.mp4", bpm=130.0, beat=53.29, beat_source="midi")
     for beat in (53.29, 55.9, 56.1, 60.0, 63.5, 64.2):
@@ -270,8 +228,6 @@ def test_the_bar_lines_are_the_machine_s_and_not_the_take_s_own(tmp_path):
 def test_the_bar_lines_keep_coming_after_the_machine_is_restarted(tmp_path):
     """Stop then Start puts the beat back to 0, and marks must resume from the new position
     rather than waiting for the old bar number."""
-    from ganlive.record.sync import Guide
-
     guide = Guide()
     guide.start(tmp_path / "take-05.mp4", bpm=130.0, beat=30.0, beat_source="midi")
     for beat in (31.0, 32.1, 0.0, 2.0, 4.05, 8.1):
@@ -282,10 +238,6 @@ def test_the_bar_lines_keep_coming_after_the_machine_is_restarted(tmp_path):
 def test_a_take_whose_encoder_never_opens_reports_it_and_stops(tmp_path):
     """If the encoder cannot open, `stop` still returns promptly and the report says why,
     rather than waiting on a queue nothing drains."""
-    import threading
-
-    from ganlive.record.video import Recorder
-
     rec = Recorder(tmp_path / "x.mp4", 64, 64, 30.0, "no_such_encoder",
                    realtime=True, depth=2).start()
     for _ in range(6):
@@ -300,8 +252,6 @@ def test_the_sidecar_anchors_the_take_on_the_audio_stream(tmp_path):
     """The sidecar's `start_sample` is the stream position of the first block the writer
     actually saved, not a counter read at `start` (which races the audio thread by a block).
     Takes in one session are placed relative to each other by this number."""
-    from ganlive.record.sync import Guide
-
     guide = Guide()
     guide.listen_to(_TapSource(n=4))
     _guide_blocks(guide, 7, channels=4)                   # played before `v` was pressed
@@ -325,11 +275,7 @@ def test_the_sidecar_anchors_the_take_on_the_audio_stream(tmp_path):
 def test_a_mark_reads_both_clocks_at_one_instant_so_drift_is_measurable(tmp_path):
     """Video runs on the system clock and the guide on the sound card's; each `mark` reads both
     at once, so the drift between them over a take can be measured and reported."""
-    from ganlive.record.sync import Guide
-
-    guide = Guide()
-    guide.listen_to(_TapSource(n=2))
-    guide.start(tmp_path / "take-05.mp4", bpm=130.0, beat=0.0, beat_source="internal")
+    guide = _started_guide(tmp_path / "take-05.mp4", 2)
     _guide_blocks(guide, 188, channels=2)                 # ~1.003 s of audio delivered
     _drained(guide).mark(4.0)
     report = guide.stop()

@@ -7,6 +7,8 @@ import time
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
+
 from ganlive.files import size_mb
 
 #: Hardware encoders, in the order they are tried. The first that opens on this machine
@@ -146,8 +148,8 @@ class Recorder:
         container = stream = None
         try:
             import av
-            import numpy as np
 
+            # Deferred: `pixels` imports torch, and recording does not otherwise need it.
             from ganlive.pixels import nv12_plane_views
 
             tb = Fraction(1, round(self.fps))

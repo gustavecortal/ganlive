@@ -437,7 +437,7 @@ class DialPanel:
     def settings(self) -> dict[str, float]:
         """What the holders are holding -- the strip and the machine's knobs -- as dial values
         to fold into a preset. The strip wins where both hold one dial."""
-        held = {} if self.encoders is None else self.runner.held_by(self.encoders.source)
+        held = {} if self.encoders is None else self.runner.held_by(self.encoders.SOURCE)
         held.update(self.runner.held_by(SOURCE))
         return {name: round(value, 3) for name, value in sorted(held.items())}
 

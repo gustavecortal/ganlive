@@ -10,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ganlive.device import synchronize
+
 #: BT.709 luma coefficients.
 _KR, _KB = 0.2126, 0.0722
 _KG = 1 - _KR - _KB
@@ -136,6 +138,4 @@ class PinnedRing:
 
     def sync(self) -> None:
         """Wait for everything queued on this ring's device, copies included."""
-        from ganlive.device import synchronize
-
         synchronize(self._device)

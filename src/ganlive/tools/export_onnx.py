@@ -8,7 +8,6 @@ The dynamo exporter, because the TorchScript one refuses any non-square model.
 """
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import sys
@@ -17,13 +16,15 @@ from pathlib import Path
 
 import torch
 
+from ganlive.checkpoints import slug_for
 from ganlive.dials import steer as K
+from ganlive.files import write_json
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
 from ganlive.models.onnx_file import initializers, name_settings, structure, weights_file
-from ganlive.models.onnx_rewrite import bank_the_knobs, equivalent, split_gated_convs
+from ganlive.models.onnx_rewrite import equivalent, settings_as_input, split_gated_convs
 from ganlive.pixels import EXACT_LEVELS
-from ganlive.timing import write_metrics
+from ganlive.tools import parser
 
 
 def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
@@ -33,9 +34,9 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     freeze_noise(net, seed=noise_seed)
     report = prepare_for_inference(net, cfg.nz, "cpu", half=False)
     # The dials become a second graph input: a view into a settings tensor traces as a constant.
-    knobs = K.install(report["net"].eval(), "cpu", torch.float32)
-    net = bank_the_knobs(report["net"], knobs).eval()
-    names = list(knobs.names)
+    settings = K.install(report["net"].eval(), "cpu", torch.float32)
+    net = settings_as_input(report["net"], settings).eval()
+    names = list(settings.names)
     args = (torch.zeros(1, cfg.nz), torch.ones(len(names)))
 
     split, drift = 0, 0.0
@@ -120,7 +121,7 @@ def _name_the_settings(path: Path, names: list[str]) -> None:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ganlive export-onnx", description=__doc__.split("\n")[0])
+    ap = parser("export-onnx", __doc__.split("\n")[0])
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=None,
                     help="Destination .onnx. Defaults to runs/onnx/<run>-<step>.onnx")
@@ -136,13 +137,11 @@ def main(argv=None) -> int:
         return 2
     out = args.out
     if out is None:
-        from ganlive.checkpoints import slug_for
-
         out = Path("runs/onnx") / f"{slug_for(args.checkpoint)}.onnx"
 
     print(f"exporting {args.checkpoint} -> {out}", flush=True)
     report = export(args.checkpoint, out, args.opset, args.noise_seed,
                     split_glu=not args.no_split_glu)
     print(json.dumps(report, indent=2))
-    write_metrics(out.with_suffix(".json"), report)
+    write_json(out.with_suffix(".json"), report)
     return 0

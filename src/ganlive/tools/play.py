@@ -9,6 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ganlive.checkpoints import slug_for
 from ganlive.clock import MusicalClock
 from ganlive.control.audio import NoAudioDevice, input_stream, pick_input, require_sounddevice
 from ganlive.control.features import (
@@ -35,20 +36,20 @@ from ganlive.control.midi import (
 )
 from ganlive.control.simulate import MachineSim, MonitorFeeder, StemFeeder
 from ganlive.dials.table import per_model
-from ganlive.files import next_path, remember
+from ganlive.files import CHANNEL_MAP, SETTINGS, next_path, remember
 from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 from ganlive.record import video
 from ganlive.record.sync import Guide
 from ganlive.strip import PRIORITY as HAND_PRIORITY
 from ganlive.strip import SOURCE as HAND
+from ganlive.strip import DialPanel
 from ganlive.timing import stat_ms
 from ganlive.tools import add_device, parser
-from ganlive.window import parse_height
+from ganlive.window import Display, parse_height, screen_size
 
 OUT = Path("runs/ganlive")
-SETTINGS, TAKES, STILLS = OUT / "settings", OUT / "takes", OUT / "stills"
+TAKES, STILLS = OUT / "takes", OUT / "stills"
 
-CHANNELS = SETTINGS / "channels.txt"
 #: The knob map `l` writes, in `--cc`'s own words; `--cc` on the command line replaces it.
 CC_MAP = SETTINGS / "cc.txt"
 POSITIONS = SETTINGS / POSITIONS_NAME
@@ -109,17 +110,18 @@ def resolve_map(explicit: str, layout: str) -> tuple[dict[str, int], str]:
     `--map` is remembered for next time."""
     if explicit:
         tracks = parse_channel_map(explicit)           # parse first: never save an unusable map
-        trouble = remember(CHANNELS, explicit)
+        trouble = remember(CHANNEL_MAP, explicit)
         if trouble:
             return tracks, f"map: {explicit} (not remembered: {trouble})"
-        return tracks, f"map: {explicit}  -- remembered in {CHANNELS}"
-    found = remembered(CHANNELS, parse_channel_map, "map")
+        return tracks, f"map: {explicit}  -- remembered in {CHANNEL_MAP}"
+    found = remembered(CHANNEL_MAP, parse_channel_map, "map")
     if found is not None:
         return found
     return channel_map(layout), (
-        f"map: --layout {layout}, a GUESS. Overbridge does not start the kit at channel 0, so "
-        f"every hit may be credited to the wrong drum and a shared channel lights both of its "
-        f"tracks. Run `ganlive doctor --learn`, then pass --map once and it is remembered.")
+        f"map: --layout {layout}, a GUESS. A machine's USB audio need not start the kit at "
+        f"channel 0, so every hit may be credited to the wrong drum and a shared channel "
+        f"lights both of its tracks. Run `ganlive doctor --learn`, then pass --map once and "
+        f"it is remembered.")
 
 
 def per_model_lines(by_model, budget_ms: float) -> list[str]:
@@ -207,8 +209,8 @@ def _parser():
     dials = ap.add_argument_group("which dials appear")
     dials.add_argument("--direction-floor", type=float, default=None, metavar="X",
                        help="how many times a random direction of the same length a derived "
-                            "direction must move the picture to earn a dial. Default: "
-                            "`pixels.RANDOM_FLOOR`. A taste control: lower is not simply more, "
+                            "direction must move the picture to earn a dial. Default: 2 "
+                            "(pixels.RANDOM_FLOOR). A taste control: lower is not simply more, "
                             "because a collapse to a flat field also measures as a large change")
     dials.add_argument("--stock-grain", dest="measure_grain", action="store_false",
                        help="do not measure each model's noise gains at load (~0.5 s a model). "
@@ -309,7 +311,7 @@ def report_unheard(extractor, kind: str, fix: str, notes, note_channels, grace_s
                        else "pass --midi-channels 1-12"))
         else:
             hint = f" on channels {sorted(c + 1 for c in notes_on)}"
-        # Or not a Rytm at all: a kit whose notes are not the ones read.
+        # Or a kit whose notes are not the ones being read.
         unknown = sorted(n for ns in notes_on.values() for n in ns
                          if n not in notes)
         if unknown and not note_channels:
@@ -481,7 +483,7 @@ def open_triggers(args, tracks, use_notes, use_audio, picked, note_channels, not
         if source is None:
             source = StemFeeder(extractor, stems, take.samplerate, args.blocksize)
             source.start()
-        print(f"audio: the stand-in Rytm, {channels} ch "
+        print(f"audio: the stand-in drum machine, {channels} ch "
               f"({'shared voices' if channels < 12 else 'one per track'}) "
               f"at {take.samplerate} Hz{heard}", flush=True)
         return extractor, source, None, dropped
@@ -567,8 +569,8 @@ def main(argv=None) -> int:
         print("--console needs a window; drop --headless")
         return 1
     if args.monitor and not args.simulate:
-        print("--monitor plays the stand-in, so it needs --simulate. With a real Rytm the "
-              "machine is already making the sound.")
+        print("--monitor plays the stand-in, so it needs --simulate. A real machine is "
+              "already making the sound.")
         return 1
 
     # Imported here, after the arguments parse, so `--help` and a typo answer at once.
@@ -576,6 +578,7 @@ def main(argv=None) -> int:
 
     from ganlive import bank
     from ganlive import device as dev
+    from ganlive.families import LoadOptions
 
     tracks, map_note = resolve_map(args.map, args.layout)
     # What to tell the user to switch on, in their own machine's words; see `control.machine`.
@@ -628,13 +631,13 @@ def main(argv=None) -> int:
     if positions.trouble:
         print(positions.trouble, flush=True)
 
-    screen = bank.screen_size()
+    screen = screen_size()
     floor = {} if args.direction_floor is None else {"direction_floor": args.direction_floor}
     r = bank.build(args.checkpoint, args.device,
                    height=args.height, screen=screen,
-                   options=bank.LoadOptions(compile_net=args.compile_net, capture=args.capture,
-                                            measure_grain=args.measure_grain, exact=args.exact,
-                                            **floor))
+                   options=LoadOptions(compile_net=args.compile_net, capture=args.capture,
+                                       measure_grain=args.measure_grain, exact=args.exact,
+                                       **floor))
     print(f"generator: {r.report()}", flush=True)
     if args.height is None and r.height < r.cfg.ladder.height:
         print(f"  fitted to the {screen[0]}x{screen[1]} screen -- a take will be this size too; "
@@ -667,10 +670,10 @@ def main(argv=None) -> int:
 
     # A model's own dials are stashed with it and recalled with it; the shared blocks stay put.
     def stash(model):
-        positions.stash(bank.slug_for(model.path), runner, HAND, per_model(model.layout))
+        positions.stash(slug_for(model.path), runner, HAND, per_model(model.layout))
 
     def recall(model) -> str:
-        back = positions.recall(bank.slug_for(model.path), runner, HAND, HAND_PRIORITY,
+        back = positions.recall(slug_for(model.path), runner, HAND, HAND_PRIORITY,
                                 per_model(model.layout))
         return f"  hands back on {', '.join(sorted(back))}" if back else ""
 
@@ -720,11 +723,7 @@ def main(argv=None) -> int:
 
     display = panel = None
     if not args.headless:
-        from ganlive.window import Display
-
         if args.console:
-            from ganlive.strip import DialPanel
-
             actions = {"preset": switch_patch, "save": save_setting,
                        "record": requests.ask_record, "still": requests.ask_still}
             if len(r.models) > 1 or shelf is not None:

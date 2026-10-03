@@ -13,20 +13,21 @@ put a dead dial on the strip.
 """
 from __future__ import annotations
 
-import argparse
 import sys
 import time
 from pathlib import Path
 
+from ganlive import device as dev
 from ganlive.dials import derive as D
+from ganlive.families import open_stylegan2
+from ganlive.models import stylegan2 as S2
+from ganlive.tools import add_device, parser
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ganlive dials", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = parser("dials", __doc__)
     ap.add_argument("checkpoint", type=Path, help="a converted StyleGAN2 `.pt`")
-    ap.add_argument("--device", default=None, metavar="xpu|cuda|mps|cpu",
-                    help="default: whichever accelerator is there, else the CPU")
+    add_device(ap)
     ap.add_argument("--count", type=int, default=D.CANDIDATES, metavar="N",
                     help=f"candidates per style range, before measurement picks among them at "
                          f"load. Default {D.CANDIDATES}.")
@@ -36,10 +37,6 @@ def main(argv=None) -> int:
                          "directions. Each costs another two passes per push-buffer entry, "
                          "per range.")
     args = ap.parse_args(argv)
-
-    from ganlive import device as dev
-    from ganlive.bank import open_stylegan2
-    from ganlive.models import stylegan2 as S2
 
     if not S2.is_stylegan2(args.checkpoint):
         print(f"{args.checkpoint} is not a converted StyleGAN2, and the banded derivation has "
@@ -51,7 +48,7 @@ def main(argv=None) -> int:
 
     # The precision the instrument would play this model in on this device.
     dtype = dev.playback_dtype(device)
-    net, _knobs, push, bands = open_stylegan2(args.checkpoint, device, dtype=dtype)
+    net, _settings, push, bands = open_stylegan2(args.checkpoint, device, dtype=dtype)
     names = [name for name, _weight in bands]
     print(f"{args.checkpoint.name}: {len(names)} style ranges, "
           f"{2 * push.shape[1] * args.latents} passes each", flush=True)

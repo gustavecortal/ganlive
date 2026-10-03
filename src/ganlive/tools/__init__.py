@@ -8,8 +8,8 @@ import argparse
 import os
 import sys
 
-#: `sounddevice` reads this at import to enable ASIO, the only host API some interfaces (an
-#: Elektron Rytm over Overbridge) appear on. Ignored on other platforms.
+#: `sounddevice` reads this at import to enable ASIO, the only host API some multichannel USB
+#: interfaces appear on. Ignored on other platforms.
 os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 # A Windows console defaults to cp1252, and some libraries print non-ASCII marks; replace what
@@ -25,6 +25,8 @@ def parser(name: str, doc: str) -> argparse.ArgumentParser:
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
 
 
-def add_device(ap, help: str = "default: whichever accelerator is there, else the CPU"):
-    """The `--device` option every tool that runs a generator takes."""
-    return ap.add_argument("--device", default=None, metavar="xpu|cuda|mps|cpu", help=help)
+def add_device(ap, help: str = "default: whichever accelerator is there, else the CPU", **kw):
+    """The `--device` option every tool that runs a generator takes. `kw` overrides the
+    default and metavar for a tool whose devices are not torch's."""
+    return ap.add_argument("--device", **{"default": None, "metavar": "xpu|cuda|mps|cpu",
+                                          "help": help, **kw})

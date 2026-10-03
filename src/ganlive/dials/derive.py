@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 import torch
 from torch import nn
 
+from ganlive.checkpoints import CACHE_SUFFIX
 from ganlive.models.common import first_image, latent
 from ganlive.models.onnx_file import initializers, producers, structure
 from ganlive.pixels import FLOOR_LEVELS, LEVEL, RANDOM_FLOOR
@@ -294,12 +295,9 @@ def active_banded(net: nn.Module, names, counts, z_dim: int, device, dtype, into
     return _laid_out(per_band, seats, width, z_dim, "image metric")
 
 
-#: What a derived basis is saved as, beside the checkpoint it belongs to. Only the proposal is
-#: stored: `shortlist`, `equalise` and `rank` still run on it at load.
-CACHE_SUFFIX = ".directions.pt"
-
-
 def cache_path(checkpoint) -> pathlib.Path:
+    """Where a derived basis is saved, beside its checkpoint. Only the proposal is stored:
+    `shortlist`, `equalise` and `rank` still run on it at load."""
     return pathlib.Path(checkpoint).with_suffix(CACHE_SUFFIX)
 
 

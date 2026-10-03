@@ -1,7 +1,7 @@
 """Installing live dials on a prepared generator: the settings a drum machine can steer.
 
 `install` grafts FastGAN's steerable modules in; `install_stylegan2` hands a StyleGAN2 its
-truncation, noise gains and push buffer. Both return the `Knobs` vector that drives them, and
+truncation, noise gains and push buffer. Both return the `Settings` vector that drives them, and
 both must run before `torch.compile`, or every dial is silently inert.
 """
 from __future__ import annotations
@@ -16,8 +16,9 @@ from ganlive.models.common import first_image, latent
 from ganlive.models.fastgan import SkipLayerExcitation
 from ganlive.models.fold import FoldedNoise
 from ganlive.models.steerable import SteerableNoise, SteerableSLE
+from ganlive.models.stylegan2 import BANDS, noise_sites
 from ganlive.pixels import levels
-from ganlive.settings import Knobs
+from ganlive.settings import Settings
 
 
 def _available(net: nn.Module) -> list[str]:
@@ -27,11 +28,11 @@ def _available(net: nn.Module) -> list[str]:
             if getattr(net, s.split(".", 1)[1], None) is not None]
 
 
-def install(net: nn.Module, device, dtype=torch.float16) -> Knobs:
+def install(net: nn.Module, device, dtype=torch.float16) -> Settings:
     """Swap the steerable modules into a folded FastGAN and return the vector that drives them.
 
     Run it before `torch.compile`: installed after, every dial is silently inert."""
-    knobs = Knobs(sorted(_available(net)), device, dtype)
+    settings = Settings(sorted(_available(net)), device, dtype)
     sites = {"noise": 0, "sle": 0}
 
     for parent_name, parent in list(net.named_modules()):
@@ -39,73 +40,71 @@ def install(net: nn.Module, device, dtype=torch.float16) -> Knobs:
             if isinstance(child, FoldedNoise):
                 stage = (parent_name or child_name).split(".")[0]
                 name = f"noise.{stage}"
-                if name not in knobs.index:
+                if name not in settings.index:
                     continue
                 setattr(parent, child_name,
-                        SteerableNoise(child.coeff, child.noise, knobs.view(name)))
+                        SteerableNoise(child.coeff, child.noise, settings.view(name)))
                 sites["noise"] += 1
             elif isinstance(child, SkipLayerExcitation):
                 name = f"sle.{child_name}"
-                if name not in knobs.index:
+                if name not in settings.index:
                     continue
-                setattr(parent, child_name, SteerableSLE(child.gate, knobs.view(name)))
+                setattr(parent, child_name, SteerableSLE(child.gate, settings.view(name)))
                 sites["sle"] += 1
 
-    if knobs.names and not (sites["noise"] and sites["sle"]):
+    if settings.names and not (sites["noise"] and sites["sle"]):
         raise RuntimeError(
             f"steering install matched nothing it needed: {sites}. The net must be folded "
             f"by `prepare_for_inference` before installing, or the noise gain is still "
             f"inside `NoiseInjection` and no dial will do anything.")
-    knobs.sites = sites
-    return knobs
+    settings.sites = sites
+    return settings
 
 
-def install_stylegan2(net, device) -> Knobs:
+def install_stylegan2(net, device) -> Settings:
     """Give a converted StyleGAN2 its dials: a truncation per style range, a noise gain per
     resolution, and the push buffer the direction dials write."""
-    from ganlive.models.stylegan2 import BANDS, noise_sites
-
     sites = noise_sites(net)
     styles = [name for name, _lo, _hi in BANDS]
-    knobs = Knobs(styles + list(sites), device, torch.float32)
+    settings = Settings(styles + list(sites), device, torch.float32)
     # Truncation first in the vector, and so first on the strip.
-    net.mapping.knob = knobs.span(styles)
+    net.mapping.knob = settings.span(styles)
     # The push buffer is allocated before `torch.compile` too, or the graph closes over
-    # `None`. It is not part of the `Knobs` vector: an offset whose neutral is 0, written
+    # `None`. It is not part of the `Settings` vector: an offset whose neutral is 0, written
     # by the walk.
     net.mapping.push = torch.zeros(len(BANDS), net.cfg.w_dim, device=device,
                                    dtype=torch.float32)
     for name, layers in sites.items():
-        view = knobs.view(name)
+        view = settings.view(name)
         for layer in layers:
             layer.knob = view
-    knobs.sites = {"noise": sum(len(v) for v in sites.values()), "style": len(styles)}
-    return knobs
+    settings.sites = {"noise": sum(len(v) for v in sites.values()), "style": len(styles)}
+    return settings
 
 
 @torch.no_grad()
-def calibrate_noise(net: nn.Module, knobs: Knobs, nz: int, device,
+def calibrate_noise(net: nn.Module, settings: Settings, nz: int, device,
                     dtype=torch.float16, seed: int = 0, probes: int = 7) -> dict[str, float]:
     """For this FastGAN, the gain each noise band needs to move the picture by its target in
     `NOISE_BANDS`, found by bisection in log space."""
     z = latent(nz, seed, device, dtype)
-    knobs.reset()
+    settings.reset()
     base = first_image(net(z))
 
     out: dict[str, float] = {}
     for name, target, _start in NOISE_BANDS:
-        if name not in knobs.index:
+        if name not in settings.index:
             continue          # `noise_for` falls back to its default gain for this band
         lo, hi = math.log(0.5), math.log(3000.0)
         for _ in range(probes):
             mid = 0.5 * (lo + hi)
-            knobs.reset()
-            knobs.set(name, math.exp(mid))
-            knobs.commit()
+            settings.reset()
+            settings.set(name, math.exp(mid))
+            settings.commit()
             if levels(first_image(net(z)), base) < target:
                 lo = mid
             else:
                 hi = mid
         out[name] = round(math.exp(0.5 * (lo + hi)), 3)
-    knobs.reset()
+    settings.reset()
     return out

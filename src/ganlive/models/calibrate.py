@@ -11,9 +11,10 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import torch
 
 from ganlive.models import runtime
-from ganlive.models.common import host_latent
+from ganlive.models.common import first_image, host_latent
 from ganlive.pixels import FLOOR_LEVELS, levels
 
 #: What a calibrated dial should buy at full travel, in mean 8-bit levels, on every model.
@@ -132,7 +133,7 @@ class Probe(_Probe):
 
 
 class TorchProbe(_Probe):
-    """The same contract as `Probe`, for a torch network with installed `Knobs`."""
+    """The same contract as `Probe`, for a torch network with installed `Settings`."""
 
     def __init__(self, net, knobs, nz: int, device="cpu", dtype=None) -> None:
         self.net, self.knobs, self.nz, self.device = net, knobs, nz, device
@@ -144,10 +145,6 @@ class TorchProbe(_Probe):
     def frame(self, z, k=None):
         """The frame, left on the card as an owned float32 copy, so comparing two moves one
         scalar across the bus rather than two frames."""
-        import torch
-
-        from ganlive.models.common import first_image
-
         if self.settings:
             self.knobs.write[:] = self.neutral() if k is None else k
             self.knobs.commit()

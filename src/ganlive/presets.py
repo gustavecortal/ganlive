@@ -115,8 +115,10 @@ def to_dict(preset: Preset) -> dict:
 
 
 def from_dict(data: dict) -> Preset:
-    """The other direction. Anything unrecognised is refused rather than dropped."""
-    kwargs: dict = {}
+    """The other direction. Anything unrecognised is refused rather than dropped.
+
+    `name` and `blurb` may be left out: a saved preset is named after its file anyway."""
+    kwargs: dict = {"name": "", "blurb": ""}
     known = {f.name for f in fields(Preset)}
     for key, value in data.items():
         if key not in known:
@@ -149,7 +151,7 @@ class PresetRunner:
         self.channel_of = channel_of
         self.fps = fps
         self.channels = int(channels) or max(channel_of.values(), default=-1) + 1
-        #: `None` is the spine -- the dials every model has. `use_model` replaces it with the
+        #: `layout=None` is the dials every model has. `use_model` replaces it with the
         #: loaded model's, which happens before any frame is drawn.
         self.surface = Surface(layout=layout)
         self.walk_cfg = WalkConfig()
@@ -160,6 +162,8 @@ class PresetRunner:
         #: Every held dial and its value, merged across holders by rank; and who holds each.
         self.hands: dict[str, float] = {}
         self.hands_from: dict[str, str] = {}
+        #: `hands` with its key set, assigned as one pair so the frame reads both from one merge.
+        self._held: tuple[dict[str, float], frozenset[str]] = ({}, frozenset())
 
         self._macro_state: dict[str, float] = {}
         self._velocity: dict[int, float] = {}
@@ -334,6 +338,7 @@ class PresetRunner:
             merged.update(values)
             owner.update(dict.fromkeys(values, name))
         self._sources = sources
+        self._held = (merged, frozenset(merged))
         self.hands = merged
         self.hands_from = owner
 
@@ -347,7 +352,7 @@ class PresetRunner:
         impulses, and hand the result to the generator's `knobs` and the walk."""
         surface = self.surface
         surface.values.update(self._base)
-        surface.set_held(self.hands)
+        surface.set_held(*self._held)
 
         for macro, k in self._macros:
             target = macro.map(float(features.get(macro.source, 0.0)))

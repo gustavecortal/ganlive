@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pytest
 import torch
 
+from ganlive.clock import BEATS_PER_BAR, MusicalClock, WalkConfig, position
 from ganlive.dials.fastgan_dials import DIALS, SPANS
-from ganlive.dials.table import (
-    LATENT,
-    MASTER,
-    MOTION,
-)
-from ganlive.walk import (
-    BEATS_PER_BAR,
-    MusicalClock,
-    SlerpWalk,
-    WalkConfig,
-    position,
-)
-from tests.support import NZ, _step, walk
+from ganlive.dials.table import LATENT, MASTER, MOTION
+from ganlive.walk import SlerpWalk
+from tests.support import NZ, _pulses, _step, walk
 
 
 def test_the_latent_depends_only_on_the_musical_position():
@@ -62,6 +55,23 @@ def test_a_segment_boundary_lands_exactly_on_a_seed(beats_per_segment):
             f"segment {k} does not start on its own seed")
 
 
+def test_the_walk_stays_on_the_shell_between_seeds():
+    """The great circle's reason to exist: a straight line between two seeds sags towards the
+    origin, and a frame there loses most of its contrast."""
+    w = SlerpWalk(256, "cpu", WalkConfig(beats_per_segment=4.0))
+    ends = min(float(w.seed_for(0).norm()), float(w.seed_for(1).norm()))
+    mids = [float(w.latent(t).norm()) for t in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]]
+    assert min(mids) >= ends * 0.98, (min(mids), ends)
+
+
+def test_building_a_walk_pays_every_first_call_cost_up_front(monkeypatch):
+    """An import inside the frame loop would land on a performance's first bar."""
+    built = SlerpWalk(16, "cpu", WalkConfig(spread=0.3))
+    monkeypatch.setitem(sys.modules, "ganlive.models.fastgan", None)   # any import now raises
+    assert built.seed_for(3) is not None, "nothing in the loop may need the import again"
+    assert built.latent(9.0) is not None
+
+
 def test_a_higher_tempo_changes_seed_more_often():
     """Through the clock, end to end: at a faster tempo the walk passes more seeds per second."""
     seen = {}
@@ -76,6 +86,52 @@ def test_a_higher_tempo_changes_seed_more_often():
         seen[bpm] = len(indices)
     assert seen[150.0] > seen[100.0], seen
     assert seen[150.0] == pytest.approx(seen[100.0] * 1.5, abs=1.5)
+
+
+def test_a_tempo_change_does_not_jump_the_picture():
+    """The retiming must be a change of rate, not a discontinuity."""
+    c = MusicalClock(128.0)
+    w = SlerpWalk(64, "cpu", WalkConfig(beats_per_segment=BEATS_PER_BAR, spread=0.25))
+    steps, prev, t = [], None, 0.0
+    for bpm, secs in ((128.0, 4.0), (160.0, 4.0)):
+        period = 60.0 / (bpm * MusicalClock.PPQN)
+        for _ in range(int(secs / period)):
+            t += period
+            c.on_pulse(t)
+            z = w.latent(c.beats)
+            if prev is not None:
+                steps.append(float((z - prev).norm()))
+            prev = z
+    assert max(steps) < 3.0 * (sum(steps) / len(steps)), (max(steps), sum(steps) / len(steps))
+
+
+def test_bars_get_shorter_as_the_tempo_rises():
+    """The visible consequence: segment boundaries crowd together during a ramp."""
+    c = MusicalClock(120.0)
+    w = SlerpWalk(64, "cpu", WalkConfig(beats_per_segment=BEATS_PER_BAR))
+    marks, t = [], 0.0
+    while t < 8.0:
+        bpm = 120.0 + 25.0 * (t / 8.0)                    # a hand on the tempo encoder
+        t += 60.0 / (bpm * MusicalClock.PPQN)
+        k = w.segment_index
+        w.latent(c.beats)
+        c.on_pulse(t)
+        if w.segment_index != k:
+            marks.append(t)
+    gaps = [b - a for a, b in zip(marks, marks[1:], strict=False)]
+    assert len(gaps) >= 3, marks
+    assert gaps == sorted(gaps, reverse=True), gaps       # strictly shrinking
+
+
+def test_start_is_what_aligns_the_video_bar_to_the_music_bar():
+    """MIDI clock carries tempo but not bar position, so the origin has to come from Start."""
+    c = MusicalClock(130.0)
+    _pulses(c, 130.0, 1.7)                                # joined mid-pattern
+    assert c.beats > 0.0
+    c.on_start()                                          # the machine's play button
+    assert c.beats == pytest.approx(0.0)
+    w = SlerpWalk(64, "cpu", WalkConfig(beats_per_segment=BEATS_PER_BAR))
+    assert torch.allclose(w.latent(c.beats), w.seed_for(0).view(1, -1), atol=1e-6)
 
 
 def test_the_step_grid_holds_the_image_between_subdivisions():
@@ -121,23 +177,29 @@ def test_a_seed_has_the_norm_the_generator_was_trained_on():
     assert all(0.85 * 16.0 < n < 1.15 * 16.0 for n in norms), norms
 
 
-def test_song_position_jumps_the_clock():
-    """A Song Position Pointer is how a rewind reaches us, and the walk is only rewindable if
-    the clock is."""
-    c = MusicalClock()
-    c.on_song_position(16)                                # 16 sixteenths is four beats
-    assert c.beats == pytest.approx(4.0)
-    c.on_song_position(0)
-    assert c.beats == pytest.approx(0.0)
-
-
 def test_spread_controls_reach_independently_of_rate():
-    """Rate and reach are separate knobs and the walk must not conflate them."""
+    """Rate and reach are separate dials and the walk must not conflate them."""
     steps = [_step(SlerpWalk(256, "cpu", WalkConfig(spread=s)))
              for s in (0.05, 0.2, 0.5, 1.0)]
     assert steps == sorted(steps), steps
     assert steps[0] < 3.0, "spread 0.05 should stay inside the 'hold' band"
     assert steps[-1] > 16.0, "spread 1.0 should be a scene replacement"
+
+
+def test_a_small_spread_keeps_the_session_in_one_neighbourhood():
+    """With `home_every` off there is one home forever, so every target stays near it."""
+    w = SlerpWalk(256, "cpu", WalkConfig(spread=0.1, home_every=0))
+    home = w.home_for(0)
+    assert all(torch.equal(w.home_for(k), home) for k in (1, 5, 50))
+    far = max(float((w.seed_for(k) - home).norm()) for k in range(40))
+    assert far < 6.0, far
+
+
+def test_home_every_moves_the_neighbourhood_on_schedule():
+    w = SlerpWalk(256, "cpu", WalkConfig(spread=0.1, home_every=16))
+    assert torch.equal(w.home_for(0), w.home_for(15))
+    assert not torch.equal(w.home_for(0), w.home_for(16))
+    assert torch.equal(w.home_for(16), w.home_for(31))
 
 
 def test_spread_keeps_targets_on_the_shell():
@@ -203,19 +265,6 @@ def test_the_walk_uses_the_motion_dials_when_they_are_set():
     assert not torch.equal(held.latent(0.0), held.latent(3.9))   # then it moves
 
 
-def test_midi_clock_takes_the_position_away_from_the_frame_count():
-    """Once MIDI clock pulses arrive, the position comes from counted pulses, not frames, so a
-    dropped frame skips ahead on the path instead of slowing it (right for stage; free-running
-    frame counting is right for recording to a file)."""
-    clock = MusicalClock(120.0)
-    for _ in range(MusicalClock.PPQN * 8):
-        clock.on_pulse()
-    before = clock.beats
-    for _ in range(60):
-        clock.advance(1.0 / 60.0)
-    assert clock.beats == before, "frame counting must not move a clock the Rytm is driving"
-
-
 def test_a_new_seed_sequence_is_seen_at_once_rather_than_at_the_end_of_the_bar():
     """The endpoint cache keys on what the endpoints actually depend on, not just on `k`."""
     where = 8.0 * 4
@@ -236,8 +285,6 @@ def test_a_new_seed_sequence_is_seen_at_once_rather_than_at_the_end_of_the_bar()
 def test_two_latent_widths_read_the_same_seed_sequence():
     """A 256-wide and a 512-wide walk share one seed sequence, which lets a bank hold models of
     both latent widths at once."""
-    from ganlive.walk import SlerpWalk, WalkConfig
-
     narrow = SlerpWalk(256, "cpu", WalkConfig(base_seed=7), dtype=torch.float32)
     wide = SlerpWalk(512, "cpu", WalkConfig(base_seed=7), dtype=torch.float32)
 
@@ -257,69 +304,57 @@ def test_two_latent_widths_read_the_same_seed_sequence():
 def test_a_direction_basis_of_the_wrong_width_is_skipped_rather_than_crashing():
     """After a switch to a model of another width, the old direction basis is skipped: the
     push goes missing, but the frame is still produced."""
-
-    from ganlive.walk import SlerpWalk, WalkConfig
-
     cfg = WalkConfig(directions=np.eye(4, 256, dtype=np.float32), amounts=(1.0, 0, 0, 0))
-    walk = SlerpWalk(256, "cpu", cfg, dtype=torch.float32)
-    assert walk._offset() is not None, "a matching basis must still push"
+    w = SlerpWalk(256, "cpu", cfg, dtype=torch.float32)
+    assert w._offset() is not None, "a matching basis must still push"
 
-    walk.retarget(512)                       # the basis is now the previous model's
-    assert walk._offset() is None, "a 256-wide push was folded into a 512-wide latent"
-    assert walk.latent(1.5).shape == (1, 512), "and the frame still has to be produced"
+    w.retarget(512)                          # the basis is now the previous model's
+    assert w._offset() is None, "a 256-wide push was folded into a 512-wide latent"
+    assert w.latent(1.5).shape == (1, 512), "and the frame still has to be produced"
 
-    # The `w` seam is exempt: its width is the mapping's and never `nz`.
+    # A `w` push is exempt: its width is the mapping's and never `nz`.
     cfg.push_into = torch.zeros(3, 256)
-    assert walk._offset() is not None, "a w-space basis was refused for not matching nz"
+    assert w._offset() is not None, "a w-space basis was refused for not matching nz"
 
 
 def test_retargeting_a_walk_changes_its_width_and_keeps_its_place():
     """A switch hands the incoming model the position the outgoing one was at."""
-    from ganlive.walk import SlerpWalk, WalkConfig
-
-    walk = SlerpWalk(256, "cpu", WalkConfig(base_seed=3), dtype=torch.float32)
+    w = SlerpWalk(256, "cpu", WalkConfig(base_seed=3), dtype=torch.float32)
     reference = SlerpWalk(512, "cpu", WalkConfig(base_seed=3), dtype=torch.float32)
 
-    walk.latent(5.5)                                    # load a segment, so there is a cache
-    walk.retarget(512)
-    after = walk.latent(5.5).reshape(-1)
+    w.latent(5.5)                                       # load a segment, so there is a cache
+    w.retarget(512)
+    after = w.latent(5.5).reshape(-1)
 
-    assert walk.nz == 512 and after.shape == (512,)
+    assert w.nz == 512 and after.shape == (512,)
     torch.testing.assert_close(after, reference.latent(5.5).reshape(-1), rtol=0, atol=0), (
         "the walk did not land where a walk of the new width would be at this beat")
-    assert position(walk.cfg, 5.5)[:2] == position(reference.cfg, 5.5)[:2], (
+    assert position(w.cfg, 5.5)[:2] == position(reference.cfg, 5.5)[:2], (
         "the switch moved the beat")
 
-    assert walk._scratch.shape == (512,), "the offset scratch is still the old width"
-    assert all(b.shape == (1, 512) for b in walk._staging), "the staging ring is stale"
+    assert w._scratch.shape == (512,), "the offset scratch is still the old width"
+    assert all(b.shape == (1, 512) for b in w._staging), "the staging ring is stale"
 
-    walk.retarget(512)                                  # idempotent: a repaint is not a switch
-    assert walk.nz == 512
+    w.retarget(512)                                     # idempotent: a repaint is not a switch
+    assert w.nz == 512
 
 
 def test_the_offset_is_rebuilt_when_the_basis_changes_under_a_held_dial():
     """A model switch does not move the dials, so the amounts alone cannot be the cache key."""
-
-    from ganlive.walk import SlerpWalk, WalkConfig
-
-    first = np.eye(2, 8, dtype=np.float32)
-    cfg = WalkConfig(directions=first, amounts=(1.0, 0.0))
-    walk = SlerpWalk(8, "cpu", cfg)
-    before = walk.latent(0.5).clone()
+    cfg = WalkConfig(directions=np.eye(2, 8, dtype=np.float32), amounts=(1.0, 0.0))
+    w = SlerpWalk(8, "cpu", cfg)
+    before = w.latent(0.5).clone()
 
     cfg.directions = np.zeros((2, 8), dtype=np.float32)      # a different model's basis
-    after = walk.latent(0.5)
+    after = w.latent(0.5)
     assert not torch.equal(before, after), (
         "the latent did not change when the basis did, so a stale offset is being reused")
 
 
 def test_a_walk_with_no_directions_still_plays():
     """A model whose first layer cannot be factorised must not take the instrument down."""
-    from ganlive.walk import SlerpWalk, WalkConfig
-
-    cfg = WalkConfig(directions=None, amounts=(1.0, -1.0))
-    walk = SlerpWalk(8, "cpu", cfg)
-    assert walk.latent(0.5).shape == (1, 8)
+    w = SlerpWalk(8, "cpu", WalkConfig(directions=None, amounts=(1.0, -1.0)))
+    assert w.latent(0.5).shape == (1, 8)
 
 
 def test_the_two_routes_a_dial_can_be_written_by_do_not_overlap_or_invent():
@@ -335,43 +370,35 @@ def test_the_two_routes_a_dial_can_be_written_by_do_not_overlap_or_invent():
 
 def test_the_walk_hands_an_onnx_graph_its_latent_on_the_host():
     """With `latent_on_host`, an ONNX graph gets the same latent as a host array, without a
-    round trip to the GPU and back."""
-
-    from ganlive.walk import SlerpWalk, WalkConfig
-
+    round trip to the card and back."""
     assert WalkConfig().latent_on_host is False, "the torch path is the default"
 
     cfg = WalkConfig(base_seed=11)
-    walk = SlerpWalk(nz=32, device="cpu", config=cfg, dtype=torch.float16)
+    w = SlerpWalk(nz=32, device="cpu", config=cfg, dtype=torch.float16)
 
     for beats in (0.0, 1.4, 3.7, 8.2):
         cfg.latent_on_host = False
-        on_card = walk.latent(beats)
+        on_card = w.latent(beats)
         cfg.latent_on_host = True
-        on_host = walk.latent(beats)
+        on_host = w.latent(beats)
 
         assert isinstance(on_card, torch.Tensor)
         assert isinstance(on_host, np.ndarray), "the graph is handed the host view itself"
         assert np.array_equal(np.asarray(on_card).reshape(-1), on_host), (
-            f"the two hand-over paths disagree at beat {beats}, so one of them is not the "
-            f"latent the other measured")
+            f"the two hand-over paths disagree at beat {beats}")
 
 
 def test_switching_back_to_a_model_clears_the_push_it_was_left_holding():
     """Push on model A, switch to B, centre every dial, switch back to A: A's push must be
     cleared, or A plays offset with its dials centred."""
-    import numpy as np
-
-    from ganlive.walk import SlerpWalk, WalkConfig
-
     a, b = torch.zeros(1, 4), torch.zeros(1, 4)
     cfg = WalkConfig(directions=np.eye(2, 4, dtype=np.float32), amounts=(1.0, 0.0), push_into=a)
-    walk = SlerpWalk(8, "cpu", cfg, dtype=torch.float32)
-    walk._hand_over(walk._offset())
+    w = SlerpWalk(8, "cpu", cfg, dtype=torch.float32)
+    w._hand_over(w._offset())
     assert a.abs().sum() > 0
     cfg.push_into = b
     cfg.amounts = (0.0, 0.0)
-    walk._hand_over(walk._offset())
+    w._hand_over(w._offset())
     cfg.push_into = a
-    walk._hand_over(walk._offset())
+    w._hand_over(w._offset())
     assert a.abs().sum() == 0, "A kept the push it had when the bank switched away"

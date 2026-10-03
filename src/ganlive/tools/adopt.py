@@ -15,7 +15,6 @@ random draws have been frozen.
 """
 from __future__ import annotations
 
-import argparse
 import time
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from ganlive.checkpoints import is_onnx
 from ganlive.models import foreign as F
 from ganlive.models import onnx_adopt as A
 from ganlive.models.onnx_file import weights_file
+from ganlive.tools import add_device, parser
 
 HUB = "hf:"
 
@@ -61,8 +61,7 @@ def graph_for(source: str, out_dir: Path, trust: bool, opset: int) -> tuple[Path
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ganlive adopt", description=__doc__.split("\n")[0],
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = parser("adopt", __doc__.split("\n")[0])
     ap.add_argument("source", help="a .onnx file, or hf:<owner>/<repo>")
     ap.add_argument("--out", type=Path, default=None,
                     help="where to write the playable graph (default runs/onnx/<name>.onnx)")
@@ -74,10 +73,10 @@ def main(argv=None) -> int:
                     help="the seed the graph's own random draws are frozen at")
     ap.add_argument("--target-levels", type=float, default=A.TARGET_LEVELS,
                     help="mean 8-bit levels a dial should buy at full travel, on every model")
-    ap.add_argument("--device", default="cpu",
-                    help="where to measure the dials: cpu (ONNX Runtime), or an OpenVINO "
-                         "device such as GPU. A six-megapixel generator needs the card -- "
-                         "adoption is about six hundred forward passes.")
+    add_device(ap, default="cpu", metavar="DEVICE",
+               help="where to measure the dials: cpu (ONNX Runtime), or an OpenVINO "
+                    "device such as GPU. A six-megapixel generator needs the card -- "
+                    "adoption is about six hundred forward passes.")
     ap.add_argument("--opset", type=int, default=18)
     ap.add_argument("--keep-raw", action="store_true",
                     help="keep the un-dialled export beside the playable one")

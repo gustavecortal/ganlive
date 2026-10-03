@@ -9,16 +9,18 @@ import pathlib
 import time
 import types
 
+import numpy as np
+import torch
+
+from ganlive.clock import MusicalClock, WalkConfig
+from ganlive.control.features import FeatureExtractor
+from ganlive.control.kit import INDEX
 from ganlive.dials import fastgan_dials as _fastgan
-from ganlive.dials.table import (
-    Surface,
-)
-from ganlive.presets import Impulse, Macro, Preset  # noqa: E402
-from ganlive.walk import (
-    MusicalClock,
-    SlerpWalk,
-    WalkConfig,
-)
+from ganlive.dials.table import Surface
+from ganlive.models import stylegan2 as S2
+from ganlive.presets import Impulse, Macro, Preset, PresetRunner
+from ganlive.strip import DialPanel
+from ganlive.walk import SlerpWalk
 
 NZ = 32
 STILL = Preset(
@@ -88,28 +90,44 @@ FULL = Preset(
 )
 FIXTURES = {p.name: p for p in (STILL, BREATHE, PULSE, VOICES, RELEASE, FULL)}
 
-#: A Rytm over Overbridge: twelve tracks on eight voice channels, the pairs sharing one.
+#: A Rytm's audio over USB: twelve tracks on eight voice channels, the pairs sharing one.
 OVERBRIDGE = "BD=2,SD=3,RS=4,CP=4,BT=5,LT=6,MT=7,HT=7,CH=8,OH=8,CY=9,CB=9"
+
 
 def tiny_stylegan2(**over):
     """A StyleGAN2 config small enough to run in a pre-commit loop, and the same shape as the
     real thing."""
-    from ganlive.models import stylegan2 as S2
-
     return dataclasses.replace(
         S2.Config(z_dim=16, w_dim=16, img_resolution=32, channel_base=128, channel_max=32,
                   num_layers=2, num_fp16_res=0), **over)
+
+
+def tiny_stylegan2_file(path, **over):
+    """A converted StyleGAN2 checkpoint of `tiny_stylegan2(**over)` at `path`. Returns the config."""
+    cfg = tiny_stylegan2(**over)
+    S2.save(path, cfg, S2.Generator(cfg).state_dict())
+    return cfg
+
+
+def fastgan_stub_checkpoint(path, **config):
+    """A FastGAN checkpoint holding a config and no weights: enough for `config_of`, and far
+    smaller than a real one. Nothing reading it builds a generator."""
+    torch.save({"config": config, "g_ema": {}}, path)
+    return path
+
+
+def stub_cfg(nz: int, width: int, height: int):
+    """Just enough of a model config: the latent width and the native frame size."""
+    return types.SimpleNamespace(nz=nz, ladder=types.SimpleNamespace(width=width, height=height))
 
 
 def walk(**kw) -> SlerpWalk:
     return SlerpWalk(NZ, "cpu", WalkConfig(**kw))
 
 
-
 def _step(w: SlerpWalk, n: int = 40) -> float:
     """Mean displacement between consecutive targets -- how far one segment actually travels."""
     return sum(float((w.seed_for(k) - w.seed_for(k + 1)).norm()) for k in range(n)) / n
-
 
 
 def _pulses(clock, bpm, seconds, t0=0.0, jitter=0.0, rng=None):
@@ -122,14 +140,12 @@ def _pulses(clock, bpm, seconds, t0=0.0, jitter=0.0, rng=None):
     return t
 
 
-
-class FakeKnobs:
-    """Enough of `Knobs` to record what a dial writes, with no card and no checkpoint."""
+class FakeSettings:
+    """Enough of `Settings` to record what a dial writes, with no card and no checkpoint."""
 
     def __init__(self, names=None):
-        from ganlive.dials.fastgan_dials import SETTINGS_WRITTEN
-
-        self.index = {n: i for i, n in enumerate(SETTINGS_WRITTEN if names is None else names)}
+        names = _fastgan.SETTINGS_WRITTEN if names is None else names
+        self.index = {n: i for i, n in enumerate(names)}
         self.written = {}
 
     def set(self, name, value):
@@ -142,14 +158,12 @@ class FakeKnobs:
         pass
 
 
-
 def _applied(**dials):
     """One set of dial values, applied to both of the surface's destinations."""
     surface = Surface(dials, layout=_fastgan.fastgan())
-    knobs, walk = FakeKnobs(), WalkConfig()
-    surface.apply(knobs, walk)
-    return (dict(knobs.written), walk)
-
+    settings, walk = FakeSettings(), WalkConfig()
+    surface.apply(settings, walk)
+    return (dict(settings.written), walk)
 
 
 @dataclasses.dataclass
@@ -160,31 +174,33 @@ class _StubModel:
     directions: object = None
     dials_live: frozenset = frozenset()
     name: str = "stub"
-    #: Not `None`: `bank.Model.path` has no default, so production always has one, and
-    #: `_rewire` asks it which backend is loaded. A stub without one made that a crash.
     path: object = dataclasses.field(default_factory=lambda: pathlib.Path("stub.pt"))
     net: object = None
-    #: A `ladder` beside the `nz`, because `_rewire` now moves the *stage* to the incoming
-    #: model's native size as well as the walk to its latent width -- a bank no longer has
-    #: one size. Fourth field this stub has grown for that reason; see the note below.
-    cfg: object = dataclasses.field(default_factory=lambda: types.SimpleNamespace(
-        nz=8, ladder=types.SimpleNamespace(width=96, height=64)))
+    #: The bank resizes its stage to the model's native size and its walks to its latent width.
+    cfg: object = dataclasses.field(default_factory=lambda: stub_cfg(8, 96, 64))
     knobs: object = None
     graphs: int = 0
     compile_s: float = 0.0
     layout: object = dataclasses.field(default_factory=lambda: _fastgan.fastgan())
-    #: `None` is what `bank.Model` defaults it to, and it is what every family except a converted StyleGAN2
-    #: carries.
+    #: None on every family except a converted StyleGAN2, as on `bank.Model`.
     push: object = None
 
 
+def _runner(preset: Preset | str = "still", channel_of=None, channels: int = 0):
+    """A runner for a preset (or a fixture's name), on the twelve-track kit unless told
+    otherwise, with this project's dials."""
+    if isinstance(preset, str):
+        preset = FIXTURES[preset]
+    return PresetRunner(preset, INDEX if channel_of is None else channel_of, 60.0,
+                        channels=channels, layout=_fastgan.fastgan())
 
-def _runner(preset: str = "still"):
-    """A runner for one fixture preset, on the twelve-track kit, with this project's dials."""
-    from ganlive.control.kit import INDEX
-    from ganlive.presets import PresetRunner
 
-    return PresetRunner(FIXTURES[preset], INDEX, 60.0, layout=_fastgan.fastgan())
+def since(*tracks) -> list[float]:
+    """A frame's time-since-hit per track: the named tracks hit just now, the rest long ago."""
+    out = [1e6] * len(INDEX)
+    for track in tracks:
+        out[INDEX[track]] = 0.0
+    return out
 
 
 def stub_bank(current, **over):
@@ -195,8 +211,6 @@ def stub_bank(current, **over):
 
 def _panel(dials_live=None, levels=None, runner=None):
     """A strip with a stub bank behind it, for the things that are facts about a model."""
-    from ganlive.strip import DialPanel
-
     dirs = None if levels is None else types.SimpleNamespace(levels=levels)
     bank = None if dials_live is None else stub_bank(
         _StubModel(dials_live=frozenset(dials_live), directions=dirs))
@@ -233,13 +247,8 @@ def dummy_display():
             os.environ["SDL_VIDEODRIVER"] = before
 
 
-
 def offline(audio, samplerate: int, fps: float, config=None) -> dict:
     """Run the onset extractor over a whole recording at a video frame rate."""
-    import numpy as np
-
-    from ganlive.control.features import FeatureExtractor
-
     x = np.asarray(audio, dtype=np.float32)
     if x.ndim == 1:
         x = x[None, :]
@@ -262,8 +271,6 @@ def offline(audio, samplerate: int, fps: float, config=None) -> dict:
 def score_onsets(detected, fps: float, truth, channel_of: dict[str, int],
                  tolerance: float = 0.030) -> dict:
     """Precision, recall and timing error of per-frame onsets against the simulator's events."""
-    import numpy as np
-
     got: list[tuple[float, int]] = []
     for f, items in enumerate(detected):
         for ch, _vel, ago in items:
