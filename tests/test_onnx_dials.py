@@ -17,7 +17,7 @@ from torch import nn
 
 
 class _Noisy(nn.Module):
-    """A tiny generator with a live noise draw at every rung, as a StyleGAN exports one."""
+    """A tiny generator with a live noise draw at every resolution, as a StyleGAN exports one."""
 
     def __init__(self, nz: int = 16, base: int = 4, rungs: int = 3, gain: float = 0.6) -> None:
         super().__init__()
@@ -35,8 +35,7 @@ class _Noisy(nn.Module):
         for i, block in enumerate(self.blocks):
             x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
             x = torch.relu(block(x))
-            # A fresh draw per forward: the thing that makes a graph answer the same
-            # question differently, and the whole reason adoption freezes anything.
+            # A fresh draw per forward, which adoption has to freeze.
             x = x + self.weight[i] * torch.randn_like(x[:, :1])
         return torch.tanh(self.out(x))
 
@@ -51,12 +50,9 @@ def _export(tmp_path, net, nz, name="raw.onnx"):
 
 
 def test_a_graph_that_answers_the_same_latent_differently_is_made_to_stop(tmp_path):
-    """**The failure that is invisible in a still picture.** A StyleGAN's noise injection
-    survives export as live `RandomNormalLike` nodes, so the graph boils on its own: the
-    first foreign model tried here answered one latent 165 8-bit levels apart. Every dial
-    measured against that would have been measuring the boiling, and the picture looks
-    entirely like a working GAN the whole time.
-    """
+    """A StyleGAN's noise injection survives export as live `RandomNormalLike` nodes, so the
+    graph answers one latent differently every time. Every dial measured against that would
+    be measuring the noise, and a still picture would not show it."""
     from ganlive.models.calibrate import Probe, deterministic
     from ganlive.models.onnx_adopt import adopt
 
@@ -71,17 +67,16 @@ def test_a_graph_that_answers_the_same_latent_differently_is_made_to_stop(tmp_pa
 
 
 def test_every_derived_dial_moves_the_picture_through_the_real_graph(tmp_path):
-    """The inert-knob failure, in the place it would now come from. A dial derived by shape
-    is a guess until it is driven, and a guess on the strip is exactly what this project has
-    paid for three times."""
-    from ganlive.models.calibrate import Probe, levels
-    from ganlive.models.onnx import settings_of
+    """A dial derived from the graph's shape is a guess until it is driven."""
+    from ganlive.models.calibrate import Probe
     from ganlive.models.onnx_adopt import adopt
+    from ganlive.models.onnx_file import dials_of
+    from ganlive.pixels import levels
 
     torch.manual_seed(1)
     out = tmp_path / "playable.onnx"
     found = adopt(_export(tmp_path, _Noisy(), 16), out)
-    names = settings_of(out)
+    names = dials_of(out)["settings"]
     assert names == found.names and names, "the names have to travel inside the file"
 
     probe = Probe(out)
@@ -95,11 +90,11 @@ def test_every_derived_dial_moves_the_picture_through_the_real_graph(tmp_path):
 
 
 def test_a_dial_buys_the_same_change_on_any_model_it_is_derived_from(tmp_path):
-    """Calibration is the whole argument for deriving rather than shipping a range: the same
-    gain does not buy the same effect on another model, and four grain dials shipped with a
-    fixed range once felt like four different instruments."""
-    from ganlive.models.calibrate import TARGET_LEVELS, Probe, levels
+    """Calibration is the argument for deriving rather than shipping a range: the same gain
+    does not buy the same effect on another model."""
+    from ganlive.models.calibrate import TARGET_LEVELS, Probe
     from ganlive.models.onnx_adopt import adopt
+    from ganlive.pixels import levels
 
     torch.manual_seed(2)
     out = tmp_path / "playable.onnx"
@@ -110,9 +105,8 @@ def test_a_dial_buys_the_same_change_on_any_model_it_is_derived_from(tmp_path):
     for slot, dial in enumerate(found.dials):
         if dial.moved < TARGET_LEVELS - 0.5:
             continue                       # a dial that cannot get there is reported, not faked
-        # Both ends, and the best of them. A two-sided dial can have one half that saturates
-        # short -- a band gain under this fixture's tanh reaches 25 downward and 9.8 upward --
-        # and the claim being made is about full travel, which is the end that goes furthest.
+        # Both ends, and the best of them: a two-sided dial can have one half that saturates
+        # short, and the claim is about the end that goes furthest.
         got = []
         for end in (dial.curve[0], dial.curve[-1]):
             k = probe.neutral()
@@ -123,10 +117,8 @@ def test_a_dial_buys_the_same_change_on_any_model_it_is_derived_from(tmp_path):
 
 
 def test_a_band_is_picture_shaped_and_not_merely_four_dimensional(tmp_path):
-    """**A style vector is `(1, C, 1, 1)` and a blur kernel is `(1, 1, 3, 3)`.** Both passed
-    a bare four-dimensional test on the first foreign model tried here and arrived on the
-    strip as `gain_1` and `gain_3`, which are not resolutions and are not what those tensors
-    are."""
+    """A style vector is `(1, C, 1, 1)` and a blur kernel is `(1, 1, 3, 3)`: four-dimensional,
+    and not resolution bands."""
     from ganlive.models.onnx_adopt import MIN_BAND, adopt
 
     torch.manual_seed(3)
@@ -137,11 +129,9 @@ def test_a_band_is_picture_shaped_and_not_merely_four_dimensional(tmp_path):
 
 
 def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
-    """Two dials on one tensor is two controls that move together, and nothing on the strip
-    would say so. It happened on the first model tried: `gain_128` and `pre_tanh` were the
-    same `Multiply`. `pre_tanh` is gone now -- a gain into the output squash is a contrast
-    curve on the finished picture -- so on a fixture whose top band *is* the squash's input the
-    answer is one fewer dial, not the same dial under the band's name."""
+    """Two dials on one tensor are two controls that move together. And a gain into the
+    output squash is only a contrast curve, so on a fixture whose top band is the squash's
+    input that band gets no dial."""
     import onnx
 
     from ganlive.models.onnx_adopt import _squash, adopt
@@ -151,7 +141,6 @@ def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
     found = adopt(source, tmp_path / "playable.onnx")
     tensors = [d.tensor for d in found.dials]
     assert len(tensors) == len(set(tensors)), tensors
-    assert "pre_tanh" not in found.names, "the squash dial was deleted, not renamed"
 
     # Read off the graph the dials were derived from, not the rewritten one: the insertions
     # rename what feeds the squash, so the output graph cannot answer this.
@@ -162,10 +151,10 @@ def test_one_dial_per_tensor_and_none_at_all_on_the_squash(tmp_path):
 
 
 def test_the_strip_reads_an_adopted_graph_without_knowing_the_architecture(tmp_path):
-    """The payoff, end to end: a file this code has never seen becomes a control surface."""
+    """End to end: a file this code has never seen becomes a control surface."""
     from ganlive.dials import table as S
     from ganlive.models import onnx_adopt as A
-    from ganlive.models.onnx import dials_of
+    from ganlive.models.onnx_file import dials_of
 
     torch.manual_seed(5)
     out = tmp_path / "playable.onnx"
@@ -238,9 +227,7 @@ def test_fetching_someone_elses_code_is_refused_unless_it_was_asked_for():
 
 
 def test_a_curve_is_the_response_it_was_measured_from(tmp_path):
-    """Three points was not enough. Where a gain feeds an instance norm the norm divides it
-    straight back out, so nothing happens until the gain is near zero -- three of five
-    rendered frames were visibly the same picture."""
+    """A curve is any number of evenly spaced values, read piecewise-linearly."""
     from ganlive.dials.table import at, evenly
 
     points = evenly((0.001, 0.01, 0.1, 1.0))
@@ -255,8 +242,10 @@ def test_a_curve_is_the_response_it_was_measured_from(tmp_path):
 
 
 def test_a_graph_runs_on_whatever_this_machine_has(tmp_path):
-    """The ONNX path was OpenVINO and nothing else, which reaches Intel GPUs and no others."""
+    """`auto` opens whichever runtime this machine has, and it computes the same frame."""
+    from ganlive.models.common import host_latent
     from ganlive.models.runtime import open_graph, survey
+    from ganlive.pixels import worst_levels
 
     torch.manual_seed(6)
     out = tmp_path / "playable.onnx"
@@ -267,11 +256,11 @@ def test_a_graph_runs_on_whatever_this_machine_has(tmp_path):
     assert chosen.nz == reference.nz and chosen.size == reference.size
     assert chosen.settings == reference.settings
 
-    z = np.random.default_rng(0).standard_normal((1, reference.nz)).astype(np.float32)
+    z = host_latent(reference.nz)
     k = np.ones(reference.settings, np.float32)
-    gap = float(np.abs(np.asarray(chosen.infer(z, k), np.float32)
-                       - np.asarray(reference.infer(z, k), np.float32)).max() * 127.5)
-    assert gap < 1.0, f"{chosen.backend}/{chosen.device} is not the reference: {gap:.3f} levels"
+    gap = worst_levels(torch.from_numpy(np.asarray(chosen.infer(z, k), np.float32)),
+                       torch.from_numpy(np.asarray(reference.infer(z, k), np.float32)))
+    assert gap < 1.0, f"{chosen.backend}/{chosen.device} differs from ONNX Runtime by {gap:.3f} levels"
     assert "onnxruntime" in survey()
 
 
@@ -293,13 +282,8 @@ def test_a_provider_that_is_not_there_is_refused_by_name(tmp_path):
 
 
 def test_a_provider_that_silently_became_the_cpu_is_an_error(tmp_path, monkeypatch):
-    """**The failure this project has paid for twice.** A provider whose DLL will not load,
-    or that refuses the graph, is a warning on stderr -- not an exception -- and the session
-    runs on the CPU looking healthy. `onnxruntime-openvino` did it at 650 ms and read as an
-    ONNX verdict; DirectML does it to this project's own 1536x1024 exports, turning 3.27 ms
-    into 146 without a word. A slow backend is a disappointment. A slow backend wearing a
-    fast one's name is a wrong measurement.
-    """
+    """A provider whose DLL will not load, or that refuses the graph, is only a warning on
+    stderr, and the session runs on the CPU under the provider's name."""
     import onnxruntime as ort
 
     from ganlive.models import runtime as R
@@ -322,44 +306,24 @@ def test_a_provider_that_silently_became_the_cpu_is_an_error(tmp_path, monkeypat
         R.open_graph(out, backend="ort", device="DmlExecutionProvider")
 
 
-def test_onnx_config_reports_a_foreign_size_instead_of_crashing():
-    """`onnx_model` reads sizes through `models.Ladder`, not a second copy of it."""
-    from ganlive.models import fastgan as models
-    from ganlive.models import onnx as onnx_model
-
-    assert onnx_model.Ladder is models.Ladder
-
-    # A size no generator here builds, which is the whole point of the backend.
-    ladder = onnx_model.Ladder(width=1536, height=1024)
-    assert (ladder.height, ladder.width) == (1024, 1536)
-
-    cfg = onnx_model.OnnxConfig(nz=256, ladder=ladder)
-    assert (cfg.ladder.width, cfg.ladder.height) == (1536, 1024)
-
-
 def test_config_of_reads_a_real_graph_through_the_cached_parse(tmp_path):
-    """The call that used to raise, against an actual file."""
-    from ganlive.models import onnx as onnx_model
+    from ganlive.models import onnx_file
 
     path = _export(tmp_path, _Noisy(), 16)
-    cfg = onnx_model.config_of(path)
+    cfg = onnx_file.config_of(path)
 
     assert cfg.nz == 16
     assert (cfg.ladder.height, cfg.ladder.width) == (32, 32)
 
-    # Same numbers as the graph's own declared shapes, and from the one cached read that
-    # `dials_of` already performs rather than a second parse.
-    said = onnx_model.dials_of(path)
+    # The same numbers as the graph's own declared shapes, from the cached read.
+    said = onnx_file.dials_of(path)
     assert said["nz"] == cfg.nz
     assert said["size"] == (cfg.ladder.height, cfg.ladder.width)
 
 
 def test_the_precision_verdict_and_the_dials_are_measured_on_one_runtime(tmp_path, monkeypatch):
-    """**Two passes, one backend.** The precision check went through `auto`, which ignores the
-    device and takes the first runtime that opens, while the dials were calibrated on OpenVINO
-    -- so on a CUDA machine the verdict was filed under, and measured on, a runtime the dials
-    never ran on. And the FP16 runner the verdict came from is the one calibration uses, not a
-    third compile of the same graph."""
+    """The precision verdict is measured, and filed, on the runtime the dials are calibrated
+    on, and calibration reuses the FP16 runner the verdict came from."""
     import dataclasses
 
     from ganlive.models import runtime
@@ -394,11 +358,12 @@ class _Demodulated(nn.Module):
 def test_a_norm_is_taken_without_holding_its_square(tmp_path):
     """`wide_norms` is exact: the same frame in single precision, and no full-size square."""
     ov = pytest.importorskip("openvino")
-    from ganlive.models.onnx import wide_norms
+    from ganlive.models.common import host_latent
+    from ganlive.models.runtime import wide_norms
 
     path = _export(tmp_path, _Demodulated(), 256)
     core = ov.Core()
-    z = np.random.default_rng(0).standard_normal((1, 256)).astype(np.float32)
+    z = host_latent(256)
     frames = []
     for rewrite in (False, True):
         model = core.read_model(str(path))
@@ -416,6 +381,7 @@ def test_a_norm_is_taken_without_holding_its_square(tmp_path):
 def test_a_frame_lands_in_the_buffer_it_was_given(tmp_path):
     """What lets an ONNX frame reach the card as a DMA: the runtime writes into our array."""
     pytest.importorskip("openvino")
+    from ganlive.models.common import host_latent
     from ganlive.models.runtime import open_graph
 
     torch.manual_seed(6)
@@ -424,6 +390,6 @@ def test_a_frame_lands_in_the_buffer_it_was_given(tmp_path):
     runner = open_graph(out, backend="openvino", device="CPU", precision="FP32")
     host = np.zeros(runner.shapes[0], runner.dtype)
     runner.land(host)
-    z = np.random.default_rng(0).standard_normal((1, runner.nz)).astype(np.float32)
+    z = host_latent(runner.nz)
     frame = runner.infer(z, np.ones(runner.settings, np.float32))
     assert np.shares_memory(frame, host) and np.abs(host).max() > 0

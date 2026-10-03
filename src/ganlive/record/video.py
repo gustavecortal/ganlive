@@ -1,4 +1,4 @@
-"""Getting finished frames into a file: one writer thread, and where the files go."""
+"""Writing finished frames to a video file on one encoder thread, and saving stills."""
 from __future__ import annotations
 
 import queue
@@ -7,20 +7,22 @@ import time
 from fractions import Fraction
 from pathlib import Path
 
+from ganlive.files import size_mb
+
 #: Hardware encoders, in the order they are tried. The first that opens on this machine
 #: wins; `libx264` always does, on the CPU, and costs most of the frame rate at 4K.
 CODECS = ("av1_qsv", "hevc_qsv", "h264_nvenc", "hevc_nvenc", "hevc_videotoolbox",
           "h264_amf", "libx264")
 DEFAULT_CODEC = "auto"
 
+#: Encoder frames reused in rotation, so the writer does not allocate one per frame.
 POOL = 4
 
 
 def save_still(path: Path, rgb) -> threading.Thread:
     """Write one RGB frame as a PNG, on its own thread, and hand the thread back.
 
-    Through pygame, which is here for the window anyway, rather than a second imaging
-    library for one call."""
+    Through pygame, which the window already needs, rather than another imaging library."""
     def write():
         import pygame
 
@@ -34,7 +36,11 @@ def save_still(path: Path, rgb) -> threading.Thread:
 
 
 class Recorder:
-    """A container, a bounded queue and the one thread that muxes into it."""
+    """A container, a bounded queue of NV12 frames, and the one thread that encodes them.
+
+    With `realtime`, a frame offered while the queue is full is dropped and the timestamps
+    follow the wall clock, so the file plays at the speed the take happened. Without it,
+    `offer` blocks and every frame is kept."""
 
     def __init__(self, path, width: int, height: int, fps: float, codec: str = DEFAULT_CODEC,
                  *, realtime: bool = False, depth: int = 4) -> None:
@@ -51,7 +57,6 @@ class Recorder:
         self._thread: threading.Thread | None = None
         self._t0: float | None = None
         self._pts = -1
-
 
     def start(self) -> Recorder:
         self._thread = threading.Thread(target=self._run, name=f"encode {self.path.name}",
@@ -70,7 +75,7 @@ class Recorder:
         return not self._q.full()
 
     def skip(self) -> None:
-        """Count a frame the caller did not bother to fetch, so the report is still true."""
+        """Count a frame the caller chose not to fetch, so the report still adds up."""
         self.offered += 1
         self.dropped += 1
 
@@ -110,23 +115,21 @@ class Recorder:
 
     def report(self) -> dict:
         """What is in the file. `offered == frames + dropped` unless the writer failed."""
-        mb = self.path.stat().st_size / 1e6 if self.path.exists() else 0.0
         out = {"file": str(self.path), "codec": self.codec,
-               "mb": round(mb, 1), "frames": self.written,
+               "mb": round(size_mb(self.path), 1), "frames": self.written,
                "offered": self.offered,
                "dropped": self.dropped, "seconds": round(self.seconds, 1)}
         if self.failed:
             out["error"] = f"{type(self.failed[0]).__name__}: {self.failed[0]}"
         return out
 
-
     def _encoder(self, av, tb: Fraction) -> str:
         """The first wanted encoder that actually opens at this size on this machine.
 
         Opened for real rather than looked up: `add_stream` only checks that the build knows
-        the name, so an NVENC encoder on a machine without an NVIDIA card is accepted there
-        and fails at the first frame, losing the take. `libx264` is last in `CODECS` and
-        always opens, on the CPU, so `auto` records slowly rather than not at all."""
+        the name, so an NVENC encoder on a machine without an NVIDIA card would be accepted
+        and then fail at the first frame. `libx264` is last in `CODECS` and always opens, on
+        the CPU, so `auto` records slowly rather than not at all."""
         wanted = CODECS if self.codec == "auto" else (self.codec,)
         for name in wanted:
             try:

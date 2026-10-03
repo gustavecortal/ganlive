@@ -1,12 +1,8 @@
-"""What a controller has to be set to, in whatever that controller calls it.
+"""Per-machine advice: which setting to switch on when clock, notes or knobs are silent.
 
-Every tool here reports a silence sooner or later -- no clock, no notes, no knobs -- and the
-useful half of that report is *what to go and switch on*. That is the one thing which really
-is per-machine, so it lives here as data rather than as sentences spread through four tools
-that named one product's menus at everyone who ran them.
-
-Unknown hardware gets `GENERIC`, which says what kind of setting to look for without
-pretending to know the menu it is under. That is honest, and it is what most people see.
+The tools report silences in a machine's own words, taken from a `Machine` here. Hardware
+nobody named gets `GENERIC`, which says what kind of setting to look for without naming a
+menu it may not have.
 """
 
 from __future__ import annotations
@@ -26,9 +22,8 @@ class Machine:
     transport: str = "its transport-send setting"
     notes: str = "its pad/note output setting"
     encoders: str = "its knob/CC output setting"
-    #: How per-voice audio reaches the host, for kit whose drums can be heard separately.
-    #: `None` where that is not a thing it does, which is most of them -- and `doctor` then
-    #: says nothing about it rather than guessing that a controller has stems at all.
+    #: How per-voice audio reaches the host, for a machine whose drums can be heard
+    #: separately. `None` for most controllers, and then the tools say nothing about it.
     stems: str | None = None
 
     def says(self, what: str) -> str:
@@ -38,7 +33,8 @@ class Machine:
 
 GENERIC = Machine(name="your controller")
 
-#: The machine this was built against. Its menu paths are exact; nothing else assumes them.
+#: The Elektron Analog Rytm drum machine, which this was built against: its menu paths are
+#: exact. Overbridge is Elektron's USB audio, which carries each voice on its own channel.
 RYTM = Machine(
     name="Analog Rytm",
     port="rytm",
@@ -57,7 +53,7 @@ KNOWN = (RYTM,)
 def profile(port_match: str = "", name: str = "") -> Machine:
     """The machine a port filter or a device name points at, or `GENERIC`.
 
-    Matching on the words the user already typed -- `--port`, `--audio-name` -- rather than
-    on a flag of its own, so nobody has to declare their hardware to get advice about it."""
+    Matched on what the user already typed -- `--midi-port`, `--audio-name` -- so nobody has
+    to declare their hardware to get advice about it."""
     hay = f"{port_match} {name}".lower()
     return next((m for m in KNOWN if m.port and m.port in hay), GENERIC)

@@ -1,63 +1,75 @@
-"""Giving a graph nobody here wrote a set of dials, and proving each one moves the picture.
+"""Giving an ONNX graph nobody here wrote a set of dials, and proving each one moves the picture.
 
-Protobuf surgery: freeze every random draw so the same latent gives the same pixels, find the
-resolution bands, insert a `Mul` on each fed from a new settings input, then measure what each
-one bought and write all of it into the file's own metadata. The instrument that opens the
-result afterwards knows nothing about the architecture.
-
-The measuring half is `models/calibrate.py`; this is the half that edits a graph.
+Freeze every random draw so the same latent gives the same pixels, find the resolution bands,
+insert a `Mul` on each fed from a new settings input, measure what each buys (see
+`calibrate`), and write all of it into the file's own metadata. The instrument that opens
+the result needs to know nothing about the architecture.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 
+from ganlive.models import runtime
 from ganlive.models.calibrate import (
     TARGET_LEVELS,
     Adopted,
     Dial,
     Probe,
-    _latent,
     calibrate,
     deterministic,
-    levels,
 )
-from ganlive.models.onnx import _dims
-from ganlive.models.onnx import dials_of as onnx_dials
+from ganlive.models.common import host_latent
+from ganlive.models.onnx_file import (
+    dials_of,
+    dims,
+    initializers,
+    name_settings,
+    producers,
+    weights_file,
+)
+from ganlive.pixels import levels
 
 #: The ops that make a graph give a different answer to the same question.
 RANDOM = ("RandomNormal", "RandomNormalLike", "RandomUniform", "RandomUniformLike")
 
-
-#: The ops a generator ends in. A gain into one of these is the dial that washes the picture
-#: out below 1 and hard-clips it above.
+#: The ops a generator ends in. A gain into one of these only changes contrast, so no dial
+#: goes there.
 SQUASH = ("Tanh", "Sigmoid")
 
+#: Ops that can sit between a squash and the graph's output without being the picture: a
+#: denormalise, a layout change, a cast to bytes.
+AFTER_SQUASH = ("Mul", "Add", "Sub", "Div", "Clip", "Cast", "Transpose", "Reshape",
+                "Squeeze", "Unsqueeze", "Identity", "Round")
 
-#: How far half precision may move the picture before it is refused, in mean 8-bit levels. This project's
-#: own generator measures 0.100 there and has shipped in fp16 for months.
+#: How far half precision may move the picture before it is refused, in mean 8-bit levels.
 HALF_LEVELS = 1.0
+
+#: The smallest spatial side that counts as a resolution band.
+MIN_BAND = 4
+
+#: Above this a graph's weights are saved beside it rather than inside: protobuf's limit is 2 GB.
+INLINE_BYTES = 1_800_000_000
 
 
 def _shapes(model) -> dict[str, tuple[int, ...]]:
     """Every tensor's static shape, from shape inference, with a symbolic batch read as 1.
 
-    A tensor with any other unknown dim is dropped. The batch is the one dim an exporter
-    routinely leaves symbolic (`dynamic_axes={"z": {0: "batch"}}`), and this plays one frame."""
+    A tensor with any other unknown dimension is left out. The batch is the one dimension an
+    exporter routinely leaves symbolic, and this plays one frame."""
     import onnx
 
     inferred = onnx.shape_inference.infer_shapes(model, strict_mode=False)
     out: dict[str, tuple[int, ...]] = {}
     for group in (inferred.graph.value_info, inferred.graph.input, inferred.graph.output):
         for value in group:
-            dims = _dims(value)
-            if len(dims) >= 2 and dims[0] <= 0:
-                dims[0] = 1
-            if dims and all(d > 0 for d in dims):
-                out[value.name] = tuple(dims)
+            shape = dims(value)
+            if len(shape) >= 2 and shape[0] <= 0:
+                shape[0] = 1
+            if shape and all(d > 0 for d in shape):
+                out[value.name] = tuple(shape)
     return out
 
 
@@ -75,7 +87,7 @@ def _rewire(graph, old: str, new: str, skip) -> None:
 
 
 def _gate(graph, tensor: str, slot: int, feed: str, tag: str, at: int):
-    """Insert `tensor * k[slot]` and rewire everything downstream onto it."""
+    """Insert `tensor * k[slot]` at node index `at` and rewire everything downstream onto it."""
     from onnx import helper, numpy_helper
 
     take = f"ganlive_take_{tag}"
@@ -83,8 +95,7 @@ def _gate(graph, tensor: str, slot: int, feed: str, tag: str, at: int):
     for name, value in ((f"{take}_start", [slot]), (f"{take}_end", [slot + 1])):
         graph.initializer.append(
             numpy_helper.from_array(np.array(value, np.int64), name))
-    # No `axes` input: it is optional and the settings vector has one dimension, so the
-    # default is the axis wanted. Every dial was storing its own identical copy of `[0]`.
+    # No `axes` input: the settings vector has one dimension, which is the default.
     cut = helper.make_node("Slice", [feed, f"{take}_start", f"{take}_end"],
                            [take], name=take)
     mul = helper.make_node("Mul", [tensor, take], [scaled], name=scaled)
@@ -122,22 +133,16 @@ def _freeze_random(graph, shapes, seed: int) -> list[tuple[str, tuple[int, ...]]
     return frozen
 
 
-#: The smallest spatial side that counts as a resolution band.
-MIN_BAND = 4
-
-
-def _feeds(graph, target: str) -> set[str]:
-    """Every tensor the graph's own output actually depends on."""
-    produced = {out: node for node in graph.node for out in node.output}
+def _feeds(graph, produced, target: str) -> set[str]:
+    """Every tensor `target` depends on."""
     seen, edge = set(), [target]
     while edge:
         name = edge.pop()
         if name in seen:
             continue
         seen.add(name)
-        node = produced.get(name)
-        if node is not None:
-            edge.extend(node.input)
+        if name in produced:
+            edge.extend(graph.node[produced[name]].input)
     return seen
 
 
@@ -152,10 +157,10 @@ def _ladder(size) -> set[tuple[int, int]]:
     return out
 
 
-def _bands(graph, shapes, size) -> dict[tuple[int, int], tuple[str, int]]:
-    """The last tensor at each spatial size, as `{(h, w): (tensor, node index)}`."""
+def _bands(graph, shapes, size, mine) -> dict[tuple[int, int], tuple[str, int]]:
+    """The last tensor at each spatial size the output depends on, as
+    `{(h, w): (tensor, node index)}`."""
     consumed = {name for node in graph.node for name in node.input}
-    mine = _feeds(graph, graph.output[0].name)
     rungs = _ladder(size) if any(size) else None
     out: dict[tuple[int, int], tuple[str, int]] = {}
     for i, node in enumerate(graph.node):
@@ -178,20 +183,14 @@ def _band_names(bands) -> list[tuple[tuple[int, int], str]]:
              else f"gain_{size[0]}x{size[1]}") for size in sizes]
 
 
-#: Ops that can sit between a squash and the graph's output without being the picture: a denormalise, a
-#: layout change, a cast to bytes.
-AFTER_SQUASH = ("Mul", "Add", "Sub", "Div", "Clip", "Cast", "Transpose", "Reshape",
-                "Squeeze", "Unsqueeze", "Identity", "Round")
-
-
 def _squash(graph) -> str | None:
-    """The input to the squash the graph's *first* output comes out of, if there is one."""
-    produced = {out: node for node in graph.node for out in node.output}
+    """The input to the squash the graph's first output comes out of, if there is one."""
+    produced = producers(graph)
     name = graph.output[0].name
     for _step in range(len(AFTER_SQUASH) + 4):
-        node = produced.get(name)
-        if node is None:
+        if name not in produced:
             return None
+        node = graph.node[produced[name]]
         if node.op_type in SQUASH:
             return node.input[0]
         if node.op_type not in AFTER_SQUASH:
@@ -200,37 +199,28 @@ def _squash(graph) -> str | None:
     return None
 
 
-def _with_initializers(graph, shapes) -> dict[str, tuple[int, ...]]:
-    """The inferred shapes, plus the stored tensors' own, which need no inference at all."""
-    out = dict(shapes)
-    for tensor in graph.initializer:
-        out.setdefault(tensor.name, tuple(tensor.dims))
-    return out
-
-
 def _constant(graph) -> set[str]:
     """Every tensor whose value does not depend on any graph input."""
     live = {value.name for value in graph.input}
     for node in graph.node:
         if live.intersection(node.input):
             live.update(node.output)
-    produced = {out for node in graph.node for out in node.output}
-    return (produced | {i.name for i in graph.initializer}) - live
+    return (set(producers(graph)) | set(initializers(graph))) - live
 
 
-def _baked_noise(graph, shapes, size) -> list[tuple[str, tuple[int, ...]]]:
-    """Noise patterns that were frozen before the export, as `(tensor, shape)` per draw."""
+def _baked_noise(graph, shapes, size, mine) -> list[tuple[str, tuple[int, ...]]]:
+    """Noise patterns frozen before the export, as `(tensor, shape)` per pattern: a constant
+    at least two-dimensional, added to a feature map of the same spatial size."""
     fixed = _constant(graph)
-    mine = _feeds(graph, graph.output[0].name)
+    shapes = {**{n: tuple(t.dims) for n, t in initializers(graph).items()}, **shapes}
     out = []
     for node in graph.node:
         if node.op_type != "Add" or node.output[0] not in mine:
             continue
         for name, other in (node.input[0], node.input[1]), (node.input[1], node.input[0]):
             shape, feature = shapes.get(name), shapes.get(other)
-            # **Two dimensions is enough, and requiring four found none of NVIDIA's.** StyleGAN2 registers
-            # its noise as `(H, W)` and lets it broadcast over batch and channel; this project's own is `(1,
-            # C, H, W)`.
+            # Two dimensions is enough: StyleGAN2 stores its noise as `(H, W)` and lets it
+            # broadcast over batch and channel.
             if (name in fixed and shape is not None and feature is not None
                     and len(shape) >= 2 and len(feature) == 4
                     and shape[-2:] == feature[-2:]
@@ -261,10 +251,10 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
 
     frozen = _freeze_random(graph, shapes, seed)
     found.noise = len(frozen)
+    mine = _feeds(graph, producers(graph), graph.output[0].name)
     if not frozen:
-        # Nothing random left to freeze does not mean no noise: it may have been frozen
-        # before the export, and then it is a stored pattern rather than a draw.
-        frozen = _baked_noise(graph, _with_initializers(graph, shapes), found.size)
+        # No random ops does not mean no noise: it may have been frozen before the export.
+        frozen = _baked_noise(graph, shapes, found.size, mine)
         found.noise, found.was_baked = len(frozen), True
 
     # One dial per band of noise, not one per draw: a generator injects at several points per
@@ -273,24 +263,15 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
     for name, shape in frozen:
         by_size.setdefault(int(shape[-2]), []).append(name)
 
-    bands = _bands(graph, shapes, found.size)
+    bands = _bands(graph, shapes, found.size, mine)
     found.bands = tuple(sorted(bands))
-    named = _band_names(bands)
-
-    # **No dial on the squash's input.** A gain there is a contrast curve on the finished picture,
-    # not a way through the model: it is the class `zoom`, `chroma` and this project's own
-    # `pre_tanh` were all deleted for, and measured on the shipping checkpoint `pre_tanh` was
-    # also the weakest gate with its two ends one change sign-flipped. Excluded rather than
-    # renamed, because on the first foreign model tried here that tensor *was* the last band's,
-    # and letting `gain_<h>` claim it would keep the deleted dial under an honest-looking name.
-    squash = _squash(graph)
     wanted: list[tuple[str, list[str]]] = []
     wanted += [(f"noise_{h}", by_size[h]) for h in sorted(by_size)]
-    wanted += [(name, [bands[size][0]]) for size, name in named]
+    wanted += [(name, [bands[size][0]]) for size, name in _band_names(bands)]
 
-    # Seeded with the squash's input, so one loop decides which tensor a dial may claim: the
-    # exclusion and the no-two-dials-on-one-tensor rule are the same rule. A band left with
-    # nothing fresh drops out below, which is what the exclusion needs to happen anyway.
+    # One dial per tensor, and none on the squash's input, where a gain is only a contrast
+    # curve on the finished picture. A band left with no tensor of its own is dropped.
+    squash = _squash(graph)
     claimed: set[str] = set() if squash is None else {squash}
     deduped: list[tuple[str, list[str]]] = []
     for name, tensors in wanted:
@@ -300,9 +281,8 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
             deduped.append((name, fresh))
     wanted = deduped
 
-    # Later first. Each insertion shifts the nodes after it, so working down the graph means the positions
-    # worked out before the first edit are still right for every edit after it.
-    produced = {out: i for i, node in enumerate(graph.node) for out in node.output}
+    # Last in the graph first, so each insertion leaves the positions of those still to come.
+    produced = producers(graph)
     order = sorted(((produced.get(t, -1), slot, t)
                     for slot, (_name, ts) in enumerate(wanted) for t in ts), reverse=True)
     for tag, (index, slot, tensor) in enumerate(order):
@@ -313,42 +293,19 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
     return found
 
 
-def name_settings(model, names, curves=None, levels=None, rests=None,
-                  precision=None) -> None:
-    """Write the dials into the graph's metadata, so the file stands on its own."""
-    keep = [e for e in model.metadata_props if not e.key.startswith("ganlive.")]
-    del model.metadata_props[:]
-    model.metadata_props.extend(keep)
-    write = {"ganlive.settings": ",".join(names)}
-    if curves is not None:
-        write["ganlive.curves"] = json.dumps([list(map(float, c)) for c in curves])
-    if levels is not None:
-        write["ganlive.levels"] = json.dumps([round(float(x), 3) for x in levels])
-    if rests is not None:
-        write["ganlive.rests"] = json.dumps([float(x) for x in rests])
-    if precision:
-        write["ganlive.precision"] = json.dumps(precision)
-    for key, value in write.items():
-        entry = model.metadata_props.add()
-        entry.key, entry.value = key, value
-
-
 def usable_precision(path, backend: str, device: str) -> tuple[str, str, float, object]:
     """Whether this graph survives half precision on this backend and device: the key the
     verdict is filed under, the verdict, the gap, and the FP16 runner it was measured with."""
-    from ganlive.models.onnx import config_of
-    from ganlive.models.runtime import key_for, open_graph
-
-    z = _latent(config_of(path).nz)
-    runner = open_graph(path, backend=backend, device=device, precision="FP32")
-    key, backend, device = key_for(runner.backend, runner.asked), runner.backend, runner.asked
+    z = host_latent(dials_of(path)["nz"])
+    runner = runtime.open_graph(path, backend=backend, device=device, precision="FP32")
+    key, backend, device = (runtime.key_for(runner.backend, runner.asked), runner.backend,
+                            runner.asked)
     # A copy: the runner's output is a view into its own buffer, which is about to go.
     frames = {"FP32": np.array(runner.infer(z), np.float32)}
-    # Dropped before the next one is built. Otherwise two compiled copies of a six-megapixel
-    # graph are resident on the card at once, and this card has frozen the whole machine at a
-    # 13.92 GB peak rather than raising out of memory.
+    # Dropped before the FP16 one is compiled, so two compiled copies of a large graph are
+    # never resident on the card at once.
     del runner
-    runner = open_graph(path, backend=backend, device=device, precision="FP16")
+    runner = runtime.open_graph(path, backend=backend, device=device, precision="FP16")
     frames["FP16"] = np.asarray(runner.infer(z), np.float32)
     gap = levels(frames["FP16"], frames["FP32"])
     return key, ("FP16" if gap < HALF_LEVELS else "FP32"), gap, runner
@@ -361,37 +318,33 @@ def adopt(source, out, seed: int = 0, target: float = TARGET_LEVELS,
 
     source, out = Path(source), Path(out)
     model = onnx.load(str(source))
-    already = onnx_dials(source)["settings"]
+    already = dials_of(source)["settings"]
     if already:
         raise RuntimeError(
-            f"{Path(source).name} already declares {len(already)} dial(s) "
+            f"{source.name} already declares {len(already)} dial(s) "
             f"({', '.join(already[:4])}...). Adopting it again would insert a second "
-            f"settings input and overwrite what is there -- and if those dials were tuned by "
-            f"hand rather than derived, that tuning is not recoverable from the file. Adopt the "
-            f"graph it was made from instead.")
+            f"settings input and overwrite what is there, and a hand-tuned dial cannot be "
+            f"recovered from the file. Adopt the graph it was made from instead.")
 
     found = insert_dials(model, seed=seed)
     onnx.checker.check_model(model, full_check=False)
-    # Named before it is written, so the intermediate file is already a model something can
-    # open rather than a graph with an anonymous second input.
+    # Named before it is written, so the intermediate file can already be opened.
     name_settings(model, found.names)
     _write(model, out)
 
     if measure:
-        # Precision first, because everything after it is measured through the runtime and a
-        # runtime that has quietly broken the picture measures its own damage.
-        from ganlive.models.runtime import measuring_on
-
+        # Precision first: everything after it is measured through the runtime, and a runtime
+        # that breaks the picture would be measuring its own damage.
         precision, runner = "FP16", None
         if device.lower() != "cpu":
-            key, precision, gap, runner = usable_precision(out, *measuring_on(device))
+            key, precision, gap, runner = usable_precision(out, *runtime.measuring_on(device))
             print(f"half precision moves this graph {gap:.3f} 8-bit levels on {key}; "
                   f"measuring in {precision}", flush=True)
             found.precision = {key: precision}
             if precision != "FP16":
                 runner = None          # dropped before the FP32 one is compiled; see above
-        # The FP16 runner the verdict was measured on is the one the dials are measured on:
-        # the same backend and device by construction, and a six-megapixel compile saved.
+        # The dials are measured on the runner the verdict came from: the same backend and
+        # device, and one compile fewer.
         probe = Probe(out, device=device, precision=precision, runner=runner)
         drift = deterministic(probe)
         if drift > 0.01:
@@ -415,6 +368,6 @@ def _write(model, out: Path) -> None:
     import onnx
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    big = model.ByteSize() > 1_800_000_000
+    big = model.ByteSize() > INLINE_BYTES
     onnx.save(model, str(out), save_as_external_data=big,
-              location=f"{out.name}.data" if big else None)
+              location=weights_file(out).name if big else None)

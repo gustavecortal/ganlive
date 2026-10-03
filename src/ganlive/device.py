@@ -1,4 +1,8 @@
-"""Accelerator abstraction."""
+"""Which accelerator to run on, and the few per-backend calls the rest of the code needs.
+
+Also process tuning for live play (priority and CPU affinity), and checks for other processes
+holding the card.
+"""
 
 from __future__ import annotations
 
@@ -47,12 +51,10 @@ def streams(name: str | None = None):
 
 
 def playback_dtype(device: str | torch.device) -> torch.dtype:
-    """The precision the instrument *plays* a model in when the caller did not say.
+    """The precision the instrument plays a model in when the caller did not say.
 
-    Half on every accelerator, single on the CPU, where a half convolution is emulated and
-    runs slower than the float32 it emulates. A different question from `DeviceCaps`, which
-    answers for training -- there `mps` is fp32 because bf16 autocast is patchy, which says
-    nothing about inference in fp16."""
+    Half on every accelerator; single on the CPU, where half-precision convolution is
+    emulated and runs slower than float32."""
     return torch.float32 if str(device).split(":")[0] == "cpu" else torch.float16
 
 
@@ -96,21 +98,22 @@ def _raise_priority() -> str | None:
         if k32.SetPriorityClass(k32.GetCurrentProcess(), _HIGH_PRIORITY_CLASS):
             return "HIGH_PRIORITY_CLASS"
         raise OSError(f"SetPriorityClass failed (GetLastError={ctypes.get_last_error()})")
-    # POSIX: a *lower* nice number is higher priority, and going below 0 needs privileges we
-    # will not have. -5 succeeds under `sudo` or a raised RLIMIT_NICE and is skipped otherwise.
+    # POSIX: a lower nice number is higher priority, and going below 0 needs privileges.
+    # -5 succeeds under `sudo` or a raised RLIMIT_NICE, and raises otherwise.
     os.nice(-5)
     return f"nice {os.nice(0)}"
 
 
-def prioritise_gpu_feeder() -> dict:
-    """Keep this process's GPU-submission thread on a performance core, at high priority."""
-    result: dict[str, object] = {"platform": sys.platform, "priority": None,
-                                 "affinity_mask": None, "note": None}
+def prioritise_gpu_feeder() -> None:
+    """Raise this process's priority and, on a hybrid CPU, restrict the whole process to its
+    performance cores, so the thread feeding the GPU is never parked on an efficiency core.
 
+    Best-effort: whatever the platform refuses is left alone, and one line says what was done."""
+    priority, note, cores = None, None, None
     try:
-        result["priority"] = _raise_priority()
+        priority = _raise_priority()
     except Exception as exc:  # noqa: BLE001 - tuning is best-effort everywhere
-        result["note"] = f"priority unchanged: {exc}"
+        note = f"priority unchanged: {exc}"
 
     try:
         import psutil
@@ -123,23 +126,20 @@ def prioritise_gpu_feeder() -> dict:
         fast = list(range(2 * p_cores))
         if not hasattr(psutil.Process(), "cpu_affinity"):
             # macOS has no affinity API at all, hybrid silicon or not.
-            result["note"] = f"no affinity control on {sys.platform}"
+            note = f"no affinity control on {sys.platform}"
         elif 0 < len(fast) < logical:
             psutil.Process().cpu_affinity(fast)
-            result["affinity_mask"] = hex((1 << (2 * p_cores)) - 1)
-            result["cores"] = fast
+            cores = fast
         else:
-            result["note"] = "not a hybrid CPU; affinity left alone"
+            note = "not a hybrid CPU; affinity left alone"
     except Exception as exc:  # noqa: BLE001 - psutil's own errors are not enumerable
-        result["note"] = f"affinity unchanged: {exc}"
+        note = f"affinity unchanged: {exc}"
 
-    cores = result.get("cores")
     said = (f"pinned to {len(cores)} P-core threads (0-{cores[-1]}) of {os.cpu_count()}"
             if cores else "left where the scheduler puts it")
     print(f"cpu: {said}"
-          + (f", priority {result['priority']}" if result["priority"] else "")
-          + (f"  ({result['note']})" if result["note"] else ""), flush=True)
-    return result
+          + (f", priority {priority}" if priority else "")
+          + (f"  ({note})" if note else ""), flush=True)
 
 
 def other_gpu_pythons() -> list[int] | None:

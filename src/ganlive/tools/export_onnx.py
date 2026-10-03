@@ -1,18 +1,15 @@
-"""Export a trained generator to ONNX, so a runtime other than PyTorch can play it.
+"""Export a trained FastGAN to ONNX, so a runtime other than PyTorch can play it.
 
-The dials become graph inputs, so a runtime with no module tree can still steer the model.
+The net is exported as it plays: BatchNorm folded, noise frozen, and its dials as a second
+graph input `k`, named in the graph's metadata. fp32 on the way out; the runtime chooses half
+precision itself. Weights land in a sibling `.onnx.data` file; both files travel together.
 
-Exported after the BatchNorm folding and noise freezing, because that is the net that
-actually ships. fp32 on the way out: OpenVINO converts to fp16 itself at load.
-
-The dynamo exporter, not the TorchScript one, which refuses any non-square model --
-`adaptive_avg_pool2d` onto a size that is not a factor of the input.
-
-Weights land in a sibling `.onnx.data` file; both files must travel together.
+The dynamo exporter, because the TorchScript one refuses any non-square model.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import time
@@ -23,41 +20,31 @@ import torch
 from ganlive.dials import steer as K
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
-from ganlive.models.onnx_rewrite import (
-    bank_the_knobs,
-    equivalent,
-    split_gated_convs,
-)
+from ganlive.models.onnx_file import initializers, name_settings, structure, weights_file
+from ganlive.models.onnx_rewrite import bank_the_knobs, equivalent, split_gated_convs
+from ganlive.pixels import EXACT_LEVELS
 from ganlive.timing import write_metrics
 
 
 def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
-           split_glu: bool = True, steerable: bool = True) -> dict:
-    import copy
-
+           split_glu: bool = True) -> dict:
+    """Write `checkpoint` as an ONNX graph at `out`. Returns a report of what was done."""
     net, cfg = load(checkpoint, "cpu")
     freeze_noise(net, seed=noise_seed)
-    report = prepare_for_inference(net, cfg.nz, "cpu", half=False, fold=True)
-    net = report["net"].eval()
-
-    # **The settings, as a second graph input.** `steer.install` hands each steerable module a view into one
-    # tensor, and a view traces as a *constant* -- which is why an exported model used to arrive with an
-    # empty MODEL block and the strip drew six dials dark.
-    names: list[str] = []
-    if steerable:
-        knobs = K.install(net, "cpu", torch.float32)
-        net = bank_the_knobs(net, knobs).eval()
-        names = list(knobs.names)
-    k = torch.ones(len(names)) if steerable else None
-    args = (torch.zeros(1, cfg.nz),) + ((k,) if steerable else ())
+    report = prepare_for_inference(net, cfg.nz, "cpu", half=False)
+    # The dials become a second graph input: a view into a settings tensor traces as a constant.
+    knobs = K.install(report["net"].eval(), "cpu", torch.float32)
+    net = bank_the_knobs(report["net"], knobs).eval()
+    names = list(knobs.names)
+    args = (torch.zeros(1, cfg.nz), torch.ones(len(names)))
 
     split, drift = 0, 0.0
     if split_glu:
-        reference = copy.deepcopy(net)
-        split = split_gated_convs(net.net if steerable else net)
+        original = copy.deepcopy(net)
+        split = split_gated_convs(net.net)
         net = net.eval()
-        drift = equivalent(reference, net, cfg.nz, "cpu", probes=3, settings=k)
-        if drift >= 0.5:
+        drift = equivalent(original, net, cfg.nz, "cpu", probes=3, settings=args[1])
+        if drift >= EXACT_LEVELS:
             raise RuntimeError(
                 f"the GLU rewrite moved the picture by {drift:.3f} 8-bit levels; refusing to "
                 f"export a graph that is not the model")
@@ -71,17 +58,16 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     with torch.no_grad():
         torch.onnx.export(
             net, args, str(out),
-            input_names=["z"] + (["k"] if steerable else []),
+            input_names=["z", "k"],
             output_names=[f"image{i}" for i in range(len(outs))],
             opset_version=opset,
             dynamo=True,
         )
     seconds = time.perf_counter() - started
-    if steerable:
-        _settings_survived(out, names)
-        _name_the_settings(out, names)
+    _settings_survived(out, names)
+    _name_the_settings(out, names)
 
-    data = out.with_suffix(out.suffix + ".data")
+    data = weights_file(out)
     weights_mb = round(data.stat().st_size / 1e6, 1) if data.exists() else 0.0
 
     return {"checkpoint": str(checkpoint), "onnx": str(out),
@@ -97,14 +83,13 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
 
 def _settings_survived(path: Path, names: list[str]) -> None:
     """Refuse a graph where a dial traced as a constant."""
-    import onnx
-
-    graph = onnx.load(str(path), load_external_data=False).graph
+    graph = structure(path).graph
     if len(graph.input) < 2:
         raise RuntimeError("the exported graph takes no settings input at all")
     fed = graph.input[1].name
+    initial = initializers(graph)
     consumed = {name for node in graph.node for name in node.input}
-    reached = {int(_only(node, graph)) for node in graph.node
+    reached = {_slot(node, initial) for node in graph.node
                if node.op_type == "Slice" and fed in node.input
                and any(out in consumed for out in node.output)}
     missing = [n for i, n in enumerate(names) if i not in reached]
@@ -115,11 +100,10 @@ def _settings_survived(path: Path, names: list[str]) -> None:
             f"constants, and the model would load with dials that cannot move a pixel.")
 
 
-def _only(node, graph) -> int:
-    """Which slot a `Slice` of the settings vector takes. Its `starts` input, as a number."""
+def _slot(node, initial) -> int:
+    """Which slot of the settings vector a `Slice` takes: its `starts` input, as a number."""
     import onnx
 
-    initial = {i.name: i for i in graph.initializer}
     starts = node.input[1]
     if starts not in initial:
         raise RuntimeError(f"{node.name}: a settings slice with a computed start")
@@ -130,9 +114,7 @@ def _name_the_settings(path: Path, names: list[str]) -> None:
     """Write the settings' names into the graph, so the file stands on its own."""
     import onnx
 
-    from ganlive.models.onnx_adopt import name_settings
-
-    model = onnx.load(str(path), load_external_data=False)
+    model = structure(path)
     name_settings(model, names)
     onnx.save(model, str(path), save_as_external_data=False)
 
@@ -144,14 +126,9 @@ def main(argv=None) -> int:
                     help="Destination .onnx. Defaults to runs/onnx/<run>-<step>.onnx")
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--noise-seed", type=int, default=0)
-    ap.add_argument("--frozen-settings", action="store_true",
-                    help="export the dials as constants at their trained neutral. The graph "
-                         "then takes a latent only, and the strip draws its MODEL block dark "
-                         "-- which is what every export before this one did.")
     ap.add_argument("--no-split-glu", action="store_true",
-                    help="Export the GLU as a tensor split, which is what the "
-                         "trained module does and what OpenVINO spends 37%% of "
-                         "its layer time copying.")
+                    help="Export the GLU as a tensor split, as the trained module computes it, "
+                         "rather than as two half-width convolutions. Slower to run.")
     args = ap.parse_args(argv)
 
     if not args.checkpoint.exists():
@@ -159,15 +136,13 @@ def main(argv=None) -> int:
         return 2
     out = args.out
     if out is None:
-        from ganlive.bank import slug_for
+        from ganlive.checkpoints import slug_for
 
         out = Path("runs/onnx") / f"{slug_for(args.checkpoint)}.onnx"
 
     print(f"exporting {args.checkpoint} -> {out}", flush=True)
     report = export(args.checkpoint, out, args.opset, args.noise_seed,
-                    split_glu=not args.no_split_glu,
-                    steerable=not args.frozen_settings)
+                    split_glu=not args.no_split_glu)
     print(json.dumps(report, indent=2))
     write_metrics(out.with_suffix(".json"), report)
     return 0
-

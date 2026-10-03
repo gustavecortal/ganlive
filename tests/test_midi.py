@@ -55,8 +55,8 @@ def test_the_five_midi_messages_that_matter_reach_the_clock():
 
 
 def test_anything_else_on_the_wire_is_ignored():
-    """A Rytm sends note-ons and controller moves down the same cable. None of them may
-    disturb the position."""
+    """A drum machine sends note-ons and controller moves down the same cable as its clock;
+    they are classified but none of them may disturb the position."""
     from ganlive.control import midi
 
     clock = MusicalClock(120.0)
@@ -74,10 +74,8 @@ def test_anything_else_on_the_wire_is_ignored():
 
 
 def test_the_reader_hands_pressure_on_and_not_just_notes_and_knobs():
-    """**The seam the other pressure tests cannot reach.** `dispatch` naming a byte and
-    `PressureMap` acting on one are both covered, and neither would have caught the reader
-    having no branch to carry it between them -- which is exactly the state the aftertouch
-    stream was in: classified nowhere, delivered nowhere, and silent about both."""
+    """The reader delivers poly aftertouch to its pressure handler, alongside notes and CCs.
+    Other tests cover classifying the byte and acting on it; this covers the link between."""
     from ganlive.control.midi import AFTERTOUCH_POLY, CONTROL_CHANGE, NOTE_ON, ClockReader
 
     got = {"pressure": [], "note": [], "control": []}
@@ -116,8 +114,8 @@ def test_the_reader_hands_pressure_on_and_not_just_notes_and_knobs():
 
 
 def test_a_reader_with_no_ports_says_so_rather_than_failing():
-    """No MIDI is a real outcome -- the Rytm's USB setting is a choice between Overbridge and
-    MIDI, and they may not coexist. It has to degrade to the internal tempo, loudly."""
+    """No MIDI input is a normal setup (some machines offer USB audio or USB MIDI, not both),
+    so the reader must fall back to the internal tempo and say so."""
     from ganlive.control.midi import ClockReader
 
     reader = ClockReader(MusicalClock(120.0), port_match="nothing-matches-this")
@@ -128,10 +126,8 @@ def test_a_reader_with_no_ports_says_so_rather_than_failing():
 
 
 def test_a_midi_port_filter_that_matched_nothing_says_so():
-    """A typo in `--midi-port` and a machine with no MIDI at all produced the same message,
-    and that message describes the failure this whole design fears most: the picture runs at
-    its own tempo and looks entirely plausible while ignoring the drummer. Two different
-    problems must not share one symptom when one of them is a typo."""
+    """A typo in `--midi-port` gets its own message, naming the ports it missed, distinct from
+    a machine with no MIDI ports at all; both otherwise look like a picture at its own tempo."""
     from ganlive.control.midi import ClockReader
     from ganlive.walk import MusicalClock
 
@@ -151,38 +147,95 @@ def test_a_midi_port_filter_that_matched_nothing_says_so():
     assert "ignoring loopMIDI Port" in listening.describe()
 
 
-def test_the_preflight_certifies_the_dispatch_the_live_tool_actually_runs():
-    """The tool exists to answer whether the clock survives Overbridge, on the one question
-    where a wrong answer looks exactly like a right one. It used to re-declare the status bytes
-    and re-implement the dispatch, so a green preflight was evidence about code that would not
-    run."""
-    import importlib.util
-    from pathlib import Path
-
+def test_the_preflight_tools_count_through_the_dispatch_the_live_tool_runs():
+    """`doctor` answers whether the clock reaches the instrument, so it must classify
+    messages with the same code `play` runs rather than a copy of its own."""
     from ganlive.control import midi
-    from ganlive.walk import MusicalClock
+    from ganlive.tools import doctor
 
-    path = Path(__file__).resolve().parents[1] / "src" / "ganlive" / "tools" / "doctor.py"
-    spec = importlib.util.spec_from_file_location("doctor_probe", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    assert doctor.Traffic is midi.Traffic
+    for name in ("CONTINUE", "SPP", "SONG_POSITION"):
+        assert not hasattr(doctor, name), f"{name} is a second copy of a midi.py constant"
 
-    assert mod.dispatch is midi.dispatch, "it must run the shipping dispatch, not its own"
-    for name in ("CLOCK", "START", "CONTINUE", "STOP", "SPP", "SONG_POSITION"):
-        assert not hasattr(mod, name), f"{name} is a second copy of a midi.py constant"
+    traffic = midi.Traffic()
+    period = MusicalClock.pulse_period(120.0)
+    for i in range(MusicalClock.PPQN * 4 + 1):
+        assert traffic.take([midi.CLOCK, 0, 0, 0], i * period) == "clock"
+    assert traffic.take([midi.NOTE_ON + 9, 36, 100, 0], 0.0) == "note_on"
+    assert traffic.take([midi.NOTE_ON + 9, 36, 0, 0], 0.0) == "note_off"
+    assert traffic.clock.source == "midi", "the messages went through `dispatch`"
+    bpm, span = traffic.tempo()
+    assert bpm == pytest.approx(120.0) and span == pytest.approx(2.0)
+    assert traffic.notes == {9: {36: 1}}
+    assert traffic.note_lines() == ["  channel 10  36:1"]
 
-    listener = mod._MidiListener.__new__(mod._MidiListener)
-    listener.clock_state = MusicalClock()
-    listener.clock, listener.transport, listener.notes = 0, [], {}
-    listener.first_clock = listener.last_clock = None
-    assert midi.dispatch(listener.clock_state, midi.CLOCK, now=0.0) == "clock"
-    assert listener.clock_state.source == "midi"
+
+def test_every_status_has_a_name_and_the_instruments_kinds_are_classifys():
+    from ganlive.control import midi
+    from ganlive.tools.doctor import name_of
+
+    assert name_of(midi.CLOCK) == "clock" and name_of(midi.NOTE_ON, 0) == "note_off"
+    assert name_of(0x80) == "note_off" and name_of(0xE3) == "pitch_bend"
+    assert name_of(0xFE) == "active_sensing" and name_of(0xF1) == "system_0xf1"
+
+
+class _Port:
+    """A MIDI input that hands over one burst of messages, then nothing."""
+
+    def __init__(self, events):
+        self._events = [list(e) for e in events]
+        self.closed = False
+
+    def poll(self):
+        return bool(self._events)
+
+    def read(self, _n):
+        out, self._events = self._events, []
+        return [[e, 0] for e in out]
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_doctors_midi_watch_counts_and_reports_what_arrived(capsys):
+    """`doctor --listen`, `--drive`, `--meter --midi` and `--learn` all read MIDI through one
+    watch: kinds per phase, transport, knobs, and note-ons handed to `--learn`."""
+    from ganlive.control import midi
+    from ganlive.control.machine import GENERIC
+    from ganlive.tools.doctor import MidiWatch
+
+    watch = MidiWatch("nothing-matches-this", GENERIC)
+    port = _Port([[midi.START, 0, 0, 0], [midi.NOTE_ON + 9, 36, 100, 0],
+                  [midi.CONTROL_CHANGE, 16, 64, 0], [0xFE, 0, 0, 0]])
+    watch.inputs = [("fake", port)]
+    struck = []
+    watch.poll(on_note=lambda note, _now: struck.append(note))
+    watch.close()
+
+    assert struck == [36] and port.closed
+    assert watch.transport == ["START"]
+    assert watch.controls[0][16] == 1
+    assert watch.total("active_sensing") == 1 and watch.total("note_on") == 1
+    watch.report()
+    said = capsys.readouterr().out
+    assert "NO CLOCK" in said and "channel 10  36:1" in said and '--cc "1:16=<dial>"' in said
+
+
+def test_a_doctor_that_hears_nothing_says_what_to_check(capsys):
+    from ganlive.control.machine import RYTM
+    from ganlive.tools.doctor import MidiWatch
+
+    watch = MidiWatch("nothing-matches-this", RYTM)
+    watch.inputs = [("fake", _Port([]))]
+    watch.poll()
+    watch.report()
+    said = capsys.readouterr().out
+    assert f"NOTHING AT ALL -- is {RYTM.name} on this port?" in said
 
 
 def test_a_dial_says_which_knob_is_on_it_and_not_only_which_drum():
-    """**The routing grid shows the drums; the knobs had nothing.** A learned binding was
-    visible for exactly as long as the learn, and afterwards the only way to find out which
-    knob moved a dial was to turn all of them and watch the strip."""
+    """A dial can report which knob (CC or NRPN, in `--cc` spelling) is bound to it, so the
+    strip can show a binding after it is learned."""
     from ganlive.control.midi import EncoderMap, control_name, nrpn_number, parse_controls
 
     knobs = EncoderMap(parse_controls("16=noise,2:17=se_256,n1.3=dir1,3:16=noise"))
@@ -196,9 +249,8 @@ def test_a_dial_says_which_knob_is_on_it_and_not_only_which_drum():
 
 
 def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
-    """The last piece of "the Rytm controls the knobs": no hole is cut in the frame loop for
-    the hardware, and everything the strip already shows about a held dial shows an encoder's
-    holds for free."""
+    """A hardware knob holds a dial through the same mechanism as the other holders (mouse,
+    knobs, pads), so the frame loop needs no special case and the strip shows it as held."""
     from ganlive.control.midi import EncoderMap, parse_controls
 
     runner = _runner()
@@ -225,13 +277,9 @@ def test_a_knob_holds_a_dial_through_the_same_seam_a_hand_does():
 
 
 def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_plays():
-    """**Which dials exist is the loaded model's business, and this parses before one opens.**
-
-    Checking a mapping against this project's own `DIALS` refused every converted StyleGAN2's
-    whole MODEL block from `--cc` and `--pressure` -- and did worse than refuse to a learned
-    one. `l` on `w_fine` binds and `flush` writes `1:16=w_fine` in the flag's own words; the
-    next launch read it back, raised here, and `play.remembered` swallowed it. The learn
-    was undone and the only trace was one line about a file that "does not parse"."""
+    """Parsing accepts any dial name, since mappings are read before a model is loaded; dials
+    the loaded model lacks are reported by `unreachable` instead. A learned binding to a
+    model-specific dial must therefore survive a save and reload."""
     from ganlive.control.midi import EncoderMap, format_controls, parse_controls
 
     assert parse_controls("") == {}
@@ -248,7 +296,7 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
     knobs.apply(_runner(), 0, 16, 64)
     assert parse_controls(format_controls(knobs.controls)) == knobs.controls
 
-    # And the check that used to live here, moved to where the model is known.
+    # The dial-name check, made against the model that is loaded.
     sg2 = _surface.stylegan2(("w_fine",), (0.5,), ((),), (25.0,))
     assert not EncoderMap(parse_controls("16=w_fine")).unreachable(sg2)
     stray = EncoderMap(parse_controls("16=se_256,17=punch")).unreachable(sg2)
@@ -259,11 +307,8 @@ def test_a_knob_mapping_names_any_dial_and_is_checked_against_the_model_that_pla
 
 
 def test_a_handler_that_raises_drops_one_message_and_not_every_message_after_it():
-    """**This is how a live set goes deaf halfway through and nothing says so.** `run` had no guard: a handler
-    raising unwound the thread, `run` returned, and every clock, note, knob and pad after that moment was
-    gone for the rest of the session. The end-of-run counts then show whatever arrived before the fault, so
-    a run that died at minute two reads exactly like a machine that was never sending -- and the fix it
-    reports, CLOCK SEND = ON, is the wrong one."""
+    """A handler that raises loses only its own message: the reader thread keeps running and
+    reports the fault, rather than silently ignoring all MIDI for the rest of the run."""
     from ganlive.control.midi import NOTE_ON, ClockReader, MusicalClock
 
     seen = []
@@ -302,9 +347,8 @@ def test_a_handler_that_raises_drops_one_message_and_not_every_message_after_it(
 
 
 def test_pressure_is_classified_at_all_which_it_previously_was_not():
-    """`dispatch` had no branch for polyphonic aftertouch, so the one continuous gesture the
-    machine has could never reach anything downstream. Measured on the wire at 122 messages a
-    minute from ordinary playing, and dropped every one of them."""
+    """`dispatch` classifies polyphonic aftertouch on any channel, without moving the clock;
+    it is the pads' one continuous gesture."""
     from ganlive.control.midi import AFTERTOUCH_POLY, dispatch
     from ganlive.walk import MusicalClock
 
@@ -315,9 +359,8 @@ def test_pressure_is_classified_at_all_which_it_previously_was_not():
 
 
 def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
-    """**The one real difference from a knob**, and why this is a subclass rather than a flag:
-    a knob parked at zero means zero, a pad nobody is touching means nothing. Everything else
-    is `EncoderMap`'s code and is not copied."""
+    """Unlike a knob parked at zero, which holds zero, a released pad lets go of its dial; and
+    an actively pressed pad outranks a parked knob on the same dial."""
     from ganlive.control.kit import INDEX
     from ganlive.control.midi import EncoderMap, PressureMap, parse_pressure
     from ganlive.presets import PresetRunner
@@ -328,18 +371,18 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
     assert pads.controls == {(-1, INDEX["BD"]): "noise", (-1, INDEX["SD"]): "se_256"}
 
     assert pads.apply(runner, 13, INDEX["BD"], 127) == "noise"
-    assert runner.held_by(pads.source) == {"noise": 1.0}
+    assert runner.held_by(pads.SOURCE) == {"noise": 1.0}
     pads.apply(runner, 13, INDEX["BD"], 64)
-    assert runner.held_by(pads.source)["noise"] == pytest.approx(64 / 127)
+    assert runner.held_by(pads.SOURCE)["noise"] == pytest.approx(64 / 127)
     assert pads.apply(runner, 13, INDEX["BD"], 0) == "noise"
-    assert runner.held_by(pads.source) == {}
+    assert runner.held_by(pads.SOURCE) == {}
     assert pads.seen == 3, "held is current state and cannot say the machine ever spoke"
 
     pads.apply(runner, 13, INDEX["CH"], 100)
     assert pads.unmapped == {(13, INDEX["CH"]): 1}
 
     knobs = EncoderMap({(-1, 35): "noise", (-1, 36): "se_256"})
-    assert knobs.source != pads.source, "a source cannot outrank itself"
+    assert knobs.SOURCE != pads.SOURCE, "a source cannot outrank itself"
     knobs.apply(runner, 13, 35, 20)
     knobs.apply(runner, 13, 36, 127)
     pads.apply(runner, 13, INDEX["BD"], 127)
@@ -350,8 +393,8 @@ def test_a_pad_leaned_on_holds_a_dial_and_gives_it_back_when_released():
 
 
 def test_a_pressure_wiring_refuses_a_name_that_is_not_a_track():
-    """A track typo is a pad that can never fire, and no model can make it one. A dial typo is
-    reported against the loaded model instead -- see the knob mapping's own test for why."""
+    """An unknown track name is refused at parse time, since no model could make that pad fire;
+    unknown dial names are left for the loaded model to report."""
     from ganlive.control.kit import INDEX
     from ganlive.control.midi import parse_pressure
 
@@ -431,10 +474,8 @@ def test_learn_binds_the_next_control_to_the_focused_dial_and_writes_it_down(tmp
 
 
 def test_a_machine_nobody_named_gets_advice_about_itself():
-    """Four tools used to print one drum machine's menu paths at whoever ran them.
-
-    Telling a Launchkey owner to set `MIDI CONFIG > PORT CONFIG > ENCODER DEST` is worse
-    than saying nothing: it names a menu their hardware does not have."""
+    """An unrecognised machine gets generic advice; menu paths are given only for a machine
+    the port or audio device name identifies, since others do not have those menus."""
     from ganlive.control.machine import GENERIC, RYTM, profile
     from ganlive.control.midi import EncoderMap
 
@@ -443,11 +484,11 @@ def test_a_machine_nobody_named_gets_advice_about_itself():
     assert profile("Elektron Analog Rytm MKII") is RYTM, "anywhere in the port name"
     assert profile("", "Rytm Overbridge") is RYTM, "an audio device name counts too"
 
-    said = EncoderMap({(0, 16): "noise"}, machine=GENERIC).SILENCE
+    said = EncoderMap({(0, 16): "noise"}, machine=GENERIC).silence()
     assert "ENCODER DEST" not in said and "MIDI CONFIG" not in said
     assert "knob/CC output setting" in said, said
 
-    said = EncoderMap({(0, 16): "noise"}, machine=RYTM).SILENCE
+    said = EncoderMap({(0, 16): "noise"}, machine=RYTM).silence()
     assert "ENCODER DEST" in said, "the machine it was built against keeps its exact words"
 
 
@@ -465,8 +506,8 @@ def test_every_silence_a_tool_reports_is_in_the_machines_own_words():
 
 
 def test_no_tool_spells_a_known_machines_menu_itself():
-    """`play` was held to that and `wire`, `learn` and `doctor` were not: each printed a Rytm's
-    menu paths and Overbridge's windows to whoever ran them. A menu is the profile's to say."""
+    """No tool's source hard-codes a known machine's menu words; only the machine profile may
+    say them, so every tool gives the same machine-appropriate advice."""
     import pathlib
 
     import ganlive.tools

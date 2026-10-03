@@ -1,4 +1,9 @@
-"""Graph rewrites applied on the way OUT to ONNX, and nowhere else."""
+"""Rewrites made to a FastGAN on its way out to ONNX, and nowhere else.
+
+`split_gated_convs` replaces each `conv -> GLU` with two half-width convolutions, so the
+runtime never copies a tensor to split it. `bank_the_knobs` turns the live settings into a
+second graph input, `forward(z, k)`, because a tensor view would trace as a constant.
+"""
 from __future__ import annotations
 
 import torch
@@ -7,10 +12,11 @@ from torch import nn
 from ganlive.models.fold import FoldedNoise
 from ganlive.models.steerable import SteerableNoise, SteerableSLE
 from ganlive.models.surgery import rewrite_sequential
+from ganlive.pixels import worst_levels
 
 
 class GatedPair(nn.Module):
-    """`conv -> [folded noise] -> GLU`, with the halving done on the WEIGHTS."""
+    """`conv -> [folded noise] -> GLU`, with the halving done on the weights."""
 
     def __init__(self, conv: nn.Conv2d, noise=None) -> None:
         super().__init__()
@@ -18,10 +24,9 @@ class GatedPair(nn.Module):
         self.value = _slice_conv(conv, 0, half)
         self.gate = _slice_conv(conv, half, conv.out_channels)
         self.noise = noise is not None
-        # A banked rung stays live through the split: the coefficient halves are constants
-        # either way, and the scalar that multiplies them is still a slice of input 1. A
-        # noise dial that went dead here would be the inert knob the split exists to avoid.
-        self.rung = noise.rung if isinstance(noise, ExportedNoise) else None
+        # A banked noise gain survives the split: both coefficient halves are scaled by the
+        # same slice of the settings input.
+        self.gain = noise.gain if isinstance(noise, ExportedNoise) else None
         if noise is not None:
             self.register_buffer("coeff_value", noise.coeff[:, :half].clone())
             self.register_buffer("coeff_gate", noise.coeff[:, half:].clone())
@@ -30,9 +35,9 @@ class GatedPair(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value, gate = self.value(x), self.gate(x)
         if self.noise:
-            rung = 1.0 if self.rung is None else self.rung()
-            value = torch.addcmul(value, self.coeff_value * rung, self.pattern)
-            gate = torch.addcmul(gate, self.coeff_gate * rung, self.pattern)
+            gain = 1.0 if self.gain is None else self.gain()
+            value = torch.addcmul(value, self.coeff_value * gain, self.pattern)
+            gate = torch.addcmul(gate, self.coeff_gate * gain, self.pattern)
         return value * torch.sigmoid(gate)
 
 
@@ -68,9 +73,10 @@ def split_gated_convs(net: nn.Module) -> int:
 
 
 def equivalent(before: nn.Module, after: nn.Module, nz: int, device="cpu",
-               probes: int = 3, seed: int = 0, settings=None) -> float:
-    """Worst 8-bit level difference between two generators over a few latents."""
-    generator = torch.Generator(device="cpu").manual_seed(seed)
+               probes: int = 3, settings=None) -> float:
+    """Worst 8-bit level difference between two generators over a few latents. With
+    `settings`, both take them as a second argument, scaled differently per latent."""
+    generator = torch.Generator(device="cpu").manual_seed(0)
     worst = 0.0
     with torch.no_grad():
         for i in range(probes):
@@ -80,7 +86,7 @@ def equivalent(before: nn.Module, after: nn.Module, nz: int, device="cpu",
             else:
                 k = settings if i == 0 else settings * (1.0 + 0.35 * (i % 3))
                 a, b = before(z, k)[0], after(z, k)[0]
-            worst = max(worst, float((a - b).abs().max() * 127.5))
+            worst = max(worst, worst_levels(a, b))
     return worst
 
 
@@ -90,17 +96,15 @@ class SettingsVector(nn.Module):
     vec: torch.Tensor | None = None
 
     def __deepcopy__(self, memo):
-        """A fresh, empty bank. After any forward `vec` holds a non-leaf tensor, which torch
-        refuses to copy -- so `equivalent()` taking a reference copy would raise, and only
-        the order things happen in today keeps it from doing so. The copy's modules all
-        share this one, because `memo` hands every reference the same object."""
+        """A fresh, empty vector. After a forward `vec` holds a non-leaf tensor, which torch
+        refuses to copy. Every module in the copy shares this one, through `memo`."""
         fresh = SettingsVector()
         memo[id(self)] = fresh
         return fresh
 
 
 class ExportedSLE(nn.Module):
-    """`ExportedSLE` reading its blend from the bank instead of from a view."""
+    """`SteerableSLE` reading its blend from the settings vector instead of from a view."""
 
     def __init__(self, gate: nn.Module, bank: SettingsVector, index: int) -> None:
         super().__init__()
@@ -112,7 +116,7 @@ class ExportedSLE(nn.Module):
 
 
 class ExportedNoise(nn.Module):
-    """`ExportedNoise` reading its rung from the bank."""
+    """`SteerableNoise` reading its gain from the settings vector instead of from a view."""
 
     def __init__(self, coeff: torch.Tensor, noise: torch.Tensor,
                  bank: SettingsVector, index: int) -> None:
@@ -121,19 +125,19 @@ class ExportedNoise(nn.Module):
         self.register_buffer("noise", noise)
         self.bank, self.index = bank, index
 
-    def rung(self) -> torch.Tensor:
+    def gain(self) -> torch.Tensor:
         return self.bank.vec[self.index:self.index + 1].reshape(1, 1, 1, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.addcmul(x, self.coeff * self.rung(), self.noise)
+        return torch.addcmul(x, self.coeff * self.gain(), self.noise)
 
 
 class Steerable(nn.Module):
     """The generator plus its settings, as a two-input graph: `forward(z, k)`."""
 
-    def __init__(self, net: nn.Module, bank: SettingsVector, names: list[str]) -> None:
+    def __init__(self, net: nn.Module, bank: SettingsVector) -> None:
         super().__init__()
-        self.net, self.bank, self.names = net, bank, list(names)
+        self.net, self.bank = net, bank
 
     def forward(self, z: torch.Tensor, k: torch.Tensor):
         self.bank.vec = k
@@ -141,31 +145,28 @@ class Steerable(nn.Module):
 
 
 def bank_the_knobs(net: nn.Module, knobs) -> Steerable:
-    """Rewrite an installed net so its settings come from a second forward argument."""
-    bank, reached, sites = SettingsVector(), set(), 0
+    """Rewrite a net with installed `Knobs` so its settings come from a second argument."""
+    bank, reached = SettingsVector(), set()
     for parent in list(net.modules()):
         for child_name, child in list(parent.named_children()):
             if isinstance(child, SteerableSLE):
                 index = knobs.index[f"sle.{child_name}"]
                 setattr(parent, child_name, ExportedSLE(child.gate, bank, index))
             elif isinstance(child, SteerableNoise):
-                index = _slot_of(knobs, child.rung)
+                index = _slot_of(knobs, child.gain)
                 setattr(parent, child_name,
                         ExportedNoise(child.coeff, child.noise, bank, index))
             else:
                 continue
             reached.add(index)
-            sites += 1
-    # **Slots reached, not modules replaced.** One noise dial drives every injection at its
-    # rung, so there are more sites than settings and counting modules says nothing about
-    # whether a dial got left behind.
+    # Settings reached, not modules replaced: one noise setting drives several modules.
     missing = [n for i, n in enumerate(knobs.names) if i not in reached]
     if missing:
         raise RuntimeError(
             f"{', '.join(missing)} reached no module, so {len(missing)} of "
             f"{len(knobs.names)} settings would export as constants and the exported model "
             f"would have dials that do nothing")
-    return Steerable(net, bank, knobs.names)
+    return Steerable(net, bank)
 
 
 def _slot_of(knobs, view: torch.Tensor) -> int:

@@ -1,11 +1,12 @@
-"""The strip as a picture, headless, in every mode -- the check no test performs.
+"""Render the control strip to PNGs, headless, in every mode and for every model in a bank.
 
-    ganlive shoot-strip runs/my-run --out runs/strip
+A developer script, for layout checks and README screenshots:
 
-Four layout defects so far have been invisible in code and obvious in a PNG. Two traps, both
-paid for once: draw through the renderer rather than the strip's own surface, or the routing
-cells, dial bars and drum lights are all missing; and build the bank for real, or a stubbed
-`knobs.index` darkens exactly the dials you already assumed it would.
+    python scripts/shoot_strip.py runs/my-run --out runs/strip
+
+Layout defects are easier to see in a picture than in code. The shots draw through the real
+renderer, since the bars, routing cells and lights are drawn there rather than into the strip's
+own surface, and use a real bank, so the dark dials are the model's own.
 """
 from __future__ import annotations
 
@@ -13,29 +14,18 @@ import argparse
 import os
 from pathlib import Path
 
-import numpy as np
-
-# Before pygame is imported, or SDL opens a window on his screen.
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-
-import pygame  # noqa: E402
-from pygame._sdl2.video import Renderer, Window  # noqa: E402
-
-from ganlive import bank  # noqa: E402
-from ganlive.control.kit import INDEX, channel_map  # noqa: E402
-from ganlive.control.midi import EncoderMap  # noqa: E402
-from ganlive.presets import DEFAULT, PresetRunner  # noqa: E402
-from ganlive.strip import PRIORITY, SOURCE, WIDTH, DialPanel  # noqa: E402
+from ganlive.control.kit import INDEX, channel_map
+from ganlive.control.midi import EncoderMap
+from ganlive.presets import DEFAULT, PresetRunner
+from ganlive.strip import PRIORITY, SOURCE, WIDTH, DialPanel
+from ganlive.tools import add_device
 
 MODES = ("dials", "routing", "models")
 
 
 def dressed(runner, model, knobs=None) -> None:
-    """A strip mid-performance rather than at rest: hands down, drums wired, a knob parked.
-
-    At rest every bar sits on its own rest and the routing grid is empty, which is the one
-    state the layout is easiest to get right -- and the state a picture proves least about.
-    """
+    """A strip mid-performance rather than at rest: dials held, drums wired, a knob parked.
+    At rest every bar sits on its rest and the grid is empty, which proves the least."""
     live = [n for n in model.layout if n in model.dials_live]
     if not live:
         return
@@ -46,12 +36,14 @@ def dressed(runner, model, knobs=None) -> None:
         except KeyError:
             pass                      # a dial this model cannot write; the refusal is the point
     if knobs is not None:
-        # The description line names the knob on a dial as well as the drums, and a strip with
-        # no map behind it is the one state that cannot show it.
+        # So the description line has a knob to name as well as the drums.
         knobs.controls = {(-1, 16): live[-1], (1, 17): live[1]}
 
 
 def shoot(panel, renderer, tall: int, out: Path, name: str) -> Path:
+    """Draw the strip `tall` pixels high and save it as `out/name`."""
+    import pygame
+
     strip = (0, 0, WIDTH, tall)
     panel._dirty = True
     renderer.draw_color = (0, 0, 0, 255)
@@ -65,19 +57,27 @@ def shoot(panel, renderer, tall: int, out: Path, name: str) -> Path:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ganlive shoot-strip", description=__doc__,
+    ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", nargs="+", type=Path,
                     help="a checkpoint, a run directory, or an exported graph. Several loads a "
                          "bank, and the strip is shot on each")
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/strip"))
-    ap.add_argument("--device", default=None, help="default: whichever accelerator is there")
+    add_device(ap)
     ap.add_argument("--heights", type=int, nargs="*", default=None,
                     help="window heights. The default is the layout's own floor and 1200: the "
                          "floor is where a block runs off the bottom, and nothing enforces it "
                          "for a window that is dragged shorter")
     ap.add_argument("--layout", default="voices", help="which kit map the routing grid draws")
     args = ap.parse_args(argv)
+
+    # Before pygame is imported, so SDL opens no window on the screen.
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import numpy as np
+    import pygame
+    from pygame._sdl2.video import Renderer, Window
+
+    from ganlive import bank
 
     args.out.mkdir(parents=True, exist_ok=True)
     r = bank.build(args.checkpoint, args.device)
@@ -94,10 +94,8 @@ def main(argv=None) -> int:
     for index in range(len(r.models)):
         model = r.use(index)
         runner.use_model(model)
-        # **One strip, switched underneath, because that is what the instrument is.** Building a
-        # fresh `DialPanel` per model lays it out from scratch every time, so it is always right
-        # -- and the pictures then prove nothing about a switch. They were taken that way while
-        # the rows were a function of the layout and the cache was keyed on the window alone.
+        # One strip, switched underneath as the instrument does, so the shots also show
+        # that a switch lays the strip out again.
         if panel is None:
             panel = DialPanel(runner, bank=r, shelf=shelf, encoders=knobs,
                               actions={"preset": lambda d: None, "save": lambda f: None,
@@ -105,8 +103,7 @@ def main(argv=None) -> int:
                                        "model": lambda delta=0, to=None: None})
             panel.attach(renderer)
         dressed(runner, model, knobs)
-        # What `_grid_gesture` does after it wires one. Without it the grid draws the rules the
-        # panel was built with, and a picture of an empty grid reads as a mode that does not work.
+        # Re-read the rules `dressed` wired, as `_grid_gesture` does after a click.
         panel.reload()
         runner.apply(since, {"density": 0.6, "energy": 0.45, "active": 0.3}, model.knobs)
 
@@ -120,3 +117,6 @@ def main(argv=None) -> int:
     print(f"\n{len(r.models) * len(MODES) * len(heights)} shots in {args.out}")
     return 0
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

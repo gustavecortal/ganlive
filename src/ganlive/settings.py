@@ -1,10 +1,8 @@
-"""The generator's whole control state as one vector, and getting it to the card cheaply.
+"""The generator's settings as one vector on the device, and getting them there cheaply.
 
-Plumbing, not dials: it knows how many settings there are and what they are called, and
-nothing about what any of them means. It lived in `dials.steer`, which made
-`models.onnx.OnnxGenerator` -- which owns one, and reads it on the frame path -- import
-upward out of `models` into `dials`. That was the last edge of its kind, and with it gone
-`models` depends on nothing above itself.
+Plumbing, not dials: `Knobs` knows how many settings there are and what they are called,
+and nothing about what they mean. It sits outside `dials` so that `models` can own one
+without importing anything above itself.
 """
 
 from __future__ import annotations
@@ -16,8 +14,12 @@ from ganlive.pixels import pinned
 
 
 class Knobs:
-    """The generator's whole control state as one vector, plus the names to address it by."""
+    """The generator's whole control state as one vector, plus the names to address it by.
 
+    Values are written into a pinned host buffer (`write`) and sent by `commit`. Every
+    setting is a multiplier whose neutral is 1.0."""
+
+    #: Host buffers rotated through, so one is not rewritten while a copy may still read it.
     STAGING = 3
 
     def __init__(self, names, device, dtype) -> None:
@@ -30,8 +32,8 @@ class Knobs:
         self._slot = 0
         self.write = self._writes[0]
         #: What the card holds. Starts at the neutral the vector is built holding, so a frame
-        #: that moves nothing sends nothing -- see `commit`. Once `feed_from` is called it *is*
-        #: the buffer the card reads, and the ring below stops being the sender.
+        #: that moves nothing sends nothing -- see `commit`. After `feed_from` it is the very
+        #: buffer the card reads, and the staging ring goes unused.
         self._sent = np.ones(len(self.names), dtype=self._writes[0].dtype)
         self._fed = False
         self.skipped = 0
@@ -67,21 +69,17 @@ class Knobs:
         return self._sent
 
     def feed_from(self, host: torch.Tensor) -> None:
-        """From now on the card reads `vec` from `host` on every replay -- a captured graph
-        uploads it itself, see `models.capture.capture` -- so a commit is a host write into it and
-        nothing is sent. `host` already holds what the card holds."""
+        """From now on the card reads `vec` from the host buffer `host` on every replay -- a
+        captured graph uploads it itself, see `models.capture.capture` -- so a commit is a
+        host write and nothing is sent. `host` already holds what the card holds."""
         self._sent, self._fed = host.numpy(), True
 
     def commit(self) -> None:
         """Send this frame's settings to the card -- unless the card already has them.
 
-        **The copy is thirty-two bytes and it measured 1.6 ms.** `Tensor.copy_` drops the GIL,
-        and taking it back from a window thread that is uploading a texture and presenting
-        costs up to one switch interval: 5 ms by default, 1.64 median and 3.38 at p95 on the
-        played loop, against 0.03 with no window open. A frame on which no dial moved was
-        paying all of that for a copy of the numbers already there, and at rest no dial moves
-        -- every dial on its own rest and nothing wired is what the instrument starts on.
-        Comparing the eight floats first is about a microsecond against that."""
+        The copy is tiny, but `Tensor.copy_` releases the GIL, and getting it back from the
+        busy window thread cost 1.6 ms median on the played loop. Comparing the floats first
+        costs about a microsecond, and at rest nothing moves."""
         if np.array_equal(self.write, self._sent):
             self.skipped += 1
             return

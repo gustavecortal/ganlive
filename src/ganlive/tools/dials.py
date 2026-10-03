@@ -3,13 +3,13 @@
     ganlive dials runs/stylegan2/ffhq.pt
 
 At load, directions come from SeFa: the SVD of the first affine each style range meets. That
-affine is a poor proxy for the synthesis network behind it -- reading the Jacobian of the
-whole generator instead took FFHQ-1024's strongest fine dial from 52 8-bit levels to 76. It
-costs about 100 seconds, which is too long for a load, so it runs here and writes
-`<checkpoint>.directions.pt`. The next load picks that up, or falls back to SeFa.
+affine is a poor proxy for the synthesis network behind it, and reading the Jacobian of the
+whole generator instead gives stronger dials (see `derive.active_banded`). It takes around
+100 seconds, too long for a load, so it runs here and writes `<checkpoint>.directions.pt`,
+which the next load picks up.
 
-What is saved is a proposal, not a verdict: every basis still goes through the same
-measurement at load, so a stale file cannot put a dead dial on the strip.
+What is saved is a proposal: every basis is still measured at load, so a stale file cannot
+put a dead dial on the strip.
 """
 from __future__ import annotations
 
@@ -31,11 +31,10 @@ def main(argv=None) -> int:
                     help=f"candidates per style range, before measurement picks among them at "
                          f"load. Default {D.CANDIDATES}.")
     ap.add_argument("--latents", type=int, default=1, metavar="N",
-                    help="latents the metric is averaged over. One is enough for the verdict: "
-                         "over disjoint sets of four the basis itself agrees at only 0.38 to "
-                         "0.76, yet every subset tried keeps the fine band between 67 and 77 "
-                         "levels, because there are more strong directions than the strip can "
-                         "show. Each costs another 1,024 passes a range.")
+                    help="latents the metric is averaged over. One is usually enough: "
+                         "different latents pick different members of the same set of strong "
+                         "directions. Each costs another two passes per push-buffer entry, "
+                         "per range.")
     args = ap.parse_args(argv)
 
     from ganlive import device as dev
@@ -50,8 +49,7 @@ def main(argv=None) -> int:
     if device.lower() != "cpu" and not dev.refuse_if_gpu_busy("derivation"):
         return 1
 
-    # The same precision the instrument would open this model in on this device, or the basis
-    # is derived on a model that is not the one that plays.
+    # The precision the instrument would play this model in on this device.
     dtype = dev.playback_dtype(device)
     net, _knobs, push, bands = open_stylegan2(args.checkpoint, device, dtype=dtype)
     names = [name for name, _weight in bands]

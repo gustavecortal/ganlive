@@ -1,9 +1,7 @@
 """Getting a finished frame out of the card and into whatever wants it.
 
-Colour conversion, the pinned host staging the frames land in, and the one unit every
-measurement in this project is quoted in. None of it is about models, which is why it is not
-under `models/` -- it was, and `frame.py`, `record/video.py`, `walk.py` and `dials/steer.py`
-all reached into a *model* module to get at it, two of them for a private name.
+Colour conversion, the pinned host buffers frames land in, and the 8-bit level: the one unit
+every measurement in this project is quoted in.
 """
 
 from __future__ import annotations
@@ -12,46 +10,45 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+#: BT.709 luma coefficients.
 _KR, _KB = 0.2126, 0.0722
-
-
 _KG = 1 - _KR - _KB
 
+#: One 8-bit level is 1/127.5 of a generator's [-1, 1] output range.
+LEVEL = 127.5
 
-#: What "exact, not approximate" is allowed to mean for a rewrite that should be bit-identical.
-#: The capture measured 0.0000 on both families; loose enough to survive a driver that
-#: reassociates something, tight enough that a still picture -- 77 levels -- cannot pass.
+#: The most a rewrite that should be exact may move the picture, in 8-bit levels. Loose
+#: enough for a driver that reassociates a sum, tight enough that a frozen picture fails.
 EXACT_LEVELS = 0.5
 
 #: A dial or a direction moving less than this many 8-bit levels at full travel is not a
-#: control. Here, beside the unit it is quoted in, rather than in the module that first
-#: needed it: `models.capture` and `models.calibrate` both had to reach into `dials.derive`
-#: for it, which put a model-layer module behind a dials-layer one for a single float.
+#: control.
 FLOOR_LEVELS = 1.0
 
-#: Times what a random unit direction of the same length moves -- on the same latents, in the
-#: pipeline that plays -- for a direction to be a control rather than a walk. **Relative, and
-#: deliberately so**: one FastGAN moves 70 levels along its best direction against another
-#: model's 44 for its worst kept one, and still keeps fewer, because everything on that
-#: checkpoint moves the picture that hard. 2.5 was tried first and kept too little.
+#: How many times what a random direction of the same length moves, on the same latents, a
+#: direction must move to be a control rather than a walk. Relative, because some
+#: checkpoints move hard along every direction.
 RANDOM_FLOOR = 2.0
 
 
-def levels(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Mean difference between two frames in [-1, 1], in the 8-bit levels this repo judges by.
+def levels(a, b) -> float:
+    """Mean difference between two frames in [-1, 1], in 8-bit levels.
 
-    `models.calibrate.levels` is the same quantity for numpy arrays and carries the note about the unit;
-    this one stays in torch and on the card. Scaling **after** the reduction rather than before
-    it, and accumulating in float32, keeps a full-resolution frame from costing three more
-    tensors of its own size -- 226 MB at 3072x2048 -- to answer one scalar question. The
-    subtraction of two near-identical halves is exact, so nothing is lost by it."""
-    return (a - b).abs().mean(dtype=torch.float32).item() * 127.5
+    Takes torch tensors, which stay on their device, or numpy arrays. A torch frame is
+    reduced in float32 and scaled after the reduction, so a full-resolution frame costs no
+    extra full-size tensors."""
+    if isinstance(a, np.ndarray):
+        return float(np.abs(a - b).mean() * LEVEL)
+    return (a - b).abs().mean(dtype=torch.float32).item() * LEVEL
+
+
+def worst_levels(a: torch.Tensor, b: torch.Tensor) -> float:
+    """The largest difference between two frames in [-1, 1], in 8-bit levels."""
+    return float((a - b).abs().max()) * LEVEL
 
 
 def to_rgb(out: torch.Tensor) -> torch.Tensor:
-    """Generator output in [-1,1] -> the `(H, W, 3)` uint8 bytes a window blits, on the GPU.
-
-    Compiled: 1.335 ms eager against 0.522 at 1536x1024."""
+    """Generator output in [-1,1] -> the `(H, W, 3)` uint8 bytes a window blits, on the GPU."""
     x = out.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
     return x.permute(0, 2, 3, 1)[0].contiguous()
 
@@ -66,8 +63,7 @@ def to_bgra(out: torch.Tensor) -> torch.Tensor:
 def to_nv12(out: torch.Tensor) -> torch.Tensor:
     """Generator output in [-1,1] -> the encoder's `(H*3/2, W)` uint8 plane stack, on the GPU.
 
-    NV12: the Y plane, then the chroma interleaved as UVUVUV rows. Compiled, a 5.8x on this
-    function alone."""
+    NV12: the Y plane, then the chroma interleaved as UVUVUV rows."""
     y, u, v = _yuv_planes(out)
     h, w = out.shape[-2:]
     chroma = torch.stack([u, v], dim=-1).reshape(-1)     # U,V,U,V... in row order
@@ -101,8 +97,7 @@ def nv12_plane_views(frame, height: int, width: int):
 
 
 def pinned(shape, dtype) -> torch.Tensor:
-    """A host buffer the card reads directly, or a plain one where pinning is refused -- the
-    recording then fails on the pageable copy and says so there, rather than here."""
+    """A host buffer the card reads directly, or a plain one where pinning is refused."""
     try:
         return torch.zeros(shape, dtype=dtype, pin_memory=True)
     except (RuntimeError, NotImplementedError):
@@ -112,11 +107,7 @@ def pinned(shape, dtype) -> torch.Tensor:
 class PinnedRing:
     """A ring of pinned host buffers to copy device frames into, instead of `Tensor.cpu()`.
 
-    **No `mode`.** It took one, defaulting to `"pinned"`, with a `"cpu"` arm kept as the
-    baseline that `Tensor.cpu()` is -- and nothing could select it: no caller and no test ever
-    passed the `host_copy` that reached it. `pinned()` below already falls back to a pageable
-    buffer where the driver refuses to pin one, so the unreachable arm was not even the
-    fallback it looked like."""
+    A frame taken from it stays valid until the ring comes back round to its buffer."""
 
     def __init__(self, depth: int, device: str):
         self.depth, self._device = max(2, depth), device
@@ -144,7 +135,7 @@ class PinnedRing:
         return dst.numpy()
 
     def sync(self) -> None:
-        """Wait for everything queued on **this ring's** device, copies included."""
+        """Wait for everything queued on this ring's device, copies included."""
         from ganlive.device import synchronize
 
         synchronize(self._device)

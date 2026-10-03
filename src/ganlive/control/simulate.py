@@ -20,7 +20,7 @@ from ganlive.control.kit import INDEX, TRACKS, VOICE_GROUPS, channel_map
 
 STEPS_PER_BAR = 16
 
-
+#: How far a choke reaches: a hit silences the rest of its voice group for this long.
 LONGEST_VOICE_S = 2.0
 
 
@@ -36,11 +36,11 @@ def _noise(n: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def _band(x: np.ndarray, lo: float, hi: float, sr: int) -> np.ndarray:
-    """Keep `lo`..`hi` Hz, with a soft edge. One numpy call, where scipy was a whole package.
+    """Keep `lo`..`hi` Hz, with a soft edge, by masking the spectrum.
 
     These shape the noise in the stand-in kit -- a hi-hat, a snare's snap. What matters is
-    which octaves survive, not the roll-off, so the exact shape of a Butterworth buys nothing
-    here and cost a dependency larger than everything else combined."""
+    which octaves survive, not the exact roll-off, so an FFT mask does the job without a
+    filter-design dependency."""
     n = x.size
     if n == 0:
         return x
@@ -210,9 +210,8 @@ FOUR_ON_THE_FLOOR = [
     Section("break", 4, {
         "CH": _s("..x...x...x...x.", 0.5),
         "RS": _s("x...x.x...x.x..."),
-        # The stand-in plays all twelve voices, so a silent channel in the end-of-run report
-        # is always a fault. Without this one BT read silent on every simulated run, and the
-        # line under it sent the player off to check send levels on a machine that was not there.
+        # Every one of the twelve tracks plays somewhere in the arrangement, so a silent
+        # track in the end-of-run report of a simulated run is always a fault.
         "BT": _s("x.......x.......", 0.75),
         "LT": _s("........x.......", 0.8),
         "MT": _s("............x...", 0.8),
@@ -231,7 +230,6 @@ class Rendered:
     events: list[tuple[float, str, float]]      # (seconds, track, velocity), the ground truth
     samplerate: int
     bpm: float
-    bars: int
 
     @property
     def seconds(self) -> float:
@@ -291,7 +289,7 @@ class StemFeeder(threading.Thread):
         self.join(timeout=timeout)
 
     def close(self) -> None:
-        """Nothing to release -- a thread is not a device handle."""
+        """Nothing to release; present so this stands in for an audio stream."""
 
 
 def _span(pcm: np.ndarray, at: int, end: int) -> np.ndarray:
@@ -303,13 +301,12 @@ def _span(pcm: np.ndarray, at: int, end: int) -> np.ndarray:
 
 
 class MonitorFeeder:
-    """The stand-in kit, played out of the speakers, measured from the same sample index."""
+    """The stand-in kit, played out of the default speakers, with the extractor fed the stems
+    from the same sample index, so what is heard and what is analysed stay in step."""
 
-    def __init__(self, extractor, stems, mix, samplerate: int, blocksize: int,
-                 device=None) -> None:
+    def __init__(self, extractor, stems, mix, samplerate: int, blocksize: int) -> None:
         self.ex, self.stems, self.mix = extractor, stems, mix
         self.sr, self.bs = int(samplerate), int(blocksize)
-        self.device = device
         self.at = 0
         self.calls = 0
         self.late = 0
@@ -321,7 +318,7 @@ class MonitorFeeder:
 
         self.stream = sd.OutputStream(samplerate=self.sr, channels=self.mix.shape[0],
                                       blocksize=self.bs, dtype="float32",
-                                      device=self.device, callback=self._block)
+                                      callback=self._block)
         self.stream.start()
 
     def _block(self, outdata, frames, _time, status) -> None:
@@ -400,6 +397,8 @@ class MachineSim:
                         events.append((t, track, vel))
                 bar += 1
 
+        # Two tracks of one voice group struck at the same instant: the later one chokes the
+        # first before it sounds, so only the later is ground truth.
         seen: dict[tuple[int, int], int] = {}
         for i, (t, track, _v) in enumerate(events):
             key = (group_of[track], int(t * self.sr))
@@ -410,7 +409,7 @@ class MachineSim:
         events.sort()
         mix = self._mix(stems)
         return Rendered(stems=stems, mix=mix, events=events, samplerate=self.sr,
-                        bpm=self.bpm, bars=total_bars)
+                        bpm=self.bpm)
 
     def _mix(self, stems: np.ndarray) -> np.ndarray:
         """Stereo mix with per-track level and pan, then a limiter."""

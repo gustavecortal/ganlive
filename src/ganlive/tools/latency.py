@@ -1,7 +1,15 @@
-"""Does the audio-reactive loop fit in a frame? Measured, with the sound actually running."""
+"""Does the audio-reactive loop fit in a frame? Measured, with the sound actually running.
+
+Three loops, each timed for `--seconds`:
+  generation only  the generator and the recorder's frame conversion, nothing else;
+  recorded         the whole control loop with the stand-in kit playing, ending where a
+                   recorded frame ends;
+  played           (`--window`) the same, ending where a played frame ends: the real window
+                   open and the strip drawn beside it.
+The verdict is the played loop's when it ran, else the recorded loop's.
+"""
 from __future__ import annotations
 
-import argparse
 import itertools
 import time
 from pathlib import Path
@@ -14,34 +22,27 @@ from ganlive.control.features import FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.control.simulate import MachineSim, StemFeeder
 from ganlive.dials.fastgan_dials import fastgan
+from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
-from ganlive.timing import drift_ms, stat_ms, write_metrics
+from ganlive.timing import drift_ms, stat_ms
+from ganlive.tools import add_device, parser
 
 
 def _far(rest: float) -> float:
     """The end of a dial's travel furthest from where it rests.
 
-    **Up, for a dial that rests in the middle.** `reaction` rests at 0.50, and `rest < 0.5` put
-    it at 0.0 -- where `PresetRunner.apply` multiplies every impulse by `reaction * 2.0` and gets
-    nothing. The frame-budget worst case had its whole drum layer muted: every rule below was
-    resolved, counted and then worth zero, so the budget was measured on a loop in which no drum
-    moved a dial."""
+    Up for a dial resting in the middle: `reaction` rests at 0.5, and at 0 it would scale
+    every impulse to nothing."""
     return 1.0 if rest <= 0.5 else 0.0
 
 
 def worst_case(layout=None) -> Preset:
     """Every dial off its rest and every drum wired. A frame budget, not a setting.
 
-    Built from the loaded model's own layout when there is one: naming FastGAN's `se_*`
-    gates at a converted StyleGAN2 or an adopted graph got them dropped by `use_model`, and
-    the budget then moved the spine and nothing else. Without a layout it falls back to this
-    project's own surface, which is the most crowded one here and so the honest worst case.
-
-    Every dial cycling the kit, rather than `zip(INDEX, dials)` -- which stopped at the
-    twelfth name and wired no MODEL dial at all, leaving the settings vector untouched for
-    the whole run and the host-to-device copy outside the budget it is meant to bound. And
-    pushed back toward the middle, because a dial parked at the end of its travel clamps,
-    and a rule that clamps writes the same number it wrote last frame."""
+    Built from the loaded model's own layout when there is one, so every dial named is one
+    the model has. Without one it uses this project's FastGAN surface, the most crowded here.
+    Every dial gets an impulse, cycling through the kit, pushing back toward the middle so
+    the push never clamps into a value that does not change."""
     rests = {k.name: k.rest for k in (layout or fastgan()).knobs}
     return Preset(
         name="worst-case",
@@ -54,22 +55,36 @@ def worst_case(layout=None) -> Preset:
 
 
 def latent_for(model, r):
-    """A fixed latent where this generator takes it: on the host for a graph that reads it
-    there, as the walk hands it over; on the card otherwise. Handing a captured generator a
-    device tensor would download it every frame -- a stall the played loop never pays."""
+    """A fixed latent where this generator reads it: on the host for a graph that reads it
+    there, as the walk hands it over; on the device otherwise."""
     z = torch.randn(1, model.cfg.nz).to(r.dtype)
     return z.numpy() if getattr(model.net, "latent_on_host", False) else z.to(r.device)
 
 
-def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict, dict]:
-    """Arm C: the same loop, finishing where a played frame finishes.
+def _time_frames(frames: int, step) -> list[float]:
+    """Milliseconds each of `frames` calls of `step()` took."""
+    ms = []
+    for _ in range(frames):
+        t0 = time.perf_counter()
+        step()
+        ms.append((time.perf_counter() - t0) * 1000)
+    return ms
 
-    Arms A and B end at `nv12_bytes`, which is the recorder's path and runs with no window on
-    the screen. What a player's frame ends with is `bgra_bytes` and a `publish` that wakes the
-    window thread, and that thread then uploads a texture, redraws the strip and presents --
-    three C calls that hold the GIL and land on this thread's next frame. The gap is not small:
-    a played FFHQ-1024 session read 17.9 ms a frame against this harness's 15.3.
-    """
+
+def _stage_table(title: str, stats: dict[str, dict]) -> None:
+    """Print median, p95 and max per stage, one row each."""
+    print(f"   {title:22} {'median':>8} {'p95':>8} {'max':>8}")
+    for name, s in stats.items():
+        print(f"   {name:22} {s['median']:8.3f} {s['p95']:8.3f} {s['max']:8.3f}")
+
+
+def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict, dict]:
+    """The played loop: the control loop, finishing where a played frame finishes.
+
+    The recorded loop ends at `nv12_bytes`, with no window on screen. A played frame ends
+    with `bgra_bytes` and a `publish` that wakes the window thread, which then uploads a
+    texture, draws the strip and presents -- work that holds the GIL and lands on this
+    thread's next frame, so it has to be measured with the window really open."""
     from ganlive.strip import DialPanel
     from ganlive.window import Display
 
@@ -80,7 +95,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
                               "issue": [], "window": [], "publish": []}
     total_ms: list[float] = []
-    # Its own feeder: arm B drank the take, and a silent control layer is not the played loop.
+    # A feeder of its own: the recorded loop's has finished, and the drums must be playing.
     feeder = StemFeeder(ex, pcm, take.samplerate, args.blocksize)
     feeder.start()
     time.sleep(0.25)
@@ -112,58 +127,43 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
         feeder.stop()
         display.close()
     out = stat_ms(total_ms, period_ms)
-    print(f"C  everything, window open, strip drawn        "
+    print(f"played           window open, strip drawn     "
           f"{out['median']:6.2f} ms median  {out['p95']:6.2f} p95", flush=True)
     per = {k: stat_ms(v, period_ms) for k, v in stages.items()}
-    print(f"\n   {'part of the played frame':22} {'median':>8} {'p95':>8} {'max':>8}")
-    for name, s in per.items():
-        print(f"   {name:22} {s['median']:8.3f} {s['p95']:8.3f} {s['max']:8.3f}")
+    print()
+    _stage_table("part of the played frame", per)
     return out, per
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ganlive latency", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = parser("latency", __doc__)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
-                    help="repeatable. Several models are loaded into one bank, exactly as "
-                         "the instrument loads them, and **every one of them is timed** -- "
-                         "which is the only way to answer what a bank costs, since holding "
-                         "three networks compiled and resident at once is VRAM the frame "
-                         "budget otherwise owns, and each model's own frame time is a "
-                         "different number. Arm A and the full loop run on the first. "
-                         "Required.")
-    ap.add_argument("--device", default=None, help="default: whichever accelerator is there")
+                    help="repeatable. Several models are loaded into one bank, as the "
+                         "instrument loads them, and every one of them is timed: a bank holds "
+                         "them all resident at once, and each has its own frame time. The "
+                         "full loops run on the first. Required.")
+    add_device(ap)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--fps", type=int, default=60)
-    # The same three answers the instrument takes, because arm C claims to be the played loop
-    # and the size the frame crosses the bus at is the largest dial on that loop.
     ap.add_argument("--height", type=bank.parse_height, default=0,
                     metavar="auto|native|PIXELS",
-                    help="what the window is sent. 'native' (the default here, for comparison "
-                         "with every published reading) is the generator's own size; "
-                         "'auto' is what `ganlive play` uses -- the largest this screen can draw "
-                         "the frame at, which at 3072x2048 is 12 MB a frame across the bus "
-                         "instead of 25")
+                    help="what the window is sent, as `ganlive play` takes it. 'native' (the "
+                         "default here) is the generator's own size; 'auto' is what `play` "
+                         "uses -- the largest this screen can draw the frame at")
     ap.add_argument("--blocksize", type=int, default=256)
     ap.add_argument("--channels", type=int, default=12,
-                    help="12 is the optimistic per-track case; 8 is the MKI voice case, which "
-                         "its USB 2.0 Full Speed bandwidth may also force")
+                    help="audio channels the stand-in kit is played on: 12 is one per track, "
+                         "8 one per shared voice")
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/latency.json"))
     ap.add_argument("--window", action="store_true",
-                    help="also run arm C: the loop as it is actually played, with the real "
-                         "window open and the real strip drawn beside it, finishing at "
-                         "`bgra_bytes` and `publish` rather than at the recorder's "
-                         "`nv12_bytes`. **Arms A and B do not measure the played loop.** A "
-                         "session that reported a quarter of its frames over budget had no "
-                         "arm here that could reproduce it, because the window and the strip "
-                         "are where that quarter lives: the window thread's texture upload "
-                         "and present are C calls that hold the GIL, and they land on the "
-                         "frame thread's next host work. Needs a screen.")
+                    help="also time the played loop: the real window open and the real strip "
+                         "drawn beside it, finishing at `bgra_bytes` and `publish` rather "
+                         "than at the recorder's `nv12_bytes`. The window thread's work lands "
+                         "on the frame thread, so only this loop shows its cost. Needs a "
+                         "screen.")
     ap.add_argument("--no-capture", dest="capture", action="store_false",
-                    help="load without recording each compiled forward as one device graph. "
-                         "The control arm for that change: it is the largest single number "
-                         "this harness has reported, and quoting it needs a reading from the "
-                         "same command on the same day rather than one out of an older file")
+                    help="load without recording each compiled forward as one device graph, "
+                         "to measure what the capture saves")
     args = ap.parse_args(argv)
 
     take = MachineSim(bpm=130.0, seed=1).render(bars=8)
@@ -171,11 +171,9 @@ def main(argv=None) -> int:
     print(f"audio: {pcm.shape[0]} ch, {take.seconds:.1f}s, blocksize {args.blocksize} "
           f"({args.blocksize / take.samplerate * 1000:.2f} ms)", flush=True)
 
-    # The screen only matters to `--height auto`, and passing it always means the two tools
-    # resolve a height the same way rather than nearly the same way.
     r = bank.build(args.checkpoint, args.device, height=args.height,
-                  screen=bank.screen_size(),
-                  options=bank.LoadOptions(capture=args.capture))
+                   screen=bank.screen_size(),
+                   options=bank.LoadOptions(capture=args.capture))
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)
@@ -193,21 +191,15 @@ def main(argv=None) -> int:
     ex = FeatureExtractor(pcm.shape[0], take.samplerate)
     runner = PresetRunner(worst_case(model.layout), INDEX, float(args.fps),
                           channels=pcm.shape[0])
-    # The call the live loop makes at startup, and this harness did not.
     runner.use_model(model)
     walk = r.walk(runner.walk_cfg)
 
     runner.apply(ex.since, ex.features(), model.knobs)
-    ms = []
-    for _ in range(total):
-        t0 = time.perf_counter()
-        r.stage.nv12_bytes(r.stage.step(model.net(z_fixed)))
-        ms.append((time.perf_counter() - t0) * 1000)
-    results["A_generation_only"] = stat_ms(ms, period_ms)
-    print(f"A  generation only, no sound, no control layer   "
-          f"{results['A_generation_only']['median']:6.2f} ms median  "
-          f"{results['A_generation_only']['p95']:6.2f} p95", flush=True)
-    drift = results["A_drift"] = drift_ms(ms, args.seconds)
+    ms = _time_frames(total, lambda: r.stage.nv12_bytes(r.stage.step(model.net(z_fixed))))
+    gen = results["generation_only"] = stat_ms(ms, period_ms)
+    print(f"generation only  no sound, no control layer   "
+          f"{gen['median']:6.2f} ms median  {gen['p95']:6.2f} p95", flush=True)
+    drift = results["generation_drift"] = drift_ms(ms, args.seconds)
     print(f"   drift: {drift['first_ms']:.2f} ms in the first fifth of the run, "
           f"{drift['last_ms']:.2f} in the last ({drift['ms_per_s']:+.3f} ms/s)", flush=True)
     stages = {"hit detection": [], "rules": [], "walk": [], "generate and finish": [],
@@ -240,9 +232,9 @@ def main(argv=None) -> int:
     feeder.stop()
 
     total_ms = stages.pop("total")
-    results["B_full_loop"] = stat_ms(total_ms, period_ms)
-    results["B_full_loop"]["frames_late"] = late
-    results["B_full_loop"]["frames_late_pct"] = round(late / total * 100, 1)
+    recorded = results["recorded"] = stat_ms(total_ms, period_ms)
+    recorded["frames_late"] = late
+    recorded["frames_late_pct"] = round(late / total * 100, 1)
     results["stages"] = {k: stat_ms(v, period_ms) for k, v in stages.items()}
     push = stat_ms(feeder.push_ms)
     results["audio_thread"] = {
@@ -253,43 +245,37 @@ def main(argv=None) -> int:
         "callbacks_late": feeder.late,
     }
 
-    a = results["A_generation_only"]["median"]
-    b = results["B_full_loop"]["median"]
+    a, b = gen["median"], recorded["median"]
     results["control_layer_cost_ms"] = round(b - a, 2)
     results["control_layer_cost_pct"] = round((b - a) / a * 100, 1)
 
-    print(f"B  everything, sound thread running             "
-          f"{b:6.2f} ms median  {results['B_full_loop']['p95']:6.2f} p95   "
+    print(f"recorded         sound thread running         "
+          f"{b:6.2f} ms median  {recorded['p95']:6.2f} p95   "
           f"({late}/{total} frames late)", flush=True)
     print(f"\n   control layer costs {b - a:+.2f} ms ({(b - a) / a * 100:+.1f}%) "
-          f"against arm A\n", flush=True)
-    print(f"   {'part of the loop':22} {'median':>8} {'p95':>8} {'max':>8}")
-    for name in ("hit detection", "rules", "walk", "generate and finish"):
-        s = results["stages"][name]
-        print(f"   {name:22} {s['median']:8.3f} {s['p95']:8.3f} {s['max']:8.3f}")
+          f"against generation only\n", flush=True)
+    _stage_table("part of the loop", results["stages"])
 
     if args.window:
-        results["C_played"], results["stages_played"] = played(r, runner, ex, walk, model,
-                                                               args, take, pcm, period_ms)
+        results["played"], results["stages_played"] = played(r, runner, ex, walk, model,
+                                                             args, take, pcm, period_ms)
 
-    # Every model in the bank, at its own size. Timed after the full loop so the first model's
-    # numbers above are not read on a warmer card. Each goes through the path a frame takes, and
-    # switching is `r.use`, so this prices the switch as well as the model.
+    # Every model in the bank, at its own size, through `r.use`, so this prices the switch as
+    # well as the model. After the full loops, so the first model is not read on a warmer card.
     if len(r.models) > 1:
         per: dict[str, dict] = {}
         was = r.index
         for i, m in enumerate(r.models):
             r.use(i)
             z = latent_for(m, r)
-            for _ in range(8):                          # the first frame after a switch
+
+            def step(m=m, z=z):
                 r.stage.nv12_bytes(r.stage.step(m.net(z)))
+
+            for _ in range(8):                          # the first frames after a switch
+                step()
             dev.synchronize()
-            each = []
-            for _ in range(total):
-                t0 = time.perf_counter()
-                r.stage.nv12_bytes(r.stage.step(m.net(z)))
-                each.append((time.perf_counter() - t0) * 1000)
-            per[m.name] = stat_ms(each, period_ms)
+            per[m.name] = stat_ms(_time_frames(total, step), period_ms)
             per[m.name]["size"] = [r.width, r.height]
         r.use(was)
         results["per_model"] = per
@@ -311,20 +297,17 @@ def main(argv=None) -> int:
           f"({at['push_p95_ms'] / at['push_budget_ms'] * 100:.1f}% used), "
           f"{at['callbacks_late']} late of {at['callbacks']} callbacks")
 
-    # **The verdict belongs to the loop that is played.** Arm B ends at the recorder's
-    # `nv12_bytes` with nothing on the screen; where arm C ran, it is the frame a hand sees and
-    # B is a lower bound on it.
-    judged = results.get("C_played") or results["B_full_loop"]
-    results["verdict_arm"] = "C_played" if "C_played" in results else "B_full_loop"
+    # The verdict belongs to the loop that is played; the recorded loop is a lower bound on it.
+    results["verdict_loop"] = "played" if "played" in results else "recorded"
+    judged = results[results["verdict_loop"]]
     mid = judged["median"]
     verdict = ("FITS" if judged["p95"] < period_ms else
                "MEDIAN FITS, SLOWEST 1 IN 20 DOES NOT" if mid < period_ms else "DOES NOT FIT")
     results["verdict"] = verdict
     results["headroom_x"] = round(period_ms / mid, 2)
-    print(f"\n   {args.fps} fps budget is {period_ms:.2f} ms -> {verdict} on arm "
-          f"{results['verdict_arm'][0]}, {period_ms / mid:.2f}x headroom on the median")
+    print(f"\n   {args.fps} fps budget is {period_ms:.2f} ms -> {verdict} on the "
+          f"{results['verdict_loop']} loop, {period_ms / mid:.2f}x headroom on the median")
 
-    write_metrics(args.out, results)
+    write_json(args.out, results)
     print(f"\nwrote {args.out}")
     return 0
-

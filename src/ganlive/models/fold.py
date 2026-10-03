@@ -1,8 +1,8 @@
-"""Inference-only rewrites of a trained generator. Exact, not approximate.
+"""Inference-only rewrites of a trained FastGAN. Exact, not approximate.
 
 Spectral norm baked into the weight, BatchNorm folded into the convolution feeding it, and the
-frozen noise precomputed -- all of it measured at 0.00000 8-bit levels against the net it
-replaces. `onnx_rewrite.py` is the other kind of rewrite: the ones made on the way out to ONNX.
+frozen noise precomputed: each measures 0.00000 8-bit levels against the net it replaces.
+`onnx_rewrite.py` holds the rewrites made only on the way out to ONNX.
 """
 
 from __future__ import annotations
@@ -91,29 +91,23 @@ def fold_free_noise(net: nn.Module) -> int:
     return n
 
 
-# ORDER MATTERS BOTH WAYS. The fold must come AFTER a forward pass -- it reads running statistics, so
-# folding a cold net silently folds nothing in the blocks that matter most -- and BEFORE compile.
 def prepare_for_inference(net: nn.Module, nz: int, device, *, half: bool = True,
                           fold: bool = True) -> dict:
-    """Fold and cast. Reports what was applied, and the net under `"net"`.
+    """Bake, fold and cast a FastGAN for play. Reports what was applied, and the net under
+    `"net"`. It does not compile.
 
-    **It does not compile.** It took a `compile_net` flag that every caller passed `False` --
-    the bank compiles through `bank._compiled`, which is the one place that knows what this
-    load asked for, and the export must not compile at all. The flag's only effect was to make
-    this module import `models.capture`, which is a dependency on the graph recorder from a
-    module that does nothing but rewrite weights."""
+    The order matters: the fold reads the frozen noise patterns, which the first forward
+    draws, and it has to come before anything compiles the net. `fold` is ignored and kept
+    only for callers that still pass it; the net is always folded."""
+    del fold
     with torch.no_grad():
         net(torch.zeros(1, nz, device=device))       # draws the lazy frozen patterns
-    report: dict = {"folded": {}, "half": half}
-    # **Bake the spectral norm, which was being recomputed on every frame.** It is a pre-forward hook, so
-    # `weight = weight_orig / sigma` ran once per forward for every module still carrying one -- 15.4 M
-    # parameters read and written for nothing, plus the power-iteration matmuls, at 61.6 MB of traffic a
-    # frame in fp16. In eval nothing updates `u` and `v`, so sigma is a constant and baking it is exact:
-    # measured at 0.00000 8-bit levels over three latents in fp32. Before the fold, not after.
+    report: dict = {"half": half}
+    # In eval nothing updates spectral norm's power iteration, so sigma is a constant and
+    # baking it is exact. It has to come before the fold.
     report["spectral_removed"] = remove_spectral_norm(net)
-    if fold:
-        report["folded"] = fold_norms(net)
-        report["folded"]["free_noise"] = fold_free_noise(net)
+    report["folded"] = fold_norms(net)
+    report["folded"]["free_noise"] = fold_free_noise(net)
     if half:
         net = net.to(torch.float16).to(memory_format=torch.channels_last)
     report["net"] = net

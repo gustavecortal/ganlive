@@ -1,7 +1,5 @@
-"""A machine that is not an Analog Rytm: pads on other notes, tracks with no drum names.
-
-The twelve tracks are the instrument's vocabulary; what a machine calls them and which note
-each pad sends are its own business, and both are settings here rather than assumptions."""
+"""Drum machines other than the default kit (the Elektron Analog Rytm): pads on other notes,
+tracks with no drum names. Track names and pad notes are settings, not assumptions."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -46,7 +44,7 @@ def test_a_general_midi_kit_lands_each_pad_on_its_own_track():
     assert heard.track_of(9, 42) == INDEX["CH"]
     assert heard.track_of(9, 46) == INDEX["OH"]
     assert heard.track_of(9, 37) is None, "a note the kit does not use names no track"
-    consecutive = NoteFeatures(12, base_note=36)
+    consecutive = NoteFeatures(12, notes=parse_notes("36"))
     assert consecutive.track_of(9, 36) == 0 and consecutive.track_of(9, 47) == 11
     assert consecutive.track_of(9, 48) is None
 
@@ -59,8 +57,8 @@ def test_a_pad_is_pressed_on_the_note_its_kit_sends():
 
 
 def test_the_output_mode_is_read_against_the_kits_own_notes():
-    """On a Rytm, 0-11 is AUTO CH and pitches are TRACK CH. On a GM kit on channel 10 the same
-    notes are the pads, and calling them TRACK CH would send a user to the wrong flag."""
+    """With the default kit, notes 0-11 mean AUTO CH output and pitches mean TRACK CH; on a GM
+    kit on channel 10 the same pitches are the pads, so they must read as "auto"."""
     gm = parse_notes(GM)
     assert output_mode({9: {36, 38, 42}}, gm) == "auto"
     assert output_mode({9: {36, 38, 42}}) is None, "read as a Rytm, these name nothing"
@@ -92,7 +90,7 @@ def _sd(devices, hostapis=("MME",), starts=True):
 
 
 def test_an_explicit_input_is_taken_on_any_host_api():
-    """A mixer on CoreAudio or a loopback on WASAPI: no ASIO, no Rytm in the name."""
+    """An input chosen by index is used on any host API (CoreAudio, WASAPI), not just ASIO."""
     sd, opened = _sd([{"name": "Aggregate Device", "max_input_channels": 8, "hostapi": 0}],
                      hostapis=("Core Audio",))
     device, info, nch = pick_input(sd, 0)
@@ -119,14 +117,12 @@ def test_a_named_input_is_found_on_any_host_api_when_asked_and_a_rytm_only_on_as
 
 
 def test_a_kit_only_advertises_the_tracks_it_can_actually_reach():
-    """The strip draws one drum light per entry here, and the end-of-run report names a
-    silent track per entry that never fired. On a five-pad General MIDI kit, returning all
-    twelve gave seven lights that could not light and seven faults that could not exist --
-    the same defect the audio half had fixed by deferring to the caller's map."""
+    """The strip draws one drum light per track listed, and the end-of-run report flags each
+    listed track that never fired, so a five-pad kit must list five tracks, not twelve."""
     notes = NoteFeatures(notes=parse_notes(GM))
     assert notes.channel_of() == {"BD": 0, "SD": 1, "CH": 8, "OH": 9, "CY": 10}
 
-    # A Rytm's twelve consecutive pads still get twelve.
+    # The default kit's twelve consecutive pads get all twelve.
     assert NoteFeatures().channel_of() == dict(INDEX)
 
     # A machine identifying tracks by channel contributes those too.

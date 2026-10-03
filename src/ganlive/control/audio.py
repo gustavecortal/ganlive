@@ -1,4 +1,8 @@
-"""Finding the machine's audio input. One answer to one question."""
+"""Finding and opening the machine's audio input, through `sounddevice`.
+
+`sd` is passed in rather than imported, so the audio extra stays optional and tests can hand
+in a stand-in.
+"""
 from __future__ import annotations
 
 import sys
@@ -9,24 +13,37 @@ from ganlive.control.machine import RYTM
 #: appears on. PortAudio spells them exactly like this.
 HOSTAPI = {"win32": "ASIO", "darwin": "Core Audio"}.get(sys.platform, "ALSA")
 
-#: What `pick_input` looks for when a caller names nothing. **Taken from the profile rather
-#: than written here**: `control.machine` is the module that owns which machine is which, and
-#: this was the same four letters spelled a sixth time, in the module that claims to know
-#: about none of them.
+#: What `pick_input` looks for when a caller names nothing: the known machine's device name.
 DEFAULT_MATCH = RYTM.port
 
-#: `hostapi=DEFAULT` means `HOSTAPI`; `hostapi=None` means any. Distinguishable, which a
-#: plain `None` default is not.
+#: `hostapi=DEFAULT` means `HOSTAPI`; `hostapi=None` means any. A separate sentinel, because
+#: `None` already has a meaning.
 DEFAULT = "<this platform's>"
+
+INSTALL_HINT = "this needs an audio input: pip install 'ganlive[audio]'"
 
 
 class NoAudioDevice(RuntimeError):
     """No usable input. Carries the reason, so every caller reports the same one."""
 
 
-def named_inputs(sd, pattern: str, hostapi: str | None = DEFAULT) -> list[int]:
-    """Every input whose name contains `pattern`, on `hostapi` or on any, in device order."""
-    hostapi = HOSTAPI if hostapi == DEFAULT else hostapi
+def require_sounddevice():
+    """The `sounddevice` module, or `SystemExit` with the install hint if it is missing."""
+    try:
+        import sounddevice
+    except ImportError as exc:
+        raise SystemExit(INSTALL_HINT) from exc
+    return sounddevice
+
+
+def input_stream(sd, device: int, channels: int, samplerate: int, blocksize: int, callback):
+    """An unstarted float32 input stream calling `callback(indata, frames, time, status)`."""
+    return sd.InputStream(device=device, channels=channels, samplerate=samplerate,
+                          blocksize=blocksize, dtype="float32", callback=callback)
+
+
+def named_inputs(sd, pattern: str, hostapi: str | None) -> list[int]:
+    """Every input whose name contains `pattern`, on `hostapi` or on any if None, in order."""
     want = pattern.lower()
     return [i for i, d in enumerate(sd.query_devices())
             if d["max_input_channels"] > 0 and want in d["name"].lower()
@@ -36,8 +53,7 @@ def named_inputs(sd, pattern: str, hostapi: str | None = DEFAULT) -> list[int]:
 def starts(sd, device: int, channels: int, samplerate: int = 48000) -> str | None:
     """None if a stream on this device really starts, else why it did not."""
     try:
-        stream = sd.InputStream(device=device, channels=channels, samplerate=samplerate,
-                                blocksize=256, dtype="float32", callback=lambda *_a: None)
+        stream = input_stream(sd, device, channels, samplerate, 256, lambda *_a: None)
     except Exception as exc:                                      # noqa: BLE001
         return f"{type(exc).__name__}: {exc}"
     try:
@@ -58,7 +74,8 @@ def pick_input(sd, device: int | None = None, pattern: str = DEFAULT_MATCH,
     An explicit `device` is taken as it is, on whatever host API it lives -- a mixer on
     CoreAudio, a loopback on WASAPI -- as long as it starts. Without one, the input is found
     by name on `hostapi`: `DEFAULT` is this platform's multi-channel API (`HOSTAPI`), `None`
-    is any of them."""
+    is any of them. Each candidate is opened for real, since a listed device may not be
+    plugged in."""
     hostapi = HOSTAPI if hostapi == DEFAULT else hostapi
     if device is not None:
         info = sd.query_devices(device)

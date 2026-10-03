@@ -6,16 +6,13 @@ import importlib
 import sys
 
 COMMANDS = {
-    "play": ("play", "play a model live from a MIDI controller"),
+    "play": ("play", "play a model live, driven by a drum machine's MIDI and audio"),
     "latency": ("latency", "measure this machine's frame time, drift included"),
-    "wire": ("wire", "is the controller talking? notes, channels, audio"),
-    "learn": ("learn", "discover which audio channel each drum arrives on"),
     "doctor": ("doctor", "what this machine's audio and MIDI actually offer"),
     "dials": ("dials", "derive a checkpoint's latent directions and save them beside it"),
     "import-stylegan2": ("import_stylegan2", "convert an NVIDIA StyleGAN2 pickle to a playable checkpoint"),
     "export-onnx": ("export_onnx", "export a checkpoint as an ONNX graph with its dials as inputs"),
     "adopt": ("adopt", "make any ONNX graph or Hub model playable: dial it, prove it, save it"),
-    "shoot-strip": ("shoot_strip", "render the control strip to a PNG, headless"),
 }
 
 
