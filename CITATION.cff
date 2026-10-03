@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "Please cite ganlive when using it in research, software, or creative work."
+type: software
+title: "ganlive: Plug-and-play GAN latent-space exploration in real time"
+authors:
+  - family-names: Cortal
+    given-names: Gustave
+abstract: >-
+  ganlive is a plug-and-play interface for exploring generative adversarial
+  network (GAN) latent spaces in real time. Load a model and ganlive automatically
+  derives dials for exploration. Mouse and MIDI controls support live interaction.
+  It loads StyleGAN2 and FastGAN checkpoints and compatible ONNX generators.
+repository-code: "https://github.com/gustavecortal/ganlive"
+url: "https://github.com/gustavecortal/ganlive"
+license: MIT
+keywords:
+  - generative adversarial networks
+  - latent space exploration
+  - real-time visuals
+  - MIDI
+  - generative art
+  - StyleGAN2
+  - FastGAN
+  - ONNX
