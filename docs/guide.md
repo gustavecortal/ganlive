@@ -2,289 +2,271 @@
 
 [Back to the README](../README.md)
 
-Detailed controls, model import, recording, and technical reference.
+[Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
+[Models](#models) · [Recording](#recording) · [Performance](#speed) ·
+[Installation](#install) · [Development](#development)
 
-Commands below assume the project's virtual environment is active. Otherwise, prefix
-`ganlive` commands with `uv run --no-sync` from the project directory.
-
-[Interface](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
-[Models](#models) · [Automatic dials](#how-the-dials-are-found) ·
-[Recording](#recording) · [Performance](#speed) · [Installation](#install) ·
-[Commands](#commands) · [Glossary](#glossary) · [Code layout](#code-layout) ·
-[Development](#development) · [Related work](#related-work)
+Commands assume an active project environment. Otherwise, prefix `ganlive` with
+`uv run --no-sync` from the project directory.
 
 ## The interface
 
-The window is the picture with the **strip** on its right: one slider per dial, grouped in
-blocks, with a description of whichever dial you last touched.
+Launch with `--console` to show dials beside the image. Drag or scroll to adjust a dial.
+Right-click to return it to the preset and MIDI control.
 
-| Block | Dials | Same on every model? |
-|---|---|---|
-| `MASTER` | `reaction` — how hard the picture answers individual hits | yes |
-| `MOTION` | `speed` `spread` `hold` `late` `grid` — where the walk goes and when, in beats | yes |
-| `LATENT` | `dir1` … `dir8` — the model's strongest directions, ranked by measured effect | names yes, meaning per model |
-| `MODEL` | this architecture's own controls: truncation per style range, noise per resolution, layer gains | per model |
-
-`MOTION` is the musical part:
-
-- `speed` — how often the picture sets off somewhere new: one move every 8 beats down to every half beat.
-- `spread` — how far each move goes, from one picture breathing to a new scene every time.
-- `hold` — how much of each move is spent standing still.
-- `late` — whether the movement leaves on the beat or arrives on the next one.
-- `grid` — glide, or step in quarter, eighth, sixteenth or thirty-second notes.
-
-**Mouse:** drag a slider to hold it, wheel to nudge it, right-click to let it go back to the
-preset and the drums.
-
-**Keys** (with `--console`):
-
-| Key | Does |
+| Group | Controls |
 |---|---|
-| `g` | routing grid: click a cell to wire a drum to a dial, wheel to set how hard, right-click to reverse it |
-| `l` | learn: the next knob you turn on the controller takes the dial you last touched |
-| `[` `]` | previous / next loaded model |
-| `m` | model picker: everything under `--runs`; click to load or switch |
-| `tab` | next preset (`shift+tab` previous) |
-| `s` | save what is at the controls as a preset |
-| `r` | let go of every dial held with the mouse |
-| `v` | start / stop recording |
-| `c` | save a still |
-| `n` | show native pixels, cropped (arrow keys pan) |
-| `f` | fullscreen |
-| `Esc` / `q` | quit |
+| `MASTER` | Strength of the response to each hit |
+| `MOTION` | Speed, distance, and timing of movement |
+| `LATENT` | Directions through the model's latent space |
+| `MODEL` | Model-specific controls such as noise and truncation |
 
-Without `--console` the picture opens fullscreen and only `n`, `f`, the arrows and `Esc` apply.
+Motion dials control how the image moves:
 
-A dial drawn dark is one this model does not have, or one that was measured to do nothing on
-it; the description says which.
+| Dial | Effect |
+|---|---|
+| `speed` | Time between moves, from 8 beats to half a beat |
+| `spread` | Distance travelled per move |
+| `hold` | Time spent still during a move |
+| `late` | Leave on the beat or arrive on the next beat |
+| `grid` | Smooth movement or steps on subdivisions of the beat |
+
+Dark dials are inactive for the current model.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `g` | Open the MIDI routing grid |
+| `l` | Map the next MIDI knob to the last dial touched |
+| `[` / `]` | Previous / next loaded model |
+| `m` | Browse models under `--runs` |
+| `Tab` / `Shift+Tab` | Next / previous preset |
+| `s` | Save a preset |
+| `r` | Release all mouse-controlled dials |
+| `v` | Start / stop video recording |
+| `c` | Save an image |
+| `n` | Show native pixels, with arrow keys to pan |
+| `f` | Toggle fullscreen |
+| `Esc` / `q` | Quit |
+
+Without `--console`, the image opens fullscreen with `n`, `f`, arrow keys, and `Esc`.
 
 ## Playing with hardware
 
-Plug in a controller and drop `--simulate`. ganlive picks the accelerator, the MIDI ports and
-an audio input itself.
+Connect your MIDI device and launch without `--no-midi` or `--simulate`.
+ganlive listens to all MIDI inputs by default. Use `--midi-port` to select one.
 
-**Drums.** The vocabulary is twelve tracks — `BD SD RS CP BT LT MT HT CH OH CY CB` — named or
-indexed 0–11. Tell ganlive which note is which drum:
+### Notes
 
-```bash
-ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --notes 36=BD,38=SD,42=CH,46=OH   # a General MIDI kit
-ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --notes 0                         # pads on consecutive notes from 0
-```
-
-Use `--midi-channels` instead when your machine sends each track on its own MIDI channel. If it
-also sends audio with one channel per drum, `--triggers both` reads hits from the sound as
-well (`ganlive doctor --learn` maps which channel is which drum).
-
-**Knobs.** Press `l` on a dial and turn a knob, or declare the wiring:
+Map note numbers to tracks, then press `g` to connect tracks to dials.
+Click a grid cell to connect it, scroll to adjust the strength, and right-click to reverse it.
 
 ```bash
---cc "16=w_fine,2:17=noise_64,n1.3=dir1"    # CC 16; CC 17 on channel 2; NRPN 1.3 (14-bit)
+ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --no-audio --notes 36=BD,38=SD,42=CH,46=OH
 ```
 
-Learned knobs are remembered in `runs/ganlive/settings/cc.txt`.
+Track names are `BD SD RS CP BT LT MT HT CH OH CY CB`, or indices 0–11.
+These are routing labels. You can map any note numbers to them.
 
-**Pads.** `--pressure "BD=dir1"` lets you lean on a pad to hold a dial, using polyphonic aftertouch.
+For twelve consecutive notes, use `--notes 0`, replacing `0` with the first note.
+If tracks use separate MIDI channels, use `--midi-channels "1=BD,2=SD"` instead.
 
-**Tempo.** With MIDI clock arriving, the walk follows it, and Start and Stop on the machine
-start and stop the picture. Without clock it runs at `--bpm`.
+### Knobs and pressure
 
-**When a drum is not moving the picture,** ask three questions in order:
+Touch a dial, press `l`, and turn a MIDI knob. Mappings are saved in
+`runs/ganlive/settings/cc.txt`.
 
-```bash
-ganlive doctor              # is the hardware there? lists every audio input and MIDI port
-ganlive doctor --listen     # is it sending? counts notes, clock and transport as they arrive
-ganlive doctor --learn      # is it landing where ganlive thinks? maps audio channels to drums
-```
+You can also pass mappings with `--cc`:
 
-`ganlive doctor --drive` starts the machine's sequencer from the computer and checks that its
-steps send notes, and `--meter` shows live levels per audio channel. The defaults suit an
-Elektron Analog Rytm over Overbridge (Elektron's USB audio), the machine this was built with;
-every one of them is a flag.
+| Mapping | Meaning |
+|---|---|
+| `16=dir1` | CC 16 controls `dir1` |
+| `2:17=dir1` | CC 17 on channel 2 controls `dir1` |
+| `n1.3=dir1` | NRPN 1.3 controls `dir1` |
+
+Use `--pressure "BD=dir1"` to control a dial with polyphonic aftertouch.
+
+### Tempo and audio
+
+MIDI clock sets the tempo. MIDI Start and Stop control movement.
+Without clock, `--bpm` sets the tempo.
+
+With the `audio` extra, use `--triggers audio` for audio hits or `--triggers both`
+for MIDI and audio. Select an input with `--audio-name` or `--audio-device`.
+Run `ganlive doctor --learn` to map audio channels to tracks.
+
+To try music-driven visuals without hardware, install the `audio` extra and add
+`--simulate --monitor`. This plays the built-in drum pattern through your speakers.
+
+### Troubleshooting
+
+| Command | Check |
+|---|---|
+| `ganlive doctor` | Available MIDI ports and audio inputs |
+| `ganlive doctor --listen` | Incoming notes, clock, and transport |
+| `ganlive doctor --meter` | Audio levels by channel |
+| `ganlive doctor --learn` | Audio channel mapping |
+| `ganlive doctor --drive` | Start a sequencer and check its notes |
+
+Audio defaults target an Elektron Analog Rytm through Overbridge.
+Adjust the input and channel mapping for other devices.
 
 ## Models
 
-Three families play, side by side in one session. A 1024×1024 StyleGAN2 with a 512-wide latent
-can sit next to a 3072×2048 FastGAN with a 256-wide one; repeat `--checkpoint` and switch with
-`[` and `]`.
+Pass a checkpoint or run directory with `--checkpoint`.
+Repeat the option to load several models, then switch with `[` and `]`.
+Models can have different resolutions and latent dimensions.
 
-| Family | Get one with | Notes |
-|---|---|---|
-| **StyleGAN2** | `ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch` | NVIDIA's weights, read by this project's own synthesis network, so their CUDA kernels are not needed and it runs on any GPU. StyleGAN3 is not supported. |
-| **FastGAN** | download the published checkpoint below, or train one with [smallgen](https://github.com/gustavecortal/smallgen) | The architecture this project grew up with. Plays at 3072×2048. |
-| **Any ONNX graph** | `ganlive adopt model.onnx` or `ganlive adopt hf:owner/repo` | Needs `.[onnx]` (or `.[onnx-intel]` on an Intel GPU), plus `.[hub]` for `hf:` sources. |
+### StyleGAN2
 
-**Adopting a model you did not write.** `adopt` fetches a generator, exports it to ONNX if it
-is not already, freezes its random draws, finds its dials, measures what each is worth and
-writes all of that into the graph's metadata. The file that comes out plays on its own:
+Convert NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository:
 
 ```bash
-ganlive adopt hf:someone/some-gan --trust-remote-code    # runs the repo's own code: only for repos you trust
-ganlive play --checkpoint runs/onnx/some-gan.onnx --console
+ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch
+ganlive play --checkpoint runs/stylegan2/model.pt --console
 ```
 
-It refuses rather than guesses in three places: code it has not been allowed to run, a module
-that never produced a picture, and a graph that is still non-deterministic after its draws are
-frozen.
+See the [README](../README.md#quick-start) for a complete example.
+The converted model runs without NVIDIA's custom CUDA kernels.
 
-**The published FastGAN.** `gv-2048-ft`, 3072×2048, is on the Hugging Face Hub at
-[gustavecortal/ganlive-fastgan-3072](https://huggingface.co/gustavecortal/ganlive-fastgan-3072):
+### FastGAN
+
+Load a checkpoint trained with [smallgen](https://github.com/gustavecortal/smallgen),
+or download the [published FastGAN model](https://huggingface.co/gustavecortal/ganlive-fastgan-3072)
+into `runs/gv-2048-ft`:
 
 ```bash
-huggingface-cli download gustavecortal/ganlive-fastgan-3072 --local-dir runs/gv-2048-ft
-ganlive play --checkpoint runs/gv-2048-ft --console --simulate
+ganlive play --checkpoint runs/gv-2048-ft --console
 ```
 
-**Stronger directions, offline.** `ganlive dials runs/stylegan2/ffhq.pt` spends about 100
-seconds finding directions from the whole generator rather than from its first layer, and
-saves them beside the checkpoint for every later load to use.
+### Other generators
 
-**Exporting.** `ganlive export-onnx --checkpoint runs/my-run` writes a FastGAN checkpoint as an
-ONNX graph with its dials as an input, for runtimes other than PyTorch.
+Install the `onnx` extra and import a compatible ONNX generator:
+
+```bash
+ganlive adopt model.onnx --out runs/onnx/model.onnx
+ganlive play --checkpoint runs/onnx/model.onnx --console
+```
+
+For a Hugging Face repository, install `hub` and use:
+
+```bash
+ganlive adopt hf:owner/repo --out runs/onnx/model.onnx
+```
+
+If the repository requires its own Python code, add `--trust-remote-code` only for code
+you trust. Import needs a generator that accepts a latent and returns an image.
+Models with extra inputs or unsupported operations may need a custom ONNX export.
+
+Import creates and calibrates controls, then saves them with the graph for later use.
+
+### Additional tools
+
+| Command | Use |
+|---|---|
+| `ganlive dials runs/stylegan2/model.pt` | Find directions using the whole generator and save them for later launches |
+| `ganlive export-onnx --checkpoint runs/my-run` | Export a FastGAN checkpoint with its controls |
 
 ## How the dials are found
 
-Every measurement in ganlive is in **8-bit levels**: the mean absolute difference between two
-frames, on the 0–255 scale of the picture you see.
+ganlive derives latent directions from model weights using
+[SeFa](https://arxiv.org/abs/2007.06600), then ranks them by their effect on the image.
+For StyleGAN2, directions act in its mapped latent space, `w`.
 
-- **Directions** (`dir1`…`dir8`) come from [SeFa](https://arxiv.org/abs/2007.06600): the
-  singular vectors of the first weight the latent meets. For a StyleGAN2, that is the style
-  affines of each style range (coarse, mid, fine), so the directions live in `w`. Each
-  candidate is pushed and measured. It earns a dial only if it moves the picture
-  `--direction-floor` times more than a random direction of the same length (2× by default),
-  and the survivors are ranked by effect.
-- **Model dials** are found by walking the generator's graph: truncation per style range, the
-  network's own noise at each resolution, the gain on each resolution stage. Each one is driven
-  to both ends and kept only if it moves the picture by at least 1 level.
-- **Travel** is calibrated: a dial's curve is laid out so that equal turns give roughly equal
-  amounts of visible change, aiming for about 25 levels at full travel on every model.
-- **Rest** is where the model behaves as trained. A dial rests there, and its readout says
-  which way and how far you have moved it.
+Directions must produce more change than a random direction of the same length.
+`--direction-floor` sets this threshold, with a default of 2.
+Controls for noise, truncation, and layer gains depend on the model.
+
+Dial ranges are calibrated so that similar movements produce roughly similar visual changes.
+Controls with no measured effect are inactive.
 
 ## Recording
 
-`v` starts and stops a take, written to `runs/ganlive/` with the best hardware encoder this
-machine opens (QSV, NVENC, VideoToolbox or AMF, falling back to x264). `--record` starts one
-immediately. Beside each take, ganlive writes a mono guide track from the audio input and a
-JSON beat map with a mark at every bar line. Drop both into your DAW and the take lines up with
-the multitrack. `c` saves the current frame as a full-resolution PNG.
+Press `v` to start or stop recording, or launch with `--record`.
+Videos use an available hardware encoder, with software fallback.
+
+Press `c` to save a full-resolution PNG. Files are saved under `runs/ganlive/`.
+
+Recordings follow the display resolution. Use `--height native` to record at the
+model's full resolution. When audio input is available, the guide track and beat map
+help align video with a DAW recording. Use `--no-guide` to disable them.
 
 ## Speed
 
-Measured with `ganlive latency` on an Intel Arc A770 (torch 2.13+xpu), with the sound thread
-running. Each row is one model's frame, from latent to a frame ready for the window:
+Measure your hardware with:
 
-| Model | Native size | Frame | fps |
+```bash
+ganlive latency --checkpoint runs/stylegan2/ffhq.pt
+```
+
+Reported measurements on an Intel Arc A770 with PyTorch 2.13+xpu:
+
+| Model | Native resolution | Frame time | FPS |
 |---|---|---|---|
-| FFHQ StyleGAN2 | 1024×1024 | 10.7 ms | 94 |
-| FastGAN `gv-2048-ft` (shown at 1620×1080) | 3072×2048 | 8.8 ms | 114 |
-| FFHQ StyleGAN2 adopted as ONNX, OpenVINO FP16 | 1024×1024 | 14.3 ms | 70 |
+| StyleGAN2 FFHQ | 1024×1024 | 10.7 ms | 94 |
+| FastGAN, displayed at 1620×1080 | 3072×2048 | 8.8 ms | 114 |
+| StyleGAN2 FFHQ via ONNX, OpenVINO FP16 | 1024×1024 | 14.3 ms | 70 |
 
-With the window open and the strip drawn, the whole played loop on FFHQ took 12.4 ms (13.8 ms
-at p95), inside a 60 fps budget with a third to spare.
-
-Only that machine has been measured. `ganlive latency --checkpoint ...` measures yours in a few
-minutes. Beside the median it prints a drift line, because a median hides a slope: a frame time
-that creeps up by a fraction of a millisecond every second reads fine in every short window.
+These measure generation and frame preparation. With the window and controls,
+the FFHQ loop took 12.4 ms, with 13.8 ms at the 95th percentile.
+Results depend on your model, hardware, and runtime.
 
 ## Install
 
-ganlive needs Python 3.10–3.13 and a PyTorch build for your hardware, installed first:
+Follow the [README quick start](../README.md#quick-start).
+Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/) first.
 
-| Hardware | torch index |
+ganlive detects CUDA, Intel XPU, Apple MPS, or CPU.
+AMD GPUs use the ROCm PyTorch build on Linux.
+
+Add optional features with `uv pip install -e ".[EXTRA]"`:
+
+| Extra | Feature |
 |---|---|
-| NVIDIA | `--index-url https://download.pytorch.org/whl/cu128` |
-| Intel Arc / Core Ultra | `--index-url https://download.pytorch.org/whl/xpu` |
-| AMD (Linux) | `--index-url https://download.pytorch.org/whl/rocm6.3` |
-| Apple silicon, or CPU only | no `--index-url` |
+| `audio` | Audio input and recording guide tracks |
+| `record` | Video recording |
+| `onnx` | ONNX import and playback |
+| `onnx-intel` | ONNX through OpenVINO for Intel GPUs |
+| `hub` | Hugging Face imports, including ONNX dependencies |
+| `all` | All features except `onnx-intel` |
+| `dev` | Development dependencies |
 
-Then `uv pip install -e ".[audio,record]"`, adding the extras you want:
-
-| Extra | Adds |
-|---|---|
-| `audio` | audio input, for drums heard rather than sent as MIDI, and for the guide track |
-| `record` | video recording |
-| `onnx` | playing and adopting ONNX graphs (ONNX Runtime) |
-| `onnx-intel` | the same through OpenVINO, the fastest path on Intel GPUs |
-| `hub` | `adopt hf:...` |
-| `all` | everything above except `onnx-intel` |
-| `dev` | the test suite and the linter |
-
-On Windows, audio interfaces that expose many channels only through ASIO are found
-automatically.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `ganlive play` | play one or more models live |
-| `ganlive doctor` | check audio and MIDI: list, `--meter`, `--listen`, `--drive`, `--learn` |
-| `ganlive latency` | measure this machine's frame time, drift included |
-| `ganlive import-stylegan2` | convert an NVIDIA StyleGAN2-ADA pickle |
-| `ganlive adopt` | make any ONNX graph or Hub generator playable |
-| `ganlive dials` | find stronger directions offline and save them beside the checkpoint |
-| `ganlive export-onnx` | export a FastGAN checkpoint as ONNX with its dials as an input |
-
-`ganlive <command> --help` lists each command's options.
-
-## Glossary
-
-| Term | Meaning |
-|---|---|
-| **8-bit level** | the unit of every measurement: mean absolute pixel difference on the 0–255 scale |
-| **dial** | one 0–1 control on the strip or a knob, with a rest position and a calibrated curve |
-| **setting** | one number the generator reads every frame, such as a gain; dials write settings |
-| **latent `z`** | the random vector a generator starts from |
-| **style `w`** | StyleGAN's mapped latent; StyleGAN2 directions are pushes in `w` |
-| **style range** | StyleGAN2's layers grouped by resolution — coarse, mid, fine — each with its own directions and truncation |
-| **truncation** | pulling `w` toward the average; lower is more typical, higher more unusual |
-| **walk** | the path through latent space, made of moves timed in beats |
-| **track** | one of the twelve drum names, `BD` to `CB` |
-| **impulse** | a drum hit pushing a dial and letting go |
-| **preset** | dial positions plus the rules wiring drums and audio to dials |
-| **bank** | the models loaded in one session |
-| **adopt** | give a foreign generator measured dials, saved inside its ONNX file |
-| **capture** | recording the compiled forward pass as one device graph, replayed every frame |
-| **take** / **still** | a recorded video / a saved frame |
-
-## Code layout
-
-| Path | What lives there |
-|---|---|
-| `models/` | the three model families, graph capture, and the ONNX side: export, adoption, calibration, runtimes |
-| `dials/` | what a dial is (`table`), finding directions (`derive`), the handles on a loaded generator (`steer`), and the measurement that decides which dials are offered (`gate`) |
-| `control/` | MIDI in, audio in, the twelve-track drum vocabulary, and the built-in drum machine |
-| `record/` | video, stills, and the guide track |
-| `families.py`, `checkpoints.py`, `bank.py` | recognising a model file, preparing it, and holding the loaded models |
-| `clock.py`, `walk.py` | musical time, and the walk through latent space measured in beats |
-| `presets.py` | the rules connecting what the drums do to what the picture does |
-| `strip.py`, `window.py`, `frame.py` | the sliders, the window, and what crosses the bus each frame |
-| `tools/`, `cli.py` | one module per `ganlive` command |
-
-Imports only ever point down this stack, from small torch-free modules (`curves`, `clock`,
-`files`) through `models/` and `dials/` up to `tools/`; `tests/test_layout.py` enforces it.
+Combine extras as `".[audio,record]"`.
+Run `ganlive <command> --help` for all options.
 
 ## Development
 
 ```bash
-uv pip install -e ".[all,dev]"
-GANLIVE_DEVICE=cpu python -m pytest tests -q    # runs on the CPU, no hardware needed
+uv pip install -e ".[dev]"
+GANLIVE_DEVICE=cpu python -m pytest tests -q
 ruff check src tests scripts
 ```
 
-`python scripts/shoot_strip.py <checkpoint> --out shots/` renders the strip headless in each
-mode, which is the quickest way to check a layout change.
+Render the controls without a window:
+
+```bash
+python scripts/shoot_strip.py <checkpoint> --out shots/
+```
+
+Source code is under `src/ganlive/`:
+
+| Path | Purpose |
+|---|---|
+| `models/`, `dials/` | Model loading and automatic controls |
+| `control/` | MIDI, audio, and simulated drums |
+| `record/` | Video, images, and recording alignment |
+| `strip.py`, `window.py` | Interface |
+| `tools/`, `cli.py` | Commands |
 
 ## Related work
 
-- [StyleGAN2-ADA](https://github.com/NVlabs/stylegan2-ada-pytorch) (Karras et al., 2020), whose weights ganlive plays unchanged.
-- [FastGAN](https://arxiv.org/abs/2101.04775) (Liu et al., 2021), the architecture behind the FastGAN family.
-- [SeFa](https://arxiv.org/abs/2007.06600) (Shen & Zhou, 2021), closed-form latent directions.
-- [Autolume-Live](https://www.metacreation.net/projects/autolume-automating-live-music-visualisation-technical-report)
-  (Kraasch & Pasquier, 2022), an audio-reactive StyleGAN VJ system. ganlive differs in taking
-  any generator, deriving and measuring its dials, and locking the walk to MIDI clock.
+- [StyleGAN2-ADA](https://github.com/NVlabs/stylegan2-ada-pytorch), Karras et al., 2020.
+- [FastGAN](https://arxiv.org/abs/2101.04775), Liu et al., 2021.
+- [SeFa](https://arxiv.org/abs/2007.06600), Shen and Zhou, 2021.
+- [Autolume-Live](https://www.metacreation.net/projects/autolume-automating-live-music-visualisation-technical-report),
+  Kraasch and Pasquier, 2022.
 
-## Licence
+## License
 
-MIT. Model weights keep their own licences: NVIDIA's StyleGAN2 models are under the
-[NVIDIA Source Code License](https://github.com/NVlabs/stylegan2-ada-pytorch/blob/main/LICENSE.txt),
-and models fetched with `adopt` under whatever their authors chose.
+[MIT](../LICENSE). Model weights retain their original licenses.
