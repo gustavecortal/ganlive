@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "Please cite ganlive when using it in research, software, or creative work."
+type: software
+title: "ganlive: Real-time GAN latent-space exploration with MIDI"
+authors:
+  - family-names: Cortal
+    given-names: Gustave
+abstract: >-
+  ganlive is a Python tool for exploring generative adversarial network (GAN)
+  latent spaces in real time. It creates automatic dials and supports mouse
+  controls, MIDI notes and controller knobs, model switching, and recording.
+  It loads StyleGAN2 and FastGAN checkpoints and compatible ONNX generators.
+repository-code: "https://github.com/gustavecortal/ganlive"
+url: "https://github.com/gustavecortal/ganlive"
+license: MIT
+keywords:
+  - generative adversarial networks
+  - latent space exploration
+  - real-time visuals
+  - MIDI
+  - generative art
+  - StyleGAN2
+  - FastGAN
+  - ONNX
