@@ -5,7 +5,7 @@
 Load a GAN. Explore its latent space with automatically derived dials, by hand or with MIDI.
 
 <p align="center">
-  <a href="docs/demo.mp4"><img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials: NVIDIA's AFHQ-wild StyleGAN2, a dial turned by hand, drums wired to dials in the routing grid, and a switch to the AFHQ-cat model and back" width="860"></a>
+  <a href="docs/demo.mp4"><img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials: NVIDIA's AFHQ-wild StyleGAN2, a dial turned by hand and drums wired to dials in the routing grid" width="860"></a>
 </p>
 
 ## Quick start
