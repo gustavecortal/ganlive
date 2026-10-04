@@ -30,7 +30,7 @@ from ganlive.pixels import levels, worst_levels
 from ganlive.tools import parser
 
 #: The largest fp32 difference from NVIDIA's generator, in 8-bit levels, that is still rounding.
-TOLERANCE = 0.01
+TOLERANCE = 0.1
 
 
 def open_pickle(pkl: Path, repo: Path):

@@ -8,6 +8,7 @@ import time
 import wave
 
 import numpy as np
+import pytest
 
 from ganlive.files import next_path
 from ganlive.record.sync import Guide
@@ -258,17 +259,17 @@ def test_the_sidecar_anchors_the_take_on_the_audio_stream(tmp_path):
     assert guide.position == 7 * 256 and guide.blocks == 0, "kept audio with no take running"
 
     guide.position += 256
-    guide.start(tmp_path / "take-04.mp4", bpm=130.0, beat=0.0, beat_source="internal")
-    guide._q.put_nowait((7 * 256, time.perf_counter(),
-                         np.zeros((4, 256), dtype=np.float32)))
+    # Fixed clock readings, so the offset does not depend on how busy the machine is.
+    guide.start(tmp_path / "take-04.mp4", bpm=130.0, beat=0.0, beat_source="internal",
+                at=100.0)
+    guide._q.put_nowait((7 * 256, 100.010, np.zeros((4, 256), dtype=np.float32)))
     guide.blocks += 1
     _guide_blocks(guide, 3, channels=4)
     report = _drained(guide).stop()
     assert report["audio"]["start_sample"] == 7 * 256, \
         "the anchor was read from the counter on the render thread, one block out"
     # The block arrived as its last sample did, so the first one is a block's length earlier.
-    block_ms = 256 / 48000 * 1000
-    assert -block_ms < report["audio"]["offset_ms"] < -block_ms + 2.0, report["audio"]
+    assert report["audio"]["offset_ms"] == pytest.approx(10.0 - 256 / 48000 * 1000, abs=1e-3)
     assert not guide._q.qsize()
 
 

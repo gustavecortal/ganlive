@@ -128,6 +128,9 @@ class Display:
         if sys.platform == "win32":
             # Windows only: SDL refuses this driver name everywhere else.
             os.environ.setdefault("SDL_VIDEODRIVER", "windows")
+        # Filter the picture when it is scaled to the window. SDL's default is nearest-neighbour,
+        # which shimmers on a frame shrunk to fit.
+        os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")
         import pygame
         from pygame._sdl2.video import Renderer, Texture, Window
 
