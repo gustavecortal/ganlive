@@ -16,6 +16,7 @@ runs/
 *.onnx
 *.safetensors
 *.mp4
+!docs/demo.mp4
 *.wav
 
 .env
