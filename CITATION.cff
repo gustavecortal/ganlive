@@ -10,7 +10,7 @@ authors:
 abstract: >-
   ganlive is a plug-and-play interface for exploring generative adversarial
   network (GAN) latent spaces in real time. Load a model and ganlive automatically
-  derives dials for exploration. Mouse and MIDI controls support live interaction.
+  derives dials for exploration, played by hand, with MIDI, or from drums.
   It loads StyleGAN2 and FastGAN checkpoints and compatible ONNX generators.
 repository-code: "https://github.com/gustavecortal/ganlive"
 url: "https://github.com/gustavecortal/ganlive"

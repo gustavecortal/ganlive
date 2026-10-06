@@ -33,7 +33,7 @@ The converted model runs without NVIDIA's custom CUDA kernels.
 
 ### FastGAN
 
-Load a checkpoint trained with [smallgen](https://github.com/gustavecortal/smallgen),
+Load a checkpoint trained with [gantrain](https://github.com/gustavecortal/gantrain),
 or download a published one, [ganlive-lichen](https://huggingface.co/gustavecortal/ganlive-lichen)
 or the lighter [ganlive-amber](https://huggingface.co/gustavecortal/ganlive-amber):
 
