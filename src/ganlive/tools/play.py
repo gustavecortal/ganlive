@@ -66,6 +66,10 @@ TAKE_RING = TAKE_DEPTH + 3
 #: Seconds into a reactive run before saying that no hits have arrived.
 HIT_GRACE_S = 6.0
 
+#: The most the internal clock moves in one frame. A frame that waited on a model load is not
+#: allowed to jump the picture by the length of the wait.
+LONGEST_STEP_S = 0.25
+
 
 def remembered(path: Path, parse, label: str):
     """`(parsed, note)` from a settings file, or None if there is none or it does not parse."""
@@ -804,6 +808,7 @@ def main(argv=None) -> int:
     kind, fix = silence_words(use_notes, use_audio, machine)
     hits_checked = False
     start = time.perf_counter()
+    ticked = start
     # A deadline as well as a frame count, so a model that cannot hold the asked-for rate
     # still stops after `--seconds`.
     deadline = start + args.seconds if args.seconds else 0.0
@@ -829,7 +834,10 @@ def main(argv=None) -> int:
                     report_unheard(extractor, kind, fix, notes, note_channels)
                 runner.observe(extractor.drain())
                 runner.apply(extractor.since, extractor.features(), model.settings)
-                clock.advance(period)
+                # By the time that passed, not by `period`: a model that cannot hold the frame
+                # rate would otherwise play the music slower, and faster again after a switch.
+                clock.advance(min(t0 - ticked, LONGEST_STEP_S))
+                ticked = t0
                 guide.mark(clock.beats)
                 out = model.net(walk.latent(clock.beats))
                 frame = r.stage.step(out)
