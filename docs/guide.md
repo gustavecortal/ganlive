@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-Load a model to get dials for its latent space. Use them with your mouse or MIDI controller.
+Load a model to get dials for its latent space. Use them with your mouse, a MIDI controller, or drums.
 
 [Models](#models) · [Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
 [Recording](#recording) · [Performance](#speed) · [Installation](#install) ·
