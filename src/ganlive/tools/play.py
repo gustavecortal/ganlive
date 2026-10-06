@@ -367,7 +367,9 @@ def report_clock(clock, reader, args, pressure, encoders, runner, machine) -> No
         if trouble:
             print(f"  {trouble}")
         counts = reader.counts or {}
-        if not counts.get("clock"):
+        if not reader.ports:
+            pass                  # no port at all: said once at the start, not again here
+        elif not counts.get("clock"):
             print(f"  NO MIDI CLOCK ARRIVED. The picture ran at its own tempo. On "
                   f"{machine.name}, {machine.says('clock')}.")
         elif not counts.get("start"):
@@ -666,6 +668,8 @@ def main(argv=None) -> int:
         reader.start()
         reader.ready.wait(timeout=5.0)
         print(reader.describe(), flush=True)
+        if not reader.ports and not use_audio:
+            reactive = False      # nothing can play the drums, and `describe` has said why
     report_dropped(runner)
     report_unreachable((encoders, pressure), r.current.layout)
     walk = r.walk(runner.walk_cfg)
