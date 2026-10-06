@@ -70,7 +70,6 @@ GROUPS = fastgan().groups
 MIN_H = floor_height(GROUPS)
 
 
-
 def _travelled(walk, beats):
     """Where along its arc the walk really is at `beats`, recovered from the latent it returns."""
     k = position(walk.cfg, beats)[0]
@@ -437,7 +436,6 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
         panel._resize(WIDTH, 900)
         panel._paint()
 
-
     source = inspect.getsource(window.Display._run)
     assert "self.stopped = True" in source and "except Exception" in source, (
         "a window thread that dies has to stop the session; a frozen window that still "
@@ -532,7 +530,6 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
             assert bare.handle(ev, strip) is False, action
     assert "r free" in offered and "g route" in offered
 
-
     with pytest.raises(KeyError, match="recrd"):
         DialPanel(_runner(), actions={"recrd": lambda: None})
 
@@ -555,7 +552,6 @@ def test_the_window_conversion_is_the_same_picture_in_the_texture_s_own_order():
 
 def test_the_description_is_wrapped_by_measuring_it_rather_than_counting_characters():
     """Every line of a dial's description fits the strip, measured with the font that draws it."""
-
 
     pygame.font.init()
     font = pygame.font.SysFont(SANS, 13)

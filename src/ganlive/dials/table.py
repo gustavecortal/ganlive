@@ -193,7 +193,7 @@ class Surface:
     def __getitem__(self, name: str) -> float:
         return self.values[name]
 
-    def apply(self, knobs, walk_cfg) -> None:
+    def apply(self, settings, walk_cfg) -> None:
         """Write every dial through to its two destinations: the network, and the walk.
 
         Called once per frame, so a frame is never drawn against a half-written state."""
@@ -209,7 +209,7 @@ class Surface:
         # model's layout.
         for knob in self.layout.knobs:
             for write in knob.writes:
-                knobs.set(write.setting, at(write.points, v[knob.name]))
+                settings.set(write.setting, at(write.points, v[knob.name]))
 
         walk_cfg.amounts = tuple(at(DIRECTION_POINTS, v[name]) if name in v else 0.0
                                  for name in DIRECTION_DIALS)

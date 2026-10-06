@@ -835,7 +835,7 @@ class DialPanel:
                     f"margin, or fell beyond the {DIRECTIONS} the strip shows.")
         knob = self.dials.get(name)
         model = self._model()
-        index = getattr(getattr(model, "knobs", None), "index", None) or ()
+        index = getattr(getattr(model, "settings", None), "index", None) or ()
         reaches = knob is not None and any(w.setting in index for w in knob.writes)
         if reaches and knob.measured is not None:
             return (f"This model has it, but driven to either end of its travel at load it "

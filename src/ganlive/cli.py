@@ -6,7 +6,7 @@ import importlib
 import sys
 
 COMMANDS = {
-    "play": ("play", "play a model live, driven by a drum machine's MIDI and audio"),
+    "play": ("play", "explore a model live, by hand, with MIDI, or from drums"),
     "latency": ("latency", "measure this machine's frame time, drift included"),
     "doctor": ("doctor", "what this machine's audio and MIDI actually offer"),
     "dials": ("dials", "derive a checkpoint's latent directions and save them beside it"),

@@ -200,7 +200,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks(tmp_path):
         "the shared blocks are the same on every family")
 
 
-def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
+def test_ganlive_opens_a_fastgan_checkpoint(tmp_path):
     """The whole FastGAN load path, from a `.pt` on disk to a playable `Model`: rebuild,
     freeze the noise, install, measure, lay out."""
     torch.manual_seed(0)          # the dial gate measures the picture; random weights vary
@@ -212,11 +212,11 @@ def test_the_instrument_opens_a_fastgan_checkpoint(tmp_path):
     model = R._prepare(path, "cpu", torch.float32,
                        LoadOptions(compile_net=False, capture=False, measure_grain=False))
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
-    assert model.knobs.names, "no dials were installed on the generator"
+    assert model.settings.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and
     # drawn dark rather than installed. Which of the rest survive is a measurement -- these
     # weights are random -- so the claim here is structural, not a list.
-    assert "sle.se_512" not in model.knobs.index
+    assert "sle.se_512" not in model.settings.index
     assert "se_512" not in model.dials_live
     assert {"se_64", "se_128", "se_256"} & model.dials_live, "no gate reached the model"
     assert {"reaction", "speed", "spread"} <= model.dials_live, "the shared dials are live"

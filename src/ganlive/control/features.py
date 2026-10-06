@@ -38,7 +38,7 @@ class _Source:
     whole-kit measurements each keeps up to date."""
 
     def played(self) -> int:
-        """How many tracks have fired at all: whether the drums are reaching the instrument."""
+        """How many tracks have fired at all: whether the drums are reaching ganlive."""
         return int((self.since < NEVER * 0.1).sum())
 
     def features(self) -> dict[str, float]:

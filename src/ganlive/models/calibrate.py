@@ -99,7 +99,8 @@ class _Probe:
     """What `calibrate` asks of a model, and nothing else about it."""
 
     nz: int
-    settings: int
+    #: How many settings the model takes.
+    width: int
 
     def latent(self, seed: int = 0) -> np.ndarray:
         """The latent a measurement is taken on. The precision check and the dials use the
@@ -107,7 +108,7 @@ class _Probe:
         return host_latent(self.nz, seed)
 
     def neutral(self) -> np.ndarray:
-        return np.ones(self.settings, np.float32)
+        return np.ones(self.width, np.float32)
 
     def frame(self, z, k=None):
         raise NotImplementedError
@@ -125,7 +126,7 @@ class Probe(_Probe):
             runner = runtime.open_graph(model, backend=backend, device=want,
                                         precision=precision)
         self.runner = runner
-        self.nz, self.settings = self.runner.nz, self.runner.settings
+        self.nz, self.width = self.runner.nz, self.runner.settings
 
     def frame(self, z, k=None) -> np.ndarray:
         # A copy: the runner's output is overwritten by the next submission.
@@ -135,19 +136,19 @@ class Probe(_Probe):
 class TorchProbe(_Probe):
     """The same contract as `Probe`, for a torch network with installed `Settings`."""
 
-    def __init__(self, net, knobs, nz: int, device="cpu", dtype=None) -> None:
-        self.net, self.knobs, self.nz, self.device = net, knobs, nz, device
+    def __init__(self, net, settings, nz: int, device="cpu", dtype=None) -> None:
+        self.net, self.settings, self.nz, self.device = net, settings, nz, device
         #: The dtype the latent arrives in at play time. A compiled graph handed another
         #: dtype than it was traced with recompiles.
         self.dtype = dtype
-        self.settings = len(getattr(knobs, "names", ()) or ())
+        self.width = len(getattr(settings, "names", ()) or ())
 
     def frame(self, z, k=None):
         """The frame, left on the card as an owned float32 copy, so comparing two moves one
         scalar across the bus rather than two frames."""
-        if self.settings:
-            self.knobs.write[:] = self.neutral() if k is None else k
-            self.knobs.commit()
+        if self.width:
+            self.settings.write[:] = self.neutral() if k is None else k
+            self.settings.commit()
         latent = torch.from_numpy(z).to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
             return first_image(self.net(latent)).to(torch.float32, copy=True)

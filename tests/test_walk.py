@@ -352,7 +352,7 @@ def test_the_offset_is_rebuilt_when_the_basis_changes_under_a_held_dial():
 
 
 def test_a_walk_with_no_directions_still_plays():
-    """A model whose first layer cannot be factorised must not take the instrument down."""
+    """A model whose first layer cannot be factorised must not take ganlive down."""
     w = SlerpWalk(8, "cpu", WalkConfig(directions=None, amounts=(1.0, -1.0)))
     assert w.latent(0.5).shape == (1, 8)
 

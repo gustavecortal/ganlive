@@ -53,7 +53,7 @@ class Prepared:
 
     net: object
     cfg: object
-    knobs: object
+    settings: object
     #: The dials this model offers.
     layout: object
     #: The measured `dials.derive.Directions`, or None.
@@ -103,7 +103,7 @@ def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
     found = directions_for(net, net.cfg.nz, device, dtype, floor=options.direction_floor,
                            path=path,
                            read=lambda _net, nz: D.sefa_onnx(path, nz, count=D.CANDIDATES))
-    return Prepared(net=net, cfg=net.cfg, knobs=net.knobs, layout=_onnx_layout(path),
+    return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=_onnx_layout(path),
                     directions=found)
 
 
@@ -130,7 +130,7 @@ def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
     layout = S.stylegan2(found.names, [d.rest for d in found.dials],
                          [d.curve for d in found.dials],
                          [d.moved for d in found.dials], ranges)
-    return Prepared(net=net, cfg=cfg, knobs=settings, layout=layout, directions=found_dirs,
+    return Prepared(net=net, cfg=cfg, settings=settings, layout=layout, directions=found_dirs,
                     graphs=graphs, compile_s=secs, push=push)
 
 
@@ -143,7 +143,7 @@ def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
     settings = K.install(net, device, dtype)
     net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
     gains = K.calibrate_noise(net, settings, cfg.nz, device, dtype) if options.measure_grain else None
-    return Prepared(net=net, cfg=cfg, knobs=settings, layout=F.fastgan(noise_gains=gains),
+    return Prepared(net=net, cfg=cfg, settings=settings, layout=F.fastgan(noise_gains=gains),
                     directions=directions_for(net, cfg.nz, device, dtype, path=path,
                                               floor=options.direction_floor),
                     graphs=graphs, compile_s=secs)

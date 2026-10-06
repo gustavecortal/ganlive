@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-#: Where the instrument keeps what it remembers between runs.
+#: Where ganlive keeps what it remembers between runs.
 SETTINGS = Path("runs/ganlive/settings")
 #: The drum-to-audio-channel map, in `--map`'s own words: written by `ganlive doctor --learn`
 #: or by `play --map`, read by `play` when no `--map` is given.

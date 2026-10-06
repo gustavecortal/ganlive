@@ -1,4 +1,4 @@
-"""Play a GAN's latent space live, from a drum machine's MIDI and audio.
+"""Explore a GAN's latent space live: dials turned by hand, by MIDI, or by drums.
 
     ganlive play --checkpoint runs/my-run --console
 """
@@ -830,7 +830,7 @@ def main(argv=None) -> int:
                     hits_checked = True
                     report_unheard(extractor, kind, fix, notes, note_channels, HIT_GRACE_S)
                 runner.observe(extractor.drain())
-                runner.apply(extractor.since, extractor.features(), model.knobs)
+                runner.apply(extractor.since, extractor.features(), model.settings)
                 clock.advance(period)
                 guide.mark(clock.beats)
                 out = model.net(walk.latent(clock.beats))

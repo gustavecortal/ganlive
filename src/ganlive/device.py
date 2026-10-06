@@ -52,7 +52,7 @@ def streams(name: str | None = None):
 
 
 def playback_dtype(device: str | torch.device) -> torch.dtype:
-    """The precision the instrument plays a model in when the caller did not say.
+    """The precision ganlive plays a model in when the caller did not say.
 
     Half on every accelerator; single on the CPU, where half-precision convolution is
     emulated and runs slower than float32."""
@@ -187,5 +187,3 @@ def refuse_if_gpu_busy(what: str) -> bool:
               f"{', '.join(str(p) for p in others)}). Stop them and let the driver release.")
         return False
     return True
-
-

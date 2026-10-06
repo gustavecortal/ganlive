@@ -157,7 +157,7 @@ def test_a_midi_port_filter_that_matched_nothing_says_so():
 
 
 def test_the_preflight_tools_count_through_the_dispatch_the_live_tool_runs():
-    """`doctor` answers whether the clock reaches the instrument, so it must classify
+    """`doctor` answers whether the clock reaches ganlive, so it must classify
     messages with the same code `play` runs rather than a copy of its own."""
     assert doctor.Traffic is midi.Traffic
     for name in ("CONTINUE", "SPP", "SONG_POSITION"):
@@ -176,7 +176,7 @@ def test_the_preflight_tools_count_through_the_dispatch_the_live_tool_runs():
     assert traffic.note_lines() == ["  channel 10  36:1"]
 
 
-def test_every_status_has_a_name_and_the_instruments_kinds_are_classifys():
+def test_every_status_has_a_name_and_ganlives_own_kinds_come_from_classify():
     assert name_of(midi.CLOCK) == "clock" and name_of(midi.NOTE_ON, 0) == "note_off"
     assert name_of(0x80) == "note_off" and name_of(0xE3) == "pitch_bend"
     assert name_of(0xFE) == "active_sensing" and name_of(0xF1) == "system_0xf1"

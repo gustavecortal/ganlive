@@ -83,7 +83,7 @@ _VOICE = {CONTROL_CHANGE: "control_change", AFTERTOUCH_POLY: "aftertouch_poly"}
 
 
 def classify(status: int, data2: int = 0) -> str | None:
-    """What one MIDI message is, or None for the kinds this instrument ignores.
+    """What one MIDI message is, or None for the kinds ganlive ignores.
 
     A note-on with velocity 0 is a release, by MIDI convention, and reads as `"note_off"`."""
     if status >= 0xF0:

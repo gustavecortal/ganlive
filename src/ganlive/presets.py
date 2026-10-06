@@ -347,9 +347,9 @@ class PresetRunner:
         for ch, vel, _ago in onsets:
             self._velocity[ch] = clamp01(vel)
 
-    def apply(self, since, features: dict, knobs) -> None:
+    def apply(self, since, features: dict, settings) -> None:
         """Write this frame's whole control state: preset values, held dials, macros, then
-        impulses, and hand the result to the generator's `knobs` and the walk."""
+        impulses, and hand the result to the generator's `settings` and the walk."""
         surface = self.surface
         surface.values.update(self._base)
         surface.set_held(*self._held)
@@ -373,8 +373,8 @@ class PresetRunner:
             if add:
                 surface.add(imp.dial, add)
 
-        surface.apply(knobs, self.walk_cfg)
-        knobs.commit()
+        surface.apply(settings, self.walk_cfg)
+        settings.commit()
         self._tally()
 
     def _tally(self) -> None:

@@ -69,7 +69,7 @@ SYSTEM = {0xF0: "sysex", 0xFE: "active_sensing", 0xFF: "reset"}
 
 
 def name_of(status: int, data2: int = 0) -> str:
-    """What any MIDI status byte is, including the kinds the instrument ignores."""
+    """What any MIDI status byte is, including the kinds ganlive ignores."""
     known = classify(status, data2)
     if known is not None:
         return known
@@ -210,7 +210,7 @@ def find_devices(sd, pattern=DEFAULT_MATCH):
     """Every input-capable device whose name matches, on any host API, with that API's name.
 
     Through `named_inputs`, the same search `pick_input` makes, so this reports on the
-    devices the instrument would actually consider."""
+    devices ganlive would actually consider."""
     out = []
     for i in named_inputs(sd, pattern, hostapi=None):
         d = sd.query_devices(i)
@@ -243,7 +243,7 @@ def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
 
     print()
     if not hits:
-        print(f"  Nothing named {pattern!r}. The instrument plays without any audio input --")
+        print(f"  Nothing named {pattern!r}. ganlive plays without any audio input --")
         print("  MIDI notes alone drive it -- so this is a finding, not a failure. A driver")
         print("  may also register stubs for machines that are not plugged in, so a name in")
         print("  the list above is not a connection either.")
@@ -509,7 +509,7 @@ def _verdict(watch: MidiWatch, marks: dict[str, Mark], drove: bool) -> int:
         print(f"  On {machine.name}, {machine.says('notes')}, and run this again.")
         return 0
     print(f"  Sequencer trigs DO send MIDI notes: {notes} note-ons alongside {onsets} onsets.")
-    print("  The instrument can be driven by MIDI alone -- every track, including those that")
+    print("  ganlive can be driven by MIDI alone -- every track, including those that")
     print("  share an audio channel.")
     return 0
 

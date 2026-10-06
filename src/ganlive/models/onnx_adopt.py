@@ -2,7 +2,7 @@
 
 Freeze every random draw so the same latent gives the same pixels, find the resolution bands,
 insert a `Mul` on each fed from a new settings input, measure what each buys (see
-`calibrate`), and write all of it into the file's own metadata. The instrument that opens
+`calibrate`), and write all of it into the file's own metadata. Whatever opens
 the result needs to know nothing about the architecture.
 """
 

@@ -170,7 +170,7 @@ def test_one_dial_per_resolution_not_per_layer():
     assert float(net.mapping.knob[1]) == 0.25
 
 
-def test_the_instrument_opens_one(tmp_path, capsys):
+def test_ganlive_opens_one(tmp_path, capsys):
     """The whole load path: install, measure, equalise, and a surface built from the result."""
     torch.manual_seed(0)
     cfg = tiny()
@@ -183,10 +183,10 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     S2.save(path, cfg, net.state_dict())
 
     model = bank._prepare(path, "cpu", torch.float32, LoadOptions(compile_net=False))
-    assert model.knobs.names[:3] == ["w_coarse", "w_mid", "w_fine"]
-    assert model.knobs.names[3:] == ["noise_4", "noise_8", "noise_16", "noise_32"]
+    assert model.settings.names[:3] == ["w_coarse", "w_mid", "w_fine"]
+    assert model.settings.names[3:] == ["noise_4", "noise_8", "noise_16", "noise_32"]
     block = [k for k in model.layout.knobs if k.group == "MODEL"]
-    assert [k.name for k in block] == model.knobs.names
+    assert [k.name for k in block] == model.settings.names
     # Every dial the strip shows was driven and measured, which is the gate's whole point.
     assert all(k.measured is not None for k in block)
     assert model.dials_live, "nothing reached the model"
@@ -196,7 +196,7 @@ def test_the_instrument_opens_one(tmp_path, capsys):
     # sweep that builds this family's dials runs either way.
     bare = bank._prepare(path, "cpu", torch.float32,
                          LoadOptions(compile_net=False, measure_grain=False))
-    assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.knobs.names
+    assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.settings.names
     assert all(k.measured is not None
                for k in bare.layout.knobs if k.group == "MODEL")
     assert bare.dials_live == model.dials_live
@@ -304,8 +304,9 @@ def test_the_push_lands_after_the_truncation_and_not_before_it():
             assert torch.allclose(moved - plain, wanted, atol=1e-5), (
                 f"at truncation {trunc} the push arrived scaled by the truncation")
 
+
 def test_a_converted_file_is_a_generator_and_is_told_apart_from_one_of_ours(tmp_path):
-    """Two kinds of checkpoint share the `.pt` suffix, and the instrument opens both. A
+    """Two kinds of checkpoint share the `.pt` suffix, and ganlive opens both. A
     converted one holds a generator and nothing else."""
     path = tmp_path / "converted.pt"
     cfg = tiny_stylegan2_file(path)
@@ -332,5 +333,3 @@ def test_a_checkpoint_that_carries_more_than_a_generator_still_opens(tmp_path):
 
     assert S2.is_stylegan2(path), "an extra key is not a different format"
     assert S2.from_file(path).cfg == cfg
-
-

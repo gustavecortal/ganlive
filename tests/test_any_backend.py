@@ -1,4 +1,4 @@
-"""The instrument on any machine: another card, a Mac, or no card at all.
+"""ganlive on any machine: another card, a Mac, or no card at all.
 
 The device and precision defaults, and the two compile failures that degrade to eager instead
 of ending the load."""

@@ -178,7 +178,7 @@ class _StubModel:
     net: object = None
     #: The bank resizes its stage to the model's native size and its walks to its latent width.
     cfg: object = dataclasses.field(default_factory=lambda: stub_cfg(8, 96, 64))
-    knobs: object = None
+    settings: object = None
     graphs: int = 0
     compile_s: float = 0.0
     layout: object = dataclasses.field(default_factory=lambda: _fastgan.fastgan())

@@ -527,7 +527,7 @@ def test_use_model_relayouts_at_startup_not_only_on_a_switch():
 
 def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
     """The shelf loads a model mid-session through `Bank.add`, so a setting `build` took and
-    `add` did not would change the instrument under the hand. One object carries them all,
+    `add` did not would change ganlive under the hand. One object carries them all,
     and this asserts the structure rather than the list."""
     LoadOptions = FA.LoadOptions
     assert LoadOptions().direction_floor == RANDOM_FLOOR, (

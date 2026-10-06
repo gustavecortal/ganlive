@@ -1,6 +1,8 @@
 cff-version: 1.2.0
 message: "Please cite ganlive when using it in research, software, or creative work."
 type: software
+version: "0.1.0"
+date-released: "2026-10-06"
 title: "ganlive: Plug-and-play GAN latent-space exploration in real time"
 authors:
   - family-names: Cortal

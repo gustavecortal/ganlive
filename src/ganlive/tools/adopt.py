@@ -6,7 +6,7 @@
 
 What comes out is a file that stands on its own: the graph, its dials, where each rests,
 what each takes at every point of its travel, and how many 8-bit levels each was measured to
-be worth. The instrument reads all of that out of the file, so the measuring happens here,
+be worth. ganlive reads all of that out of the file, so the measuring happens here,
 once, rather than at every load.
 
 It refuses rather than guessing: a repository whose code it was not told to import, a module
@@ -113,4 +113,3 @@ def main(argv=None) -> int:
     print(f"play it:  ganlive play --console "
           f"--checkpoint {out}", flush=True)
     return 0
-

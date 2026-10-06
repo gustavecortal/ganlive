@@ -393,8 +393,6 @@ def test_the_default_push_points_away_from_where_the_dial_is_parked():
 def test_writes_from_two_threads_do_not_lose_a_source():
     """Concurrent holds from two threads must not lose either source; writers only write on
     change (e.g. when the mouse moves), so a lost update would stay lost."""
-
-
     runner = _runner()
     done = threading.Barrier(3)
 
@@ -491,10 +489,6 @@ def test_a_saved_setting_says_where_it_came_from_rather_than_wearing_another_blu
 
 def test_a_hand_written_preset_needs_neither_name_nor_blurb(tmp_path):
     """The library names a preset after its file, so a file that leaves both out still loads."""
-    import json
-
-    from ganlive.presets import Library
-
     (tmp_path / "groove.json").write_text(json.dumps({"dials": {"speed": 0.5}}), encoding="utf-8")
     library = Library(tmp_path)
     assert not library.broken, library.broken

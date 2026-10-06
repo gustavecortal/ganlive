@@ -95,7 +95,7 @@ def main(argv=None) -> int:
     for index in range(len(r.models)):
         model = r.use(index)
         runner.use_model(model)
-        # One strip, switched underneath as the instrument does, so the shots also show
+        # One strip, switched underneath as ganlive does, so the shots also show
         # that a switch lays the strip out again.
         if panel is None:
             panel = DialPanel(runner, bank=r, shelf=shelf, encoders=knobs,
@@ -106,7 +106,7 @@ def main(argv=None) -> int:
         dressed(runner, model, knobs)
         # Re-read the rules `dressed` wired, as `_grid_gesture` does after a click.
         panel.reload()
-        runner.apply(since, {"density": 0.6, "energy": 0.45, "active": 0.3}, model.knobs)
+        runner.apply(since, {"density": 0.6, "energy": 0.45, "active": 0.3}, model.settings)
 
         heights = args.heights or [panel.floor_height(), 1200]
         slug = slug_for(model.path)

@@ -31,11 +31,11 @@ class OnnxGenerator:
             torch.zeros(1, device=device)
             synchronize(device)
         self.runner = open_graph(self.path)
-        self.settings = dials_of(self.path)["settings"]
-        if len(self.settings) != self.runner.settings:
+        self.names = dials_of(self.path)["settings"]
+        if len(self.names) != self.runner.settings:
             raise RuntimeError(
                 f"the graph takes {self.runner.settings} settings and names "
-                f"{len(self.settings)} of them; refusing to guess which dial is which")
+                f"{len(self.names)} of them; refusing to guess which dial is which")
         self.precision = self.runner.precision
         self.cfg = OnnxConfig(nz=self.runner.nz,
                               ladder=Ladder(width=self.runner.size[1],
@@ -44,9 +44,9 @@ class OnnxGenerator:
         self._z = np.zeros((1, self.nz), dtype=np.float32)
         # The generator owns its settings, so `net(z)` stays a one-argument call. On the host
         # in f32, because that is what the graph takes.
-        self.knobs = Settings(self.settings, "cpu", torch.float32)
+        self.settings = Settings(self.names, "cpu", torch.float32)
         # The graph reads `committed()`, never `vec`, so a commit only has to write the host.
-        self.knobs.feed_from(self.knobs.vec)
+        self.settings.feed_from(self.settings.vec)
         #: Pinned memory the runtime writes each frame into, so the upload to the card is a
         #: DMA rather than a copy staged through a driver buffer. `None` on the CPU, or where
         #: the runtime only hands back arrays of its own.
@@ -74,11 +74,11 @@ class OnnxGenerator:
         else:
             # The graph takes f32 whatever it computes in.
             self._z[:] = z.detach().to("cpu", torch.float32).reshape(1, self.nz).numpy()
-        return self.runner.infer(self._z, self.knobs.committed())
+        return self.runner.infer(self._z, self.settings.committed())
 
     def eval(self):
         return self
 
     def report(self) -> str:
         return (f"onnx {self.path.name}: {self.runner.report()}, {self.precision}, "
-                f"{len(self.settings)} settings, frame handed back on {self.device}")
+                f"{len(self.names)} settings, frame handed back on {self.device}")

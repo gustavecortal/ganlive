@@ -521,4 +521,3 @@ def test_learning_the_channel_map_votes_each_pad_onto_the_channel_that_answers_i
     report_recall(strikes.times, [(0.001, 1)], mapping, ["BD", "SD"])
     said = capsys.readouterr().out
     assert "mix bus" in said and "--map BD=1,SD=2" in said
-

@@ -107,7 +107,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
             t0 = time.perf_counter()
             runner.observe(ex.drain())
             t1 = time.perf_counter()
-            runner.apply(ex.since, ex.features(), model.knobs)
+            runner.apply(ex.since, ex.features(), model.settings)
             t2 = time.perf_counter()
             z = walk.latent(f / args.fps * take.bpm / 60.0)
             t3 = time.perf_counter()
@@ -138,8 +138,8 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
 def main(argv=None) -> int:
     ap = parser("latency", __doc__)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
-                    help="repeatable. Several models are loaded into one bank, as the "
-                         "instrument loads them, and every one of them is timed: a bank holds "
+                    help="repeatable. Several models are loaded into one bank, as `play` "
+                         "loads them, and every one of them is timed: a bank holds "
                          "them all resident at once, and each has its own frame time. The "
                          "full loops run on the first. Required.")
     add_device(ap)
@@ -194,7 +194,7 @@ def main(argv=None) -> int:
     runner.use_model(model)
     walk = r.walk(runner.walk_cfg)
 
-    runner.apply(ex.since, ex.features(), model.knobs)
+    runner.apply(ex.since, ex.features(), model.settings)
     ms = _time_frames(total, lambda: r.stage.nv12_bytes(r.stage.step(model.net(z_fixed))))
     gen = results["generation_only"] = stat_ms(ms, period_ms)
     print(f"generation only  no sound, no control layer   "
@@ -215,7 +215,7 @@ def main(argv=None) -> int:
         t0 = time.perf_counter()
         runner.observe(ex.drain())
         t1 = time.perf_counter()
-        runner.apply(ex.since, ex.features(), model.knobs)
+        runner.apply(ex.since, ex.features(), model.settings)
         t2 = time.perf_counter()
         z = walk.latent(f / args.fps * take.bpm / 60.0)
         t3 = time.perf_counter()

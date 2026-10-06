@@ -28,7 +28,7 @@ BANDS = (("w_coarse", 0, 4), ("w_mid", 4, 8), ("w_fine", 8, 1 << 30))
 BAND_PIXELS = {"w_coarse": "the 4, 8 and 16 pixel stages",
                "w_mid": "the 16, 32 and 64 pixel stages",
                "w_fine": "everything from 64 pixels up to native"}
-#: Written into every converted file, so the instrument can tell it from a FastGAN `.pt`.
+#: Written into every converted file, so ganlive can tell it from a FastGAN `.pt`.
 FORMAT = "ganlive-stylegan2/1"
 
 #: Config fields that describe how to play a checkpoint rather than what is in it. `save`

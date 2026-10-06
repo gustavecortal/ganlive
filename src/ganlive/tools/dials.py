@@ -46,7 +46,7 @@ def main(argv=None) -> int:
     if device.lower() != "cpu" and not dev.refuse_if_gpu_busy("derivation"):
         return 1
 
-    # The precision the instrument would play this model in on this device.
+    # The precision ganlive would play this model in on this device.
     dtype = dev.playback_dtype(device)
     net, _settings, push, bands = open_stylegan2(args.checkpoint, device, dtype=dtype)
     names = [name for name, _weight in bands]
@@ -60,4 +60,3 @@ def main(argv=None) -> int:
     where = D.save(found, args.checkpoint, net, how)
     print(f"{found.report()}\nwritten to {where} in {time.perf_counter() - started:.1f}s")
     return 0
-

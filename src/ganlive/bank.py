@@ -39,7 +39,7 @@ class Model:
     path: Path
     net: object
     cfg: object
-    knobs: object
+    settings: object
     #: The dials this model offers.
     layout: object
     graphs: int = 0
@@ -72,16 +72,16 @@ def _prepare(path, device, dtype, options: LoadOptions) -> Model:
     # Captured after every sweep above, which read the module tree or hold two frames side by
     # side, and before the gate, so the gate measures the graph that will actually play.
     if options.capture and family.capturable:
-        feeds = [got.knobs.vec] + ([got.push] if got.push is not None else [])
+        feeds = [got.settings.vec] + ([got.push] if got.push is not None else [])
         got.net, said = capture(got.net, got.cfg.nz, device, dtype, feeds=feeds)
         print(f"graph: {said}", flush=True)
         if isinstance(got.net, Replay):
             # The graph reads its settings and push from host buffers of its own, so a dial
             # write and a walk step become host writes into those; see `Replay`.
-            got.knobs.feed_from(got.net.host_buffer(got.knobs.vec))
+            got.settings.feed_from(got.net.host_buffer(got.settings.vec))
             if got.push is not None:
                 got.push = got.net.host_buffer(got.push)
-    model = Model(path=Path(path), net=got.net, cfg=got.cfg, knobs=got.knobs,
+    model = Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
                   layout=got.layout, graphs=got.graphs, compile_s=got.compile_s,
                   directions=got.directions, push=got.push)
     return verified(model, device, dtype)
@@ -191,12 +191,12 @@ class Bank:
         live = [k for k, on in self.stage.compiled.items() if on] or ["none"]
         models = ", ".join(f"{m.name} ({m.cfg.ladder.width}x{m.cfg.ladder.height}, "
                            f"{m.compile_s:.0f}s)" for m in self.models)
-        pinned = {"knobs": self.current.knobs.pinned,
+        pinned = {"settings": self.current.settings.pinned,
                   **(self.stage.pinned() or {"frames": "after the first one"})}
         return (f"{self.width}x{self.height} out of {self.current.cfg.ladder.width}x"
                 f"{self.current.cfg.ladder.height}, {self.graphs} graph(s) in "
                 f"{self.compile_s:.0f}s, "
-                f"{len(self.current.knobs.names)} settings, "
+                f"{len(self.current.settings.names)} settings, "
                 f"compiled conversions: {'+'.join(live)}, "
                 f"pinned: {pinned}\n  models: {models}")
 

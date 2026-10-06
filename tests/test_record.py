@@ -43,7 +43,7 @@ def _guide_blocks(guide, count, channels=10, frames=256, level=0.5):
 
 def test_a_take_drops_frames_rather_than_making_the_picture_wait():
     """A realtime recorder drops a frame when its queue is full, so a slow encoder cannot pace
-    the instrument. No thread is started: this tests the queue policy alone."""
+    ganlive. No thread is started: this tests the queue policy alone."""
     rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True, depth=2)
     plane = np.zeros((12, 8), dtype=np.uint8)
     assert rec.offer(plane) is True

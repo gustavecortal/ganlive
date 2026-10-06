@@ -1,7 +1,7 @@
 """A drum machine that is not there: twelve synthesised voices, an arrangement, a feeder.
 
-`ganlive play --simulate` plays this into the same path a real machine drives, so the whole
-instrument can be worked on -- and judged -- with no hardware plugged in at all. The
+`ganlive play --simulate` plays this into the same path a real machine drives, so all of
+ganlive can be worked on -- and judged -- with no hardware plugged in at all. The
 amplitudes are rough; the envelopes and the spectra are the point, because what has to be
 right is which drum an onset detector hears and when.
 
@@ -161,6 +161,7 @@ VOICES = {
     "CH": _hat, "OH": _hat,
     "CY": _cymbal, "CB": _cowbell,
 }
+
 
 def _voice(track: str, vel: float, sr: int, rng: np.random.Generator) -> np.ndarray:
     """One hit, as a mono float32 array. Amplitudes are rough but the shapes are the point."""

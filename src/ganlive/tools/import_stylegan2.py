@@ -105,4 +105,3 @@ def main(argv=None) -> int:
           f"  ganlive.models.stylegan2.from_file({str(out)!r}, device) opens it with no other "
           f"code in the room.", flush=True)
     return 0
-

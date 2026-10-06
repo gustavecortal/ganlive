@@ -17,7 +17,7 @@ from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, levels
 
 
 @torch.no_grad()
-def measure_dials(net, knobs, layout, nz: int, device, dtype):
+def measure_dials(net, settings, layout, nz: int, device, dtype):
     """Drive every unmeasured dial that writes the model to each end of its travel, and
     measure how far the picture moved. Returns the layout with `measured` filled in.
 
@@ -28,8 +28,8 @@ def measure_dials(net, knobs, layout, nz: int, device, dtype):
     def frame(z, **held):
         surface.values.update(layout.rests)
         surface.set_held(held)
-        surface.apply(knobs, walk)
-        knobs.commit()
+        surface.apply(settings, walk)
+        settings.commit()
         return first_image(net(z))
 
     z = latent(nz, 0, device, dtype)
@@ -43,7 +43,7 @@ def measure_dials(net, knobs, layout, nz: int, device, dtype):
         moved = max((levels(frame(z, **{knob.name: x}), base)
                      for x in (0.0, 1.0) if abs(x - knob.rest) > 1e-6), default=0.0)
         out.append(replace(knob, measured=round(moved, 3)))
-    knobs.reset()
+    settings.reset()
     return S.Layout(tuple(out))
 
 
@@ -52,8 +52,8 @@ def verified(model, device, dtype):
 
     Every family passes through here, whether its dials were tuned by hand, swept at load or
     read out of a foreign file."""
-    layout = measure_dials(model.net, model.knobs, model.layout, model.cfg.nz, device, dtype)
-    live = live_dials(model.knobs, model.directions, layout)
+    layout = measure_dials(model.net, model.settings, model.layout, model.cfg.nz, device, dtype)
+    live = live_dials(model.settings, model.directions, layout)
     writing = [k for k in layout.knobs if k.writes]
     dark = [k for k in writing if k.name not in live]
     print(f"verified: {len(writing) - len(dark)} of {len(writing)} model dial(s) move the "
@@ -63,9 +63,9 @@ def verified(model, device, dtype):
     return replace(model, layout=layout, dials_live=live)
 
 
-def live_dials(knobs, directions, layout) -> frozenset:
+def live_dials(settings, directions, layout) -> frozenset:
     """The names of the dials that reach this model and, where measured, move its picture."""
-    have = set(getattr(knobs, "index", ()) or ())
+    have = set(getattr(settings, "index", ()) or ())
     count = 0 if directions is None else len(directions)
     live = set()
     for knob in layout.knobs:
