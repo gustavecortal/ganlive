@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import pathlib
 import shutil
 
 import numpy as np
@@ -339,3 +340,22 @@ def test_a_captured_generator_refuses_a_latent_it_was_not_recorded_for(monkeypat
     with pytest.raises(ValueError, match="captured for a"):
         got(torch.randn(4, 8))
     assert isinstance(got.lin, nn.Linear), "a stand-in must answer for the generator it wraps"
+
+
+def test_export_takes_a_run_directory_as_every_other_command_does(tmp_path, monkeypatch):
+    """`--checkpoint runs/my-run` means the run's newest checkpoint, as it does for `play`."""
+    from ganlive.tools import export_onnx
+
+    run = tmp_path / "my-run" / "checkpoints"
+    run.mkdir(parents=True)
+    for step in (1000, 2000):
+        (run / f"{step:07d}.pt").write_bytes(b"")
+    asked = []
+    monkeypatch.setattr(export_onnx, "export",
+                        lambda checkpoint, out, *_a, **_k: asked.append((checkpoint, out)) or {})
+    monkeypatch.setattr(export_onnx, "write_json", lambda *_a: None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert export_onnx.main(["--checkpoint", str(tmp_path / "my-run")]) == 0
+    assert asked == [(run / "0002000.pt", pathlib.Path("runs/onnx/my-run-2000.onnx"))], asked
+    with contextlib.redirect_stderr(io.StringIO()):
+        assert export_onnx.main(["--checkpoint", str(tmp_path / "nothing")]) == 2

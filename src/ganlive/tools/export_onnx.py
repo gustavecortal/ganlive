@@ -16,7 +16,7 @@ from pathlib import Path
 
 import torch
 
-from ganlive.checkpoints import slug_for
+from ganlive.checkpoints import checkpoint_for, slug_for
 from ganlive.dials import steer as K
 from ganlive.files import write_json
 from ganlive.models.fastgan import freeze_noise, load
@@ -122,7 +122,8 @@ def _name_the_settings(path: Path, names: list[str]) -> None:
 
 def main(argv=None) -> int:
     ap = parser("export-onnx", __doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", type=Path, required=True)
+    ap.add_argument("--checkpoint", type=Path, required=True,
+                    help="a FastGAN checkpoint, or a run directory for its newest")
     ap.add_argument("--out", type=Path, default=None,
                     help="Destination .onnx. Defaults to runs/onnx/<run>-<step>.onnx")
     ap.add_argument("--opset", type=int, default=17)
@@ -132,15 +133,15 @@ def main(argv=None) -> int:
                          "rather than as two half-width convolutions. Slower to run.")
     args = ap.parse_args(argv)
 
-    if not args.checkpoint.exists():
-        print(f"no such checkpoint: {args.checkpoint}", file=sys.stderr)
+    try:
+        checkpoint = checkpoint_for(args.checkpoint)        # a run directory means its newest
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
         return 2
-    out = args.out
-    if out is None:
-        out = Path("runs/onnx") / f"{slug_for(args.checkpoint)}.onnx"
+    out = args.out or Path("runs/onnx") / f"{slug_for(checkpoint)}.onnx"
 
-    print(f"exporting {args.checkpoint} -> {out}", flush=True)
-    report = export(args.checkpoint, out, args.opset, args.noise_seed,
+    print(f"exporting {checkpoint} -> {out}", flush=True)
+    report = export(checkpoint, out, args.opset, args.noise_seed,
                     split_glu=not args.no_split_glu)
     print(json.dumps(report, indent=2))
     write_json(out.with_suffix(".json"), report)
