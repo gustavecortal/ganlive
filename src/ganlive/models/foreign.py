@@ -45,13 +45,25 @@ class Fetched:
                 f"{self.size[1]}x{self.size[0]}")
 
 
-def graph_in(repo: str) -> str | None:
-    """An ONNX file already in the repo, if there is one. Then none of the rest is needed.
+def graph_in(repo: str) -> Path | None:
+    """The ONNX file already in the repo, downloaded with its weights, or None if it carries
+    none. Then none of the rest is needed.
 
-    A private repository needs `HF_TOKEN` in the environment, which `huggingface_hub` reads."""
-    from huggingface_hub import HfApi
+    A graph's weights may live beside it as `<name>.onnx.data`, and come down with it. A repo
+    carrying several graphs is refused rather than guessed at. A private repository needs
+    `HF_TOKEN` in the environment, which `huggingface_hub` reads."""
+    from huggingface_hub import HfApi, hf_hub_download
 
-    return next((f for f in HfApi().list_repo_files(repo) if f.endswith(".onnx")), None)
+    files = HfApi().list_repo_files(repo)
+    graphs = [f for f in files if f.endswith(".onnx")]
+    if len(graphs) > 1:
+        raise RuntimeError(f"{repo} carries {len(graphs)} graphs ({', '.join(graphs)}). "
+                           f"Download the one you want and adopt the file.")
+    if not graphs:
+        return None
+    if f"{graphs[0]}.data" in files:
+        hf_hub_download(repo, f"{graphs[0]}.data")      # lands beside the graph
+    return Path(hf_hub_download(repo, graphs[0]))
 
 
 def _config(repo: str) -> dict:

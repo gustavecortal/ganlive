@@ -41,6 +41,8 @@ curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretr
 uv run --no-sync ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
 ```
 
+In Windows PowerShell, type `curl.exe` rather than `curl`.
+
 ### 3. Explore
 
 ```bash

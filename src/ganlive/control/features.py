@@ -252,7 +252,8 @@ class BothFeatures:
                  channels: dict[int, int] | None = None,
                  notes: dict[int, int] | None = None) -> None:
         self.audio = audio
-        self.notes = NoteFeatures(len(tracks), channels, notes)
+        # The whole kit, however few tracks the audio map names: a pad has a note either way.
+        self.notes = NoteFeatures(len(TRACKS), channels, notes)
         self.n = self.notes.n
         index = self.notes.channel_of()
         self.on_channel: dict[int, list[int]] = {}

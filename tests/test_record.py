@@ -154,18 +154,20 @@ def test_a_guide_is_the_length_that_was_played_and_cannot_clip(tmp_path):
 def test_the_guide_header_is_written_once_and_not_per_block(tmp_path):
     """The WAV header is patched only at close, not per block (`wave.writeframes` patches it
     on every call, and each seek flushes the buffer, too slow for the writer to keep up).
-    Mid-take most data is still buffered; after close the frame count on disk is right."""
+    Mid-take the header on disk still holds the first guess `wave` wrote, one block's worth,
+    rather than the running total; after close the count is right."""
     guide = _started_guide(tmp_path / "take-07.mp4", 2)
-    _guide_blocks(guide, 9, channels=2)
+    _guide_blocks(guide, 64, channels=2)                  # past any write buffer's size
     _drained(guide)
     wav = tmp_path / "take-07.wav"
-    handed = 9 * 256 * 2
-    assert wav.stat().st_size < handed // 2, (
-        f"{wav.stat().st_size} bytes of {handed} on disk mid-take -- the header is being "
-        f"patched per block, and every patch flushes the buffer")
+    head = wav.read_bytes()[:44]
+    assert len(head) == 44, "nothing reached the disk mid-take, so this proves nothing"
+    assert int.from_bytes(head[40:44], "little") == 256 * 2, (
+        "the data size was written mid-take -- the header is being patched per block, and "
+        "every patch flushes the buffer")
     guide.stop()
     with wave.open(str(wav)) as f:
-        assert f.getnframes() == 9 * 256, "close did not fix the header up"
+        assert f.getnframes() == 64 * 256, "close did not fix the header up"
 
 
 def test_the_audio_thread_drops_a_block_rather_than_waiting_for_the_disk(tmp_path):

@@ -328,7 +328,7 @@ def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
     fires only its own."""
     tracks = parse_channel_map(OVERBRIDGE)
     both = BothFeatures(FeatureExtractor(10, 48000), tracks)
-    assert both.n == 12, "the space is the channel map's ten, not the twelve tracks"
+    assert both.n == 12, "the space is the twelve tracks, whatever the audio map names"
     assert both.channel_of() == dict(INDEX)
 
     both.audio.pending.append((8, 0.8, 0.0))
@@ -341,6 +341,17 @@ def test_both_sources_share_one_track_space_and_the_pairs_come_apart():
     both.tick(2.5)
     assert both.since[INDEX["CH"]] > both.since[INDEX["OH"]], "the voice's other track fired"
     assert float(both.since[INDEX["OH"]]) == pytest.approx(0.5, abs=1e-4)
+
+
+def test_a_partial_audio_map_still_hears_every_pad():
+    """`doctor --learn` leaves out a drum with no separate send, so a map may name fewer than
+    twelve tracks; a pad outside it still arrives by its note, and nothing indexes past it."""
+    both = BothFeatures(FeatureExtractor(3, 48000), parse_channel_map("BD=0,SD=1,CH=2"))
+    assert both.n == 12
+    both.on_note(13, INDEX["OH"], 100, when=1.0)
+    both.audio.pending.append((2, 0.8, 0.0))
+    both.tick(1.5)
+    assert sorted(i for i, _v, _a in both.drain()) == sorted([INDEX["OH"], INDEX["CH"]])
 
 
 def test_a_pad_that_is_heard_as_well_as_read_counts_once():

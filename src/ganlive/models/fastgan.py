@@ -252,8 +252,11 @@ class Config:
 
 
 def _open(checkpoint: str | Path) -> tuple[dict, Config]:
-    """A checkpoint, with its weights left on disk until touched, and its config."""
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
+    """A checkpoint, with its weights left on disk until touched, and its config.
+
+    `weights_only`, so opening a file -- which the model picker does for every `.pt` under
+    `runs/` -- never runs code from it."""
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True, mmap=True)
     known = {f.name for f in fields(Config)}
     saved = ckpt.get("config", {})
     return ckpt, Config(**{k: v for k, v in saved.items() if k in known})

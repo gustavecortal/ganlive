@@ -47,10 +47,8 @@ def graph_for(source: str, out_dir: Path, trust: bool, opset: int) -> tuple[Path
     repo = source.removeprefix(HUB)
     inside = F.graph_in(repo)
     if inside is not None:
-        from huggingface_hub import hf_hub_download
-
-        print(f"{repo} carries {inside}; no export needed", flush=True)
-        return Path(hf_hub_download(repo, inside)), f"{repo}:{inside}", False
+        print(f"{repo} carries {inside.name}; no export needed", flush=True)
+        return inside, f"{repo}:{inside.name}", False
 
     print(f"{repo} carries no ONNX; loading its own model code", flush=True)
     fetched = F.from_hub(repo, trust=trust)

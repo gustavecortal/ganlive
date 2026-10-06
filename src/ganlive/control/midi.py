@@ -438,7 +438,7 @@ class ClockReader(threading.Thread):
             for event, ts in messages(inputs):
                 at = now if stamp_now is None else now - max(0, stamp_now - ts) / 1000.0
                 try:
-                    self._handle(event, at)
+                    self._on_message(event, at)
                 except Exception as exc:                          # noqa: BLE001  see `faults`
                     key = f"{type(exc).__name__}: {exc}"
                     self.faults[key] = self.faults.get(key, 0) + 1
@@ -446,8 +446,9 @@ class ClockReader(threading.Thread):
                         self.first_fault = key
             time.sleep(self.poll)
 
-    def _handle(self, event, now: float) -> None:
-        """Classify one message and hand it on."""
+    def _on_message(self, event, now: float) -> None:
+        """Classify one message and hand it on. Not `_handle`: from Python 3.13 a `Thread` keeps
+        its own `_handle`, and a method of that name is shadowed."""
         what = dispatch(self.clock, event[0], event[1], event[2], now)
         if what:
             self.counts[what] = self.counts.get(what, 0) + 1

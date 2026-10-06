@@ -15,8 +15,8 @@ jobs:
     env:
       GANLIVE_DEVICE: cpu
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
       # PortAudio for the `audio` extra; the tests open no device.
       - run: sudo apt-get update && sudo apt-get install -y libportaudio2
       - run: uv venv --python ${{ matrix.python }}

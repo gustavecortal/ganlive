@@ -244,10 +244,12 @@ class Display:
         elif ev.key == pg.K_n:
             self._one_to_one = not self._one_to_one
         elif ev.key == pg.K_f:
-            if self._win.fullscreen:
-                self._win.set_windowed()
-            else:
+            # Kept here: pygame's `Window` can set fullscreen but not say whether it is.
+            self.fullscreen = not self.fullscreen
+            if self.fullscreen:
                 self._win.set_fullscreen(True)
+            else:
+                self._win.set_windowed()
         elif ev.key in self._pan_keys:
             dx, dy = self._pan_keys[ev.key]
             self._pan = [clamp01(self._pan[0] + dx), clamp01(self._pan[1] + dy)]

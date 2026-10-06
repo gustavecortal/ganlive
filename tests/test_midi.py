@@ -365,8 +365,8 @@ def test_the_reader_routes_nrpn_and_plain_ccs_to_the_same_handler():
     got = []
     reader = ClockReader(MusicalClock(120.0), on_control=lambda *a: got.append(a))
     for cc, value in ((99, 1), (98, 3), (6, 64), (38, 5), (17, 100)):
-        reader._handle([CONTROL_CHANGE + 2, cc, value, 0], 0.0)
-    reader._handle([CONTROL_CHANGE + 5, 6, 50, 0], 0.0)     # data entry with no NRPN armed
+        reader._on_message([CONTROL_CHANGE + 2, cc, value, 0], 0.0)
+    reader._on_message([CONTROL_CHANGE + 5, 6, 50, 0], 0.0)     # data entry with no NRPN armed
     assert got == [(2, nrpn_number(1, 3), 64 << 7, 16383),
                    (2, nrpn_number(1, 3), 64 << 7 | 5, 16383),
                    (2, 17, 100, 127),

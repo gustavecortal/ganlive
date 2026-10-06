@@ -1,6 +1,7 @@
 """What this machine's audio and MIDI actually offer. Run it with the controller on.
 
-  (no mode)  list every audio input, the sample rates it claims, and which one would be used
+  (no mode)  list the MIDI ports, then every audio input, the sample rates it claims, and
+             which one would be used
   --meter    live per-channel levels: hit one pad at a time and see which channel moves
              (add --midi to count clock, transport, notes and knobs at the same time)
   --listen   is MIDI arriving -- notes, clock, transport -- and is audio?
@@ -23,6 +24,7 @@ from ganlive.clock import MusicalClock
 from ganlive.control.audio import (
     DEFAULT_MATCH,
     HOSTAPI,
+    INSTALL_HINT,
     NoAudioDevice,
     input_stream,
     named_inputs,
@@ -196,10 +198,12 @@ def _pick(sd, args, rate: int | None = None):
 
     Tried at each rate in `RATES` unless one is given: a device locked to 44.1 kHz refuses
     48 kHz. Raises `NoAudioDevice` with the last reason."""
+    # As `play` does: a name the user typed is looked for on every host API.
+    named = {} if args.audio_name is None else {"pattern": args.audio_name, "hostapi": None}
     trouble = None
     for sr in (rate,) if rate else RATES:
         try:
-            device, info, nch = pick_input(sd, args.audio_device, args.audio_name, samplerate=sr)
+            device, info, nch = pick_input(sd, args.audio_device, samplerate=sr, **named)
             return device, info, nch, sr
         except NoAudioDevice as exc:
             trouble = exc
@@ -218,7 +222,22 @@ def find_devices(sd, pattern=DEFAULT_MATCH):
     return out
 
 
+def list_midi() -> None:
+    """Every MIDI port, both ways, as `--midi-port` matches them."""
+    try:
+        found = find_ports()
+    except ImportError as exc:
+        print(f"MIDI      : no MIDI library ({exc})")
+        return
+    print("MIDI in   : " + (", ".join(name for _i, name in found.inputs) or "none"))
+    print("MIDI out  : " + (", ".join(name for _i, name in found.outputs) or "none"))
+
+
 def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
+    list_midi()
+    if sd is None:
+        print(f"audio     : not checked -- {INSTALL_HINT}")
+        return 0
     apis = [ha["name"] for ha in sd.query_hostapis()]
     print(f"PortAudio : {sd.get_portaudio_version()[1]}")
     print(f"host APIs : {', '.join(apis)}")
@@ -289,7 +308,7 @@ def cmd_meter(sd, args, seconds: float) -> int:
         rms_acc[:] += (indata.astype(np.float64) ** 2).mean(axis=0)
         blocks += 1
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name)) \
+    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or "")) \
         if args.midi else None
     print(f"device {device}: {info['name']}   {nch} ch @ {rate} Hz, blocksize {args.blocksize}")
     if watch:
@@ -410,7 +429,7 @@ def cmd_listen(args, seconds: float, drive: bool) -> int:
     """`--listen` and `--drive`: watch MIDI and audio together, optionally as clock master."""
     import pygame.midi
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name))
+    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or ""))
     if not watch.inputs:
         watch.close()
         raise SystemExit(f"no MIDI input matching {args.midi_port!r}"
@@ -524,7 +543,7 @@ def cmd_learn(sd, args, seconds: float) -> int:
     except NoAudioDevice as exc:
         raise SystemExit(str(exc)) from exc
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name))
+    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or ""))
     if not watch.inputs:
         raise SystemExit(f"no MIDI input matching {args.midi_port!r}"
                          + (f" ({watch.error})" if watch.error else "")
@@ -626,10 +645,10 @@ def main(argv=None) -> int:
                          "--drive sends on the matching output")
     ap.add_argument("--audio-device", type=int, default=None,
                     help="the input's index from the list, on any host API")
-    ap.add_argument("--audio-name", default=DEFAULT_MATCH, metavar="TEXT",
-                    help="substring of the input to look for. The default suits an Elektron "
-                         "Analog Rytm drum machine over Overbridge, Elektron's USB audio; "
-                         "pass your own interface's name")
+    ap.add_argument("--audio-name", default=None, metavar="TEXT",
+                    help="find the input by a word in its name, on any host API. The default "
+                         "finds an Elektron Analog Rytm drum machine, which Overbridge "
+                         "(Elektron's USB audio) exposes on ASIO only")
     ap.add_argument("--samplerate", type=int, default=None,
                     help="default: the first of 48000, 44100, 96000 that opens (48000 for "
                          "--listen, --drive and --learn)")
@@ -645,9 +664,13 @@ def main(argv=None) -> int:
     seconds = args.seconds if args.seconds is not None else SECONDS.get(which, 0.0)
     if which in ("listen", "drive"):
         return cmd_listen(args, seconds, drive=which == "drive")
+    if which == "list":
+        try:
+            import sounddevice as sd
+        except (ImportError, OSError):
+            sd = None                                 # the MIDI half still answers
+        return cmd_list(sd, args.audio_name or DEFAULT_MATCH)
     sd = require_sounddevice()
     if which == "meter":
         return cmd_meter(sd, args, seconds)
-    if which == "learn":
-        return cmd_learn(sd, args, seconds)
-    return cmd_list(sd, args.audio_name)
+    return cmd_learn(sd, args, seconds)
