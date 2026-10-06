@@ -108,7 +108,8 @@ def test_an_explicit_input_that_will_not_start_says_so():
 
 def test_a_named_input_is_found_on_any_host_api_when_asked_and_a_rytm_only_on_asio():
     table = [{"name": "Scarlett 2i2", "max_input_channels": 2, "hostapi": 0}]
-    sd, _ = _sd(table, hostapis=("Core Audio",))
+    # A host API that is no platform's default, so this reads the same on every machine.
+    sd, _ = _sd(table, hostapis=("JACK Audio Connection Kit",))
     with pytest.raises(NoAudioDevice, match="--audio-name"):
         pick_input(sd)
     device, _info, nch = pick_input(sd, pattern="scarlett")

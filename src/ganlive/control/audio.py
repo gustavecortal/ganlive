@@ -101,7 +101,8 @@ def pick_input(sd, device: int | None = None, pattern: str | None = None,
         raise NoAudioDevice(
             f"no input named {pattern}" + (f" on {hostapi}" if hostapi else " on any host API")
             + ". A name in the list is not a connection: a driver may register a node for "
-              "every product its maker knows, whether or not one is plugged in. Run "
+              "every product its maker knows, whether or not one is plugged in. Pass "
+              "--audio-name with your interface's name, or run "
               "`ganlive doctor --list` to see what actually opens.")
     tried = []
     for candidate in found:

@@ -580,6 +580,8 @@ def rank(net: nn.Module, dirs: Directions, device, dtype, amount: float,
     `keep_best` caps how many survive, shared over the bands the way `split` shares them, so a
     wide candidate pool can be offered without handing the player forty encoders."""
     dirs, up, down = orient(dirs, *travel(net, dirs, device, dtype, amount, into=into))
+    # Rounded before anything is compared, so the order and the levels reported agree.
+    up, down = [round(u, 2) for u in up], [round(d, 2) for d in down]
     levels = middle(up, down)
     means: dict[str | None, float] = {}
     if relative > 0.0 and len(dirs):
@@ -599,7 +601,7 @@ def rank(net: nn.Module, dirs: Directions, device, dtype, amount: float,
     if keep_best is not None:                   # `order` is already band, then best first
         keep = share(keep, rows, keep_best)
     return _take(dirs, keep,
-                 halves=tuple((round(up[i], 2), round(down[i], 2)) for i in keep),
+                 halves=tuple((up[i], down[i]) for i in keep),
                  random_levels=None if not means
                  else round(sum(means.values()) / len(means), 2),
                  random_by_range=None if not means or not dirs.ranges
