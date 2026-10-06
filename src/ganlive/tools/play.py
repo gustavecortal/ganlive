@@ -774,6 +774,11 @@ def main(argv=None) -> int:
             path = next_path(TAKES, "take", ".mp4")
             rec = video.Recorder(path, r.width, r.height, args.fps, args.codec,
                                  realtime=True, depth=TAKE_DEPTH).start()
+            # The card idle while the encoder opens: see `Recorder.wait_open`. The picture
+            # holds for that long, about a second and a half on a hardware encoder.
+            dev.synchronize()
+            if not rec.wait_open():
+                print("  the encoder is still opening after 30 s; carrying on", flush=True)
             print(f"recording {r.width}x{r.height} to {path} with {args.codec}", flush=True)
             if args.guide:
                 armed = guide.start(path, bpm=clock.bpm, beat=clock.beats,

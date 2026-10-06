@@ -59,12 +59,21 @@ class Recorder:
         self._thread: threading.Thread | None = None
         self._t0: float | None = None
         self._pts = -1
+        #: Set once the encoder is open, or has failed to: see `wait_open`.
+        self._opened = threading.Event()
 
     def start(self) -> Recorder:
         self._thread = threading.Thread(target=self._run, name=f"encode {self.path.name}",
                                         daemon=True)
         self._thread.start()
         return self
+
+    def wait_open(self, timeout: float = 30.0) -> bool:
+        """Block until the encoder is open, or has failed. A hardware encoder starts its media
+        engine as it opens; on an Intel Arc, starting it while the same card is running the
+        generator has lost the device, so a take started mid-session waits for this with the
+        card idle."""
+        return self._opened.wait(timeout)
 
     @property
     def seconds(self) -> float:
@@ -158,6 +167,9 @@ class Recorder:
             container = av.open(str(self.path), "w")
             stream = container.add_stream(self.codec, rate=round(self.fps))
             stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
+            # Opened now rather than at the first frame, so `wait_open` covers all of it.
+            stream.codec_context.open()
+            self._opened.set()
             pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]
             views = [nv12_plane_views(f, self.height, self.width) for f in pool]
             while True:
@@ -175,6 +187,7 @@ class Recorder:
                 self.written += 1
         except BaseException as exc:                # noqa: BLE001  reported, not swallowed
             self.failed.append(exc)
+            self._opened.set()                      # a failure is an answer too
             while self._q.get() is not None:        # keep the producer from blocking for ever
                 pass
         finally:

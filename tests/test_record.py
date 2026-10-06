@@ -289,3 +289,17 @@ def test_a_mark_reads_both_clocks_at_one_instant_so_drift_is_measurable(tmp_path
     assert report["drift_ms"] == round(
         (mark["video_s"] - mark["audio_s"] - offset) * 1000, 3)
     assert report["drift_ms"] < -500, report["drift_ms"]
+
+
+def test_a_take_can_wait_until_its_encoder_is_open(tmp_path):
+    """A take started mid-session waits, with the card idle, until the encoder has opened:
+    a hardware encoder starting its media engine beside a running generator has lost the
+    device on an Intel Arc. A failure to open answers the wait too, rather than hanging it."""
+    rec = Recorder(tmp_path / "open.mp4", 64, 64, 30.0, "libx264", realtime=True).start()
+    assert rec.wait_open(timeout=30.0), "the encoder never said it was open"
+    assert rec.codec == "libx264"
+    rec.stop()
+
+    broken = Recorder(tmp_path / "never.mp4", 64, 64, 30.0, "no_such_encoder").start()
+    assert broken.wait_open(timeout=10.0), "a failed open must not leave the caller waiting"
+    assert "no encoder opened" in broken.stop()["error"]
