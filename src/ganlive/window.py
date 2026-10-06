@@ -83,14 +83,22 @@ def window_size(w: int, h: int, screen_w: int, screen_h: int, overlay=None) -> t
             min(screen_h, max(240, round(h * s), floor)))
 
 
+#: Whether the window gets a thread of its own. Not on macOS, where a window and its events
+#: belong to the main thread; there each `publish` draws on the caller's thread instead.
+THREADED = sys.platform != "darwin"
+
+
 class Display:
-    """A native window on its own thread, showing the latest frame `publish`ed to it.
+    """A native window showing the latest frame `publish`ed to it.
 
-    `overlay` is the optional strip drawn beside the picture (`strip.DialPanel`). Keys:
-    Esc/Q stop, F toggles fullscreen, N shows native pixels, arrows pan that view."""
+    On its own thread where the platform allows (`THREADED`), so drawing never holds up the
+    frame loop. `overlay` is the optional strip drawn beside the picture (`strip.DialPanel`).
+    Keys: Esc/Q stop, F toggles fullscreen, N shows native pixels, arrows pan that view."""
 
-    def __init__(self, size, title: str = "ganlive", overlay=None, fullscreen: bool = True):
+    def __init__(self, size, title: str = "ganlive", overlay=None, fullscreen: bool = True,
+                 threaded: bool = THREADED):
         self.size = size                      # (h, w) of the frames it will be given
+        self.threaded = threaded
         self.stopped = False
         self.overlay = overlay
         self.fullscreen = fullscreen
@@ -103,6 +111,12 @@ class Display:
         self._error = None
         self._one_to_one = False
         self._pan = [0.5, 0.5]
+        if not threaded:
+            try:
+                self._open(title)
+            except Exception as e:  # noqa: BLE001  no display, no SDL, no pygame
+                raise RuntimeError(f"display window failed to open: {type(e).__name__}: {e}") from e
+            return
         threading.Thread(target=self._run, args=(title,), daemon=True).start()
         self._ready.wait(timeout=20)
         if self._error:
@@ -110,15 +124,22 @@ class Display:
 
     @property
     def wants(self) -> bool:
-        """Whether the window thread is waiting for a frame, so one is worth converting."""
-        return self._waiting > 0
+        """Whether a frame published now would be drawn, so one is worth converting."""
+        return not self.threaded or self._waiting > 0
 
     def publish(self, frame) -> None:
+        if not self.threaded:
+            if not self.stopped:
+                self._guarded(self._step, frame)
+            return
         with self._cond:
             self._frame, self._seq = frame, self._seq + 1
             self._cond.notify_all()
 
     def close(self) -> None:
+        if not self.threaded:
+            self._destroy()
+            return
         with self._cond:
             self._closed = True
             self._cond.notify_all()
@@ -162,34 +183,47 @@ class Display:
             self._ready.set()
             return
         self._ready.set()
+        self._guarded(self._serve)
+        self._destroy()
+
+    def _serve(self) -> None:
+        """The window thread: draw each new frame as it is published, until `close`."""
         seq = 0
+        while True:
+            with self._cond:
+                self._waiting += 1
+                try:
+                    self._cond.wait_for(lambda at=seq: self._seq != at or self._closed)
+                finally:
+                    self._waiting -= 1
+                if self._closed:
+                    return
+                seq, frame = self._seq, self._frame
+            self._step(frame)
+
+    def _step(self, frame) -> None:
+        """Draw one frame, then take the events that arrived."""
+        strip = self._present(frame)
+        for ev in self._pg.event.get():
+            if strip[2] and self.overlay.handle(ev, strip):
+                continue
+            self._on_key(ev)
+
+    def _guarded(self, fn, *args) -> None:
+        """Run `fn`; if it raises, stop the session rather than go on timing frames nobody
+        can see."""
         try:
-            while True:
-                with self._cond:
-                    self._waiting += 1
-                    try:
-                        self._cond.wait_for(lambda at=seq: self._seq != at or self._closed)
-                    finally:
-                        self._waiting -= 1
-                    if self._closed:
-                        break
-                    seq, frame = self._seq, self._frame
-                strip = self._present(frame)
-                for ev in self._pg.event.get():
-                    if strip[2] and self.overlay.handle(ev, strip):
-                        continue
-                    self._on_key(ev)
+            fn(*args)
         except Exception as e:  # noqa: BLE001
-            # A dead window thread stops the session: otherwise the frame loop would go on
-            # timing frames nobody can see.
             self._error = f"{type(e).__name__}: {e}"
             self.stopped = True
             traceback.print_exc()
-        finally:
-            try:
-                self._win.destroy()
-            except Exception:  # noqa: BLE001
-                pass
+
+    def _destroy(self) -> None:
+        try:
+            self._win.destroy()
+        except Exception:  # noqa: BLE001  never opened, or already gone
+            pass
 
     def _present(self, frame) -> tuple[int, int, int, int]:
         """Upload one frame, draw it and the overlay, and show them. Returns the strip's rect."""

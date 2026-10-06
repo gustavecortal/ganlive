@@ -7,20 +7,29 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.13"]
+        include:
+          - {os: ubuntu-latest, python: "3.10", torch: "--index-url https://download.pytorch.org/whl/cpu"}
+          - {os: ubuntu-latest, python: "3.13", torch: "--index-url https://download.pytorch.org/whl/cpu"}
+          - {os: windows-latest, python: "3.12", torch: "--index-url https://download.pytorch.org/whl/cpu"}
+          # PyPI's macOS build is the CPU and Apple GPU (MPS) one.
+          - {os: macos-latest, python: "3.12", torch: ""}
     env:
       GANLIVE_DEVICE: cpu
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      # PortAudio for the `audio` extra; the tests open no device.
-      - run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      # PortAudio for the `audio` extra; the Windows and macOS wheels carry their own.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
       - run: uv venv --python ${{ matrix.python }}
-      - run: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: uv pip install torch ${{ matrix.torch }}
       - run: uv pip install -e ".[dev]"
       - run: uv run --no-sync ruff check src tests scripts
       - run: uv run --no-sync pytest tests -q

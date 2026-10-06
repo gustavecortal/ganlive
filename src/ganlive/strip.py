@@ -33,9 +33,9 @@ LINE_PITCH = 15
 LINES_H = 8 + (FIXED_LINES + KEY_LINES) * LINE_PITCH
 STATUS_H = SCOPE_H + DESC_H + LIGHTS_H + LINES_H
 
-#: Font families, first found wins: Windows, then Linux, then anything.
-SANS = "segoeui,dejavusans,arial"
-MONO = "consolas,dejavusansmono,couriernew"
+#: Font families, first found wins: Windows, Linux, macOS, then anything.
+SANS = "segoeui,dejavusans,helveticaneue,arial"
+MONO = "consolas,dejavusansmono,menlo,couriernew"
 
 
 def floor_height(groups) -> int:

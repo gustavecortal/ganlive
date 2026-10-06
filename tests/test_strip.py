@@ -399,6 +399,20 @@ def test_the_window_actually_opens_with_the_strip_beside_it():
     assert threading.active_count() <= threads + 1, "the window thread outlived the window"
 
 
+def test_the_window_can_draw_on_the_callers_own_thread():
+    """macOS keeps a window and its events on the main thread, so there the window draws each
+    frame as it is published; a frame it cannot draw stops the session as the thread does."""
+    with dummy_display():
+        display = window.Display((64, 96), title="inline", overlay=_panel(DIALS),
+                                 fullscreen=False, threaded=False)
+        assert display.wants, "an inline window is always ready for a frame"
+        display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
+        assert not display.stopped
+        display.publish(np.zeros((3, 5, 1), dtype=np.uint8))      # no picture at all
+        assert display.stopped, "a frame that cannot be drawn must stop the session"
+        display.close()
+
+
 def test_every_routing_column_label_fits_the_column_it_names():
     """The columns share what is left of the strip after the dial names, and a kit that puts two
     drums on one channel labels them `MT/HT`. Centring a label wider than its column pushes it
@@ -436,7 +450,7 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
         panel._resize(WIDTH, 900)
         panel._paint()
 
-    source = inspect.getsource(window.Display._run)
+    source = inspect.getsource(window.Display._guarded)
     assert "self.stopped = True" in source and "except Exception" in source, (
         "a window thread that dies has to stop the session; a frozen window that still "
         "reports 60 fps is the one failure this whole path exists to prevent")
