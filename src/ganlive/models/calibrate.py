@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from ganlive.curves import clamp01
 from ganlive.models import runtime
 from ganlive.models.common import first_image, host_latent
 from ganlive.pixels import FLOOR_LEVELS, levels
@@ -110,7 +111,8 @@ class _Probe:
     def neutral(self) -> np.ndarray:
         return np.ones(self.width, np.float32)
 
-    def frame(self, z, k=None):
+    def frame(self, z, values=None):
+        """The picture for latent `z` with the settings at `values`, neutral when omitted."""
         raise NotImplementedError
 
 
@@ -126,11 +128,11 @@ class Probe(_Probe):
             runner = runtime.open_graph(model, backend=backend, device=want,
                                         precision=precision)
         self.runner = runner
-        self.nz, self.width = self.runner.nz, self.runner.settings
+        self.nz, self.width = self.runner.nz, self.runner.width
 
-    def frame(self, z, k=None) -> np.ndarray:
+    def frame(self, z, values=None) -> np.ndarray:
         # A copy: the runner's output is overwritten by the next submission.
-        return np.array(self.runner.infer(z, self.neutral() if k is None else k), np.float32)
+        return np.array(self.runner.infer(z, values), np.float32)
 
 
 class TorchProbe(_Probe):
@@ -143,11 +145,11 @@ class TorchProbe(_Probe):
         self.dtype = dtype
         self.width = len(getattr(settings, "names", ()) or ())
 
-    def frame(self, z, k=None):
+    def frame(self, z, values=None):
         """The frame, left on the card as an owned float32 copy, so comparing two moves one
         scalar across the bus rather than two frames."""
         if self.width:
-            self.settings.write[:] = self.neutral() if k is None else k
+            self.settings.write[:] = self.neutral() if values is None else values
             self.settings.commit()
         latent = torch.from_numpy(z).to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
@@ -168,10 +170,10 @@ def _sweep(probe: _Probe, z, base, slot: int, limit: float,
     It stops at the first sample at or past `stop`, the largest knot target: nothing after
     that can change a knot or a level."""
     out = [(1.0, 0.0)]                      # rest is the base frame itself
-    k = probe.neutral()
+    values = probe.neutral()
     for value in np.exp(np.linspace(0.0, math.log(limit), SAMPLES))[1:]:
-        k[slot] = value
-        out.append((float(value), levels(probe.frame(z, k), base)))
+        values[slot] = value
+        out.append((float(value), levels(probe.frame(z, values), base)))
         if out[-1][1] >= stop:
             break
     return out
@@ -186,7 +188,7 @@ def _knots(sweep, targets) -> list[float]:
             if l1 >= target:
                 share = 0.0 if l1 == l0 else (target - l0) / (l1 - l0)
                 lo, hi = math.log(k0), math.log(k1)
-                value = math.exp(lo + min(1.0, max(0.0, share)) * (hi - lo))
+                value = math.exp(lo + clamp01(share) * (hi - lo))
                 break
         out.append(_sig(value))
     return out

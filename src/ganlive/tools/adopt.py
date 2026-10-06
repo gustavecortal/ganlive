@@ -20,8 +20,8 @@ from pathlib import Path
 
 from ganlive import device as dev
 from ganlive.checkpoints import is_onnx
-from ganlive.models import foreign as F
-from ganlive.models import onnx_adopt as A
+from ganlive.files import size_mb
+from ganlive.models import foreign, onnx_adopt
 from ganlive.models.onnx_file import weights_file
 from ganlive.tools import add_device, parser
 
@@ -45,16 +45,16 @@ def graph_for(source: str, out_dir: Path, trust: bool, opset: int) -> tuple[Path
                          f"and bakes its spectral norm first.")
 
     repo = source.removeprefix(HUB)
-    inside = F.graph_in(repo)
+    inside = foreign.graph_in(repo)
     if inside is not None:
         print(f"{repo} carries {inside.name}; no export needed", flush=True)
         return inside, f"{repo}:{inside.name}", False
 
     print(f"{repo} carries no ONNX; loading its own model code", flush=True)
-    fetched = F.from_hub(repo, trust=trust)
+    fetched = foreign.from_hub(repo, trust=trust)
     print(f"  {fetched.report()}", flush=True)
     raw = out_dir / f"{slug(source)}-raw.onnx"
-    F.export(fetched, raw, opset=opset)
+    foreign.export(fetched, raw, opset=opset)
     return raw, f"{repo} via {fetched.which}", True
 
 
@@ -69,7 +69,7 @@ def main(argv=None) -> int:
                          "any repo that is not already ONNX, and not defaulted anywhere.")
     ap.add_argument("--seed", type=int, default=0,
                     help="the seed the graph's own random draws are frozen at")
-    ap.add_argument("--target-levels", type=float, default=A.TARGET_LEVELS,
+    ap.add_argument("--target-levels", type=float, default=onnx_adopt.TARGET_LEVELS,
                     help="mean 8-bit levels a dial should buy at full travel, on every model")
     add_device(ap, default="cpu", metavar="DEVICE",
                help="where to measure the dials: cpu (ONNX Runtime), or an OpenVINO "
@@ -82,7 +82,7 @@ def main(argv=None) -> int:
 
     # Never two GPU jobs at once: adoption compiles the graph twice and renders hundreds of
     # frames.
-    if args.device.lower() != "cpu" and not dev.refuse_if_gpu_busy("adoption"):
+    if not dev.refuse_if_gpu_busy(args.device, "adoption"):
         return 1
     free = dev.host_ram_free_gb()
     if free == free and free < 3.0:
@@ -96,7 +96,7 @@ def main(argv=None) -> int:
     out = args.out or args.out_dir / f"{slug(args.source)}.onnx"
 
     print(f"adopting {came_from}", flush=True)
-    found = A.adopt(raw, out, seed=args.seed, target=args.target_levels,
+    found = onnx_adopt.adopt(raw, out, seed=args.seed, target=args.target_levels,
                     device=args.device)
     print(found.report(), flush=True)
     for dial in found.dials:
@@ -106,7 +106,7 @@ def main(argv=None) -> int:
     if made and raw != out and not args.keep_raw:
         raw.unlink(missing_ok=True)
         weights_file(raw).unlink(missing_ok=True)
-    print(f"\n{out}  ({out.stat().st_size / 1e6:.0f} MB, "
+    print(f"\n{out}  ({size_mb(out):.0f} MB, "
           f"{time.perf_counter() - started:.0f}s)", flush=True)
     print(f"play it:  ganlive play --console "
           f"--checkpoint {out}", flush=True)

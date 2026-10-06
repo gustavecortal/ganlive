@@ -23,6 +23,7 @@ from ganlive.models.calibrate import (
 )
 from ganlive.models.common import host_latent
 from ganlive.models.onnx_file import (
+    SETTINGS_INPUT,
     dials_of,
     dims,
     initializers,
@@ -231,7 +232,7 @@ def _baked_noise(graph, shapes, size, mine) -> list[tuple[str, tuple[int, ...]]]
     return out
 
 
-def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
+def insert_dials(model, seed: int = 0) -> Adopted:
     """Freeze the randomness, add the dials, and give the graph the input that drives them."""
     from onnx import TensorProto, helper
 
@@ -286,10 +287,11 @@ def insert_dials(model, seed: int = 0, feed: str = "k") -> Adopted:
     order = sorted(((produced.get(t, -1), slot, t)
                     for slot, (_name, ts) in enumerate(wanted) for t in ts), reverse=True)
     for tag, (index, slot, tensor) in enumerate(order):
-        _gate(graph, tensor, slot, feed, f"{wanted[slot][0]}_{tag}", index + 1)
+        _gate(graph, tensor, slot, SETTINGS_INPUT, f"{wanted[slot][0]}_{tag}", index + 1)
 
     found.dials = [Dial(name=name, tensor=tensors[0]) for name, tensors in wanted]
-    graph.input.append(helper.make_tensor_value_info(feed, TensorProto.FLOAT, [len(wanted)]))
+    graph.input.append(helper.make_tensor_value_info(SETTINGS_INPUT, TensorProto.FLOAT,
+                                                     [len(wanted)]))
     return found
 
 

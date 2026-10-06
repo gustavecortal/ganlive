@@ -9,8 +9,7 @@ from dataclasses import replace
 import torch
 
 from ganlive.clock import WalkConfig
-from ganlive.dials import derive as D
-from ganlive.dials import table as S
+from ganlive.dials import derive, table
 from ganlive.models.calibrate import TARGET_LEVELS
 from ganlive.models.common import first_image, latent
 from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, levels
@@ -23,7 +22,7 @@ def measure_dials(net, settings, layout, nz: int, device, dtype):
 
     The dials are driven through `Surface.apply`, the same path a hand takes, so what is
     measured is what playing it would do."""
-    surface, walk = S.Surface(layout=layout), WalkConfig()
+    surface, walk = table.Surface(layout=layout), WalkConfig()
 
     def frame(z, **held):
         surface.values.update(layout.rests)
@@ -44,7 +43,7 @@ def measure_dials(net, settings, layout, nz: int, device, dtype):
                      for x in (0.0, 1.0) if abs(x - knob.rest) > 1e-6), default=0.0)
         out.append(replace(knob, measured=round(moved, 3)))
     settings.reset()
-    return S.Layout(tuple(out))
+    return table.Layout(tuple(out))
 
 
 def verified(model, device, dtype):
@@ -69,7 +68,7 @@ def live_dials(settings, directions, layout) -> frozenset:
     count = 0 if directions is None else len(directions)
     live = set()
     for knob in layout.knobs:
-        index = S.direction_index(knob.name)
+        index = table.direction_index(knob.name)
         if index is not None:
             if index < count:
                 live.add(knob.name)
@@ -92,21 +91,21 @@ def directions_for(net, nz: int, device, dtype, read=None, into=None,
     times a random direction's effect a direction must beat to earn a dial."""
     # A pool several times what the strip can show, because the eigenvalue order is a poor
     # selector; `rank` picks by measurement. `read` sizes its own pool.
-    read = read or (lambda net, nz: D.sefa(net, nz, count=D.CANDIDATES))
+    read = read or (lambda net, nz: derive.sefa(net, nz, count=derive.CANDIDATES))
     try:
-        cached = None if path is None else D.saved(
+        cached = None if path is None else derive.saved(
             path, nz, None if into is None else tuple(into.shape), net)
         found = cached if cached is not None else read(net, nz)
     except (ValueError, RuntimeError, KeyError) as exc:
         print(f"no latent directions for this model: {exc}", flush=True)
         return None
     # The cheap pass first, so the dearer ones below run over a shortlist.
-    found = D.shortlist(net, found, device, dtype, S.DIRECTION_RANGE, into=into,
-                        keep=2 * S.DIRECTIONS)
-    found = D.equalise(net, found, device, dtype, amount=S.DIRECTION_RANGE,
+    found = derive.shortlist(net, found, device, dtype, table.DIRECTION_RANGE, into=into,
+                        keep=2 * table.DIRECTIONS)
+    found = derive.equalise(net, found, device, dtype, amount=table.DIRECTION_RANGE,
                        target=TARGET_LEVELS, into=into)
-    found = D.rank(net, found, device, dtype, amount=S.DIRECTION_RANGE, into=into,
-                   relative=floor, keep_best=S.DIRECTIONS)
+    found = derive.rank(net, found, device, dtype, amount=table.DIRECTION_RANGE, into=into,
+                   relative=floor, keep_best=table.DIRECTIONS)
     if not len(found):
         print(f"no latent direction on this model beats a random one: {found.report()}",
               flush=True)

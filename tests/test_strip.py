@@ -141,7 +141,7 @@ def test_the_panel_reports_only_what_is_off_its_resting_value():
     panel = DialPanel(runner)
     panel.set("hold", 0.72)
     runner.apply(since(), {}, FakeSettings())
-    assert panel.settings() == {"hold": 0.72}
+    assert panel.held() == {"hold": 0.72}
 
 
 def test_a_shared_voice_gets_one_light_and_says_so():
@@ -179,7 +179,7 @@ def test_what_p_prints_is_what_you_set_not_what_the_patch_already_rested_at():
     runner = _runner("release")
     panel = DialPanel(runner)
     runner.apply(since(), {"density": 5.0}, FakeSettings())
-    assert panel.settings() == {}, "a preset's own resting values are not discoveries"
+    assert panel.held() == {}, "a preset's own resting values are not discoveries"
 
     panel.set("noise", 0.61)
     ringing = since()
@@ -187,7 +187,7 @@ def test_what_p_prints_is_what_you_set_not_what_the_patch_already_rested_at():
     runner.apply(ringing, {"density": 5.0}, FakeSettings())
     assert runner.surface["hold"] != pytest.approx(FIXTURES["release"].dials["hold"]), (
         "the fixture needs the hit to actually be moving something")
-    assert panel.settings() == {"noise": 0.61}
+    assert panel.held() == {"noise": 0.61}
 
 
 def test_dragging_a_slider_does_not_repaint_the_strip():

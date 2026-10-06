@@ -50,10 +50,10 @@ RYTM = Machine(
 KNOWN = (RYTM,)
 
 
-def profile(port_match: str = "", name: str = "") -> Machine:
+def profile(port_match: str = "", name: str | None = "") -> Machine:
     """The machine a port filter or a device name points at, or `GENERIC`.
 
     Matched on what the user already typed -- `--midi-port`, `--audio-name` -- so nobody has
     to declare their hardware to get advice about it."""
-    hay = f"{port_match} {name}".lower()
+    hay = f"{port_match} {name or ''}".lower()
     return next((m for m in KNOWN if m.port and m.port in hay), GENERIC)

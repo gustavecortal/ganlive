@@ -59,15 +59,6 @@ def test_stop_freezes_the_internal_clock():
     assert c.beats == pytest.approx(4.0)
 
 
-def test_bar_phase_is_zero_on_the_downbeat():
-    c = MusicalClock(120.0)
-    assert c.bar_phase == pytest.approx(0.0)
-    c.advance(1.0)                                        # two beats at 120 BPM
-    assert c.bar_phase == pytest.approx(0.5)
-    c.advance(1.0)
-    assert c.bar_phase == pytest.approx(0.0, abs=1e-9)
-
-
 @pytest.mark.parametrize("hold", [0.0, 0.3, 0.8, 0.95])
 @pytest.mark.parametrize("when", [0.0, 0.5, 1.0])
 def test_the_move_still_starts_at_one_seed_and_ends_at_the_next(hold, when):

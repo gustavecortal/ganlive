@@ -73,6 +73,11 @@ def parse_channel_map(text: str) -> dict[str, int]:
     return out
 
 
+def format_channel_map(channel_of: dict[str, int]) -> str:
+    """The inverse of `parse_channel_map`, in `--map`'s own words."""
+    return ",".join(f"{track}={channel}" for track, channel in sorted(channel_of.items()))
+
+
 def parse_notes(text: str) -> dict[int, int]:
     """Which note is which track, for a kit that shares one channel: `{note: track index}`.
 

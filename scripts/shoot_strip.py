@@ -15,13 +15,22 @@ import os
 from pathlib import Path
 
 from ganlive.checkpoints import slug_for
+from ganlive.control.features import NEVER
 from ganlive.control.kit import INDEX, channel_map
 from ganlive.control.midi import EncoderMap
 from ganlive.presets import DEFAULT, PresetRunner
-from ganlive.strip import PRIORITY, SOURCE, WIDTH, DialPanel
+from ganlive.strip import (
+    MODE_DIALS,
+    MODE_MODELS,
+    MODE_ROUTING,
+    PRIORITY,
+    SOURCE,
+    WIDTH,
+    DialPanel,
+)
 from ganlive.tools import add_device
 
-MODES = ("dials", "routing", "models")
+MODES = (MODE_DIALS, MODE_ROUTING, MODE_MODELS)
 
 
 def dressed(runner, model, knobs=None) -> None:
@@ -85,10 +94,10 @@ def main(argv=None) -> int:
     runner = PresetRunner(DEFAULT, channel_map(args.layout) or INDEX, 60.0)
     shelf = bank.Shelf(r, Path("runs"))
 
-    pygame.init()
+    pygame.display.init()
     window = Window("ganlive strip", size=(WIDTH + 40, 1500))
     renderer = Renderer(window, vsync=False)
-    since = np.full(runner.channels, 1e6, dtype=np.float32)
+    since = np.full(runner.channels, NEVER, dtype=np.float32)
 
     knobs = EncoderMap({})
     panel = None

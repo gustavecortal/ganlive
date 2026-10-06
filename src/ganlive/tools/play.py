@@ -171,7 +171,7 @@ def _parser():
     what.add_argument("--no-shelf", action="store_true",
                       help="no model picker, and no start-up scan of --runs")
     what.add_argument("--preset", default="default",
-                      help=f"which setting to start on. Saved with `s` into {SETTINGS}")
+                      help=f"which preset to start on. Saved with `s` into {SETTINGS}")
 
     how = ap.add_argument_group("how it runs")
     add_device(how)
@@ -292,10 +292,10 @@ def silence_words(use_notes: bool, use_audio: bool, machine) -> tuple[str, str]:
                      "`ganlive doctor --meter` reports both.")
 
 
-def report_unheard(extractor, kind: str, fix: str, notes, note_channels, grace_s: float) -> None:
+def report_unheard(extractor, kind: str, fix: str, notes, note_channels) -> None:
     """Once, a few seconds in: is anything actually arriving, and if not, what is wrong."""
     if not extractor.played():
-        print(f"  NO HITS YET after {grace_s:g}s over {kind}. The picture "
+        print(f"  NO HITS YET after {HIT_GRACE_S:g}s over {kind}. The picture "
               f"is running on the clock and ignoring the drums. {fix}",
               flush=True)
     unresolved = getattr(extractor, "unresolved", 0)
@@ -424,13 +424,11 @@ def report_drums(extractor, tracks, kind: str, fix: str, hears, heard0, wall) ->
 def pick_audio(args):
     """`(device, info, channels)` for the audio input, or None when `auto` finds none.
     An explicit `--triggers audio` or `both` raises instead."""
-    kwargs = {"channels": args.channels, "samplerate": args.samplerate}
-    if args.audio_name is not None:
-        kwargs.update(pattern=args.audio_name, hostapi=None)
     try:
         import sounddevice as sd
 
-        return pick_input(sd, args.audio_device, **kwargs)
+        return pick_input(sd, args.audio_device, args.audio_name, channels=args.channels,
+                          samplerate=args.samplerate)
     except (NoAudioDevice, ImportError, OSError) as exc:
         if args.triggers != "auto":
             raise
@@ -546,10 +544,10 @@ def serve_models(shelf, requests, r, recording: bool, switch_model) -> None:
             got = shelf.service()
             print(f"  {shelf.note}", flush=True)
             if got is not None:
-                switch_model(r.index_of(got.path) - r.index)
+                switch_model(r.index_of(got.path))
     want = requests.take("model")
     if want is not None and want != r.index:
-        switch_model(want - r.index)
+        switch_model(want)
 
 
 def status_line(frames: int, elapsed: float, recent, clock, rec, share: float) -> str:
@@ -582,7 +580,7 @@ def main(argv=None) -> int:
 
     tracks, map_note = resolve_map(args.map, args.layout)
     # What to tell the user to switch on, in their own machine's words; see `control.machine`.
-    machine = profile(args.midi_port, args.audio_name or "")
+    machine = profile(args.midi_port, args.audio_name)
     # Before anything opens the card: the affinity is for this process's submission thread,
     # and the compile that follows is the first thing to use it.
     if args.cpu == "fast":
@@ -592,7 +590,7 @@ def main(argv=None) -> int:
     notes = parse_notes(args.notes)
     library = Library(SETTINGS)
     if library.broken:
-        print("settings that would not load: " + "; ".join(library.broken), flush=True)
+        print("presets that would not load: " + "; ".join(library.broken), flush=True)
     use_notes = args.triggers in ("auto", "both", "midi") and not args.simulate and args.midi
     use_audio = args.triggers in ("auto", "both", "audio") and args.audio
     picked = None
@@ -602,7 +600,7 @@ def main(argv=None) -> int:
         use_audio = picked is not None
     reactive = use_audio or use_notes
     if args.preset not in library.names:
-        print(f"unknown setting {args.preset!r}; have {', '.join(library.names)}")
+        print(f"unknown preset {args.preset!r}; have {', '.join(library.names)}")
         return 1
     preset = library.select(args.preset)
 
@@ -662,7 +660,7 @@ def main(argv=None) -> int:
             if pressure is not None else None,
             on_note=extractor.on_note if use_notes else None)
         reader.start()
-        time.sleep(0.2)
+        reader.ready.wait(timeout=5.0)
         print(reader.describe(), flush=True)
     report_dropped(runner)
     report_unreachable((encoders, pressure), r.current.layout)
@@ -681,16 +679,16 @@ def main(argv=None) -> int:
     if recalled:
         print(recalled.strip() + " from last time", flush=True)
 
-    def switch_patch(delta):
-        """Next or previous setting, in place. Called from the window's thread."""
+    def switch_preset(delta):
+        """Next or previous preset, in place. Called from the window's thread."""
         runner.load(library.step(delta))
         report_dropped(runner)
         print(f"preset: {runner.preset.name} -- {runner.preset.blurb}", flush=True)
 
-    def switch_model(delta):
-        """Play a different loaded generator. Called by the frame loop."""
+    def switch_model(to):
+        """Play loaded generator number `to`. Called by the frame loop."""
         land()
-        want = r.models[(r.index + delta) % len(r.models)]
+        want = r.models[to % len(r.models)]
         # A take is one size for its whole length, and models in a bank need not be.
         if rec is not None and r.size_of(want) != (r.height, r.width):
             print(f"not while a take is running -- {want.name} is "
@@ -699,7 +697,7 @@ def main(argv=None) -> int:
             return
         was = (r.width, r.height, r.cfg.nz)
         stash(r.current)
-        m = r.use(r.index + delta)
+        m = r.use(to)
         runner.use_model(m)
         report_dropped(runner)
         report_unreachable((encoders, pressure), m.layout)
@@ -714,7 +712,7 @@ def main(argv=None) -> int:
 
     requests = Requests(r)
 
-    def save_setting(found):
+    def save_preset(found):
         """Write down what is at the controls, and carry on playing it."""
         path = library.save(found)
         runner.load(library.current)
@@ -724,7 +722,7 @@ def main(argv=None) -> int:
     display = panel = None
     if not args.headless:
         if args.console:
-            actions = {"preset": switch_patch, "save": save_setting,
+            actions = {"preset": switch_preset, "save": save_preset,
                        "record": requests.ask_record, "still": requests.ask_still}
             if len(r.models) > 1 or shelf is not None:
                 actions["model"] = requests.ask_model
@@ -828,7 +826,7 @@ def main(argv=None) -> int:
                     ticks(t0)
                 if not hits_checked and reactive and t0 - start > HIT_GRACE_S:
                     hits_checked = True
-                    report_unheard(extractor, kind, fix, notes, note_channels, HIT_GRACE_S)
+                    report_unheard(extractor, kind, fix, notes, note_channels)
                 runner.observe(extractor.drain())
                 runner.apply(extractor.since, extractor.features(), model.settings)
                 clock.advance(period)
@@ -897,7 +895,7 @@ def main(argv=None) -> int:
             source.stop()
             source.close()
         if reader is not None:
-            reader.stop_flag = True
+            reader.stop()
         if display is not None:
             display.close()
 

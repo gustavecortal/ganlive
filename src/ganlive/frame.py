@@ -183,11 +183,6 @@ class FrameStage:
         with self.aside():
             return self._take(dest, self.to_yuv(frame), depth)
 
-    def rgb_bytes(self, frame: torch.Tensor):
-        """A stepped frame as height-by-width-by-three bytes, for a window to blit."""
-        with self.aside():
-            return self._take("rgb", self.to_rgb(frame))
-
     def rgb_still(self, frame: torch.Tensor):
         """A stepped frame as its own host array, deliberately outside the staging rings."""
         with self.aside():

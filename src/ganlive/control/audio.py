@@ -16,9 +16,6 @@ HOSTAPI = {"win32": "ASIO", "darwin": "Core Audio"}.get(sys.platform, "ALSA")
 #: What `pick_input` looks for when a caller names nothing: the known machine's device name.
 DEFAULT_MATCH = RYTM.port
 
-#: `hostapi=DEFAULT` means `HOSTAPI`; `hostapi=None` means any. A separate sentinel, because
-#: `None` already has a meaning.
-DEFAULT = "<this platform's>"
 
 INSTALL_HINT = "this needs an audio input: pip install 'ganlive[audio]'"
 
@@ -66,17 +63,22 @@ def starts(sd, device: int, channels: int, samplerate: int = 48000) -> str | Non
         stream.close()
 
 
-def pick_input(sd, device: int | None = None, pattern: str = DEFAULT_MATCH,
-               channels: int | None = None, samplerate: int = 48000,
-               hostapi: str | None = DEFAULT) -> tuple[int, dict, int]:
+def search(pattern: str | None) -> tuple[str, str | None]:
+    """`(name, host API)` to look for an input by. A name the user typed is looked for on every
+    host API; with none, the known machine is looked for on this platform's multi-channel API,
+    the only one it appears on."""
+    return (DEFAULT_MATCH, HOSTAPI) if pattern is None else (pattern, None)
+
+
+def pick_input(sd, device: int | None = None, pattern: str | None = None,
+               channels: int | None = None, samplerate: int = 48000) -> tuple[int, dict, int]:
     """`(device index, its info, channel count)` for the input to open.
 
     An explicit `device` is taken as it is, on whatever host API it lives -- a mixer on
     CoreAudio, a loopback on WASAPI -- as long as it starts. Without one, the input is found
-    by name on `hostapi`: `DEFAULT` is this platform's multi-channel API (`HOSTAPI`), `None`
-    is any of them. Each candidate is opened for real, since a listed device may not be
-    plugged in."""
-    hostapi = HOSTAPI if hostapi == DEFAULT else hostapi
+    by `pattern`, as `search` says. Each candidate is opened for real, since a listed device
+    may not be plugged in."""
+    pattern, hostapi = search(pattern)
     if device is not None:
         info = sd.query_devices(device)
         nch = channels or info["max_input_channels"]

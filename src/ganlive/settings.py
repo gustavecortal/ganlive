@@ -37,7 +37,6 @@ class Settings:
         self._sent = np.ones(len(self.names), dtype=self._writes[0].dtype)
         self._fed = False
         self.skipped = 0
-        self.sites: dict[str, int] = {}
 
     def view(self, name: str) -> torch.Tensor:
         """The slice of the vector a module should hold. A view, so `commit` reaches it."""

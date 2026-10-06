@@ -136,16 +136,17 @@ class Display:
 
         self._pg, self._texture = pygame, Texture
         h, w = self.size
-        pygame.init()
+        # The display alone: `pygame.init` would also open an audio output and start polling
+        # joysticks for the whole session. The strip starts its own fonts.
+        pygame.display.init()
         info = pygame.display.Info()
         self._screen_h = info.current_h
+        # Always opened windowed and then made fullscreen, so `f` has a window to go back to.
+        self._win = Window(title, size=window_size(w, h, info.current_w, info.current_h,
+                                                   self.overlay),
+                           resizable=True)
         if self.fullscreen:
-            self._win = Window(title, size=(info.current_w, info.current_h),
-                               fullscreen_desktop=True)
-        else:
-            self._win = Window(title, size=window_size(w, h, info.current_w, info.current_h,
-                                                       self.overlay),
-                               resizable=True)
+            self._win.set_fullscreen(True)
         self._ren = Renderer(self._win, vsync=False)
         self._tex = Texture(self._ren, (w, h), depth=32, streaming=True)
         self._tex_size = (w, h)

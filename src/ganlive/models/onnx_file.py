@@ -15,6 +15,9 @@ from ganlive.models.common import Ladder
 #: The prefix of every metadata key this project writes into a graph.
 META = "ganlive."
 
+#: The names of a playable graph's two inputs: the latent, and the settings vector.
+LATENT_INPUT, SETTINGS_INPUT = "z", "k"
+
 
 @dataclass(frozen=True)
 class OnnxConfig:
@@ -41,8 +44,8 @@ def initializers(graph) -> dict:
 
 
 def structure(path):
-    """The graph without its weights. Enough for anything that reads shapes or metadata, and
-    it does not load a sibling `.onnx.data` of hundreds of megabytes."""
+    """The graph, without loading a sibling `.onnx.data` of hundreds of megabytes. Enough for
+    anything that reads shapes or metadata. Weights stored inside the file are still read."""
     import onnx
 
     return onnx.load(str(path), load_external_data=False)

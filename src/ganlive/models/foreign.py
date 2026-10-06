@@ -16,6 +16,9 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from ganlive.checkpoints import ONNX
+from ganlive.models.onnx_file import weights_file
+
 #: Latent widths to try when a config does not say. In the order they are common; the probe
 #: stops at the first that produces a picture, and a generator that takes none of them is
 #: refused by name rather than guessed at.
@@ -55,14 +58,16 @@ def graph_in(repo: str) -> Path | None:
     from huggingface_hub import HfApi, hf_hub_download
 
     files = HfApi().list_repo_files(repo)
-    graphs = [f for f in files if f.endswith(".onnx")]
+    graphs = [f for f in files if f.endswith(ONNX)]
     if len(graphs) > 1:
         raise RuntimeError(f"{repo} carries {len(graphs)} graphs ({', '.join(graphs)}). "
                            f"Download the one you want and adopt the file.")
     if not graphs:
         return None
-    if f"{graphs[0]}.data" in files:
-        hf_hub_download(repo, f"{graphs[0]}.data")      # lands beside the graph
+    # `as_posix`: a Hub path keeps its forward slashes on Windows too.
+    weights = weights_file(Path(graphs[0])).as_posix()
+    if weights in files:
+        hf_hub_download(repo, weights)                  # lands beside the graph
     return Path(hf_hub_download(repo, graphs[0]))
 
 

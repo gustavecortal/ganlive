@@ -8,6 +8,7 @@ from dataclasses import replace
 
 from ganlive.clock import position
 from ganlive.control.kit import by_channel
+from ganlive.control.midi import EncoderMap, PressureMap
 from ganlive.curves import clamp01
 from ganlive.dials.table import DIRECTIONS, direction_index, readout
 from ganlive.presets import AMOUNT_MAX
@@ -82,7 +83,7 @@ TEXT_CACHE = 2048
 SOURCE = "console"
 PRIORITY = 10
 
-HAND_WORDS = {SOURCE: "hand", "encoder": "knob", "pressure": "pad"}
+HAND_WORDS = {SOURCE: "hand", EncoderMap.SOURCE: "knob", PressureMap.SOURCE: "pad"}
 
 MODE_DIALS, MODE_ROUTING, MODE_MODELS = "dials", "routing", "models"
 
@@ -448,7 +449,7 @@ class DialPanel:
         self._dirty |= bool(held) if name is None else name in held
         self.runner.free(SOURCE, name)
 
-    def settings(self) -> dict[str, float]:
+    def held(self) -> dict[str, float]:
         """What the holders are holding -- the strip and the machine's knobs -- as dial values
         to fold into a preset. The strip wins where both hold one dial."""
         held = {} if self.encoders is None else self.runner.held_by(self.encoders.SOURCE)
@@ -456,9 +457,9 @@ class DialPanel:
         return {name: round(value, 3) for name, value in sorted(held.items())}
 
     def preset_now(self):
-        """The whole setting as it stands at the controls: the preset with the holders folded in."""
+        """The whole preset as it stands at the controls: the preset with the holders folded in."""
         preset = self.runner.preset
-        return replace(preset, dials={**preset.dials, **self.settings()})
+        return replace(preset, dials={**preset.dials, **self.held()})
 
     def reload(self, repaint: bool = True) -> None:
         """The preset changed underneath us: re-read what drives what, and repaint."""

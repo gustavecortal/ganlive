@@ -51,7 +51,7 @@ def test_a_stage_reports_which_conversions_are_compiled_rather_than_implying_it(
     assert bare.compiled == {"yuv": False, "rgb": False, "bgra": False}
     frame = bare.step(torch.zeros(1, 3, 8, 12))
     assert bare.bgra_bytes(frame).shape == (8, 12, 4), "the fallback still produces a frame"
-    assert bare.rgb_bytes(frame).dtype.name == "uint8"
+    assert bare.rgb_still(frame).dtype.name == "uint8"
 
     marked = FrameStage(8, 12, to_bgra=to_bgra)
     assert marked.compiled["bgra"] is True
@@ -72,17 +72,17 @@ def test_the_rgb_conversion_is_the_rounded_clamped_picture():
 def test_the_staging_rings_are_kept_per_shape_so_a_switch_does_not_lose_them():
     """A bank of two native sizes sends two shapes to the same destination."""
     stage = FrameStage(4, 6, device="cpu")
-    assert stage.rgb_bytes(torch.zeros(1, 3, 4, 6)).shape == (4, 6, 3)
+    assert stage.bgra_bytes(torch.zeros(1, 3, 4, 6)).shape == (4, 6, 4)
     rings = dict(stage._rings)
 
     stage.resize(2, 3)
-    assert stage.rgb_bytes(torch.zeros(1, 3, 2, 3)).shape == (2, 3, 3)
+    assert stage.bgra_bytes(torch.zeros(1, 3, 2, 3)).shape == (2, 3, 4)
     assert len(stage._rings) == len(rings) + 1, "the second shape replaced the first's ring"
 
     stage.resize(4, 6)
-    stage.rgb_bytes(torch.zeros(1, 3, 4, 6))
+    stage.bgra_bytes(torch.zeros(1, 3, 4, 6))
     assert len(stage._rings) == len(rings) + 1, "switching back allocated a third ring"
-    assert set(stage.pinned()) == {"rgb"}, "one entry per destination, not per shape"
+    assert set(stage.pinned()) == {"bgra"}, "one entry per destination, not per shape"
 
 
 def test_a_still_is_its_own_copy_rather_than_a_buffer_a_later_frame_overwrites():

@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from ganlive import device as dev
-from ganlive.dials import derive as D
+from ganlive.dials import derive
 from ganlive.families import open_stylegan2
 from ganlive.models import stylegan2 as S2
 from ganlive.tools import add_device, parser
@@ -28,9 +28,9 @@ def main(argv=None) -> int:
     ap = parser("dials", __doc__)
     ap.add_argument("checkpoint", type=Path, help="a converted StyleGAN2 `.pt`")
     add_device(ap)
-    ap.add_argument("--count", type=int, default=D.CANDIDATES, metavar="N",
+    ap.add_argument("--count", type=int, default=derive.CANDIDATES, metavar="N",
                     help=f"candidates per style range, before measurement picks among them at "
-                         f"load. Default {D.CANDIDATES}.")
+                         f"load. Default {derive.CANDIDATES}.")
     ap.add_argument("--latents", type=int, default=1, metavar="N",
                     help="latents the metric is averaged over. One is usually enough: "
                          "different latents pick different members of the same set of strong "
@@ -43,7 +43,7 @@ def main(argv=None) -> int:
               f"no style ranges to read on anything else", file=sys.stderr)
         return 2
     device = args.device or dev.detect_backend()
-    if device.lower() != "cpu" and not dev.refuse_if_gpu_busy("derivation"):
+    if not dev.refuse_if_gpu_busy(device, "derivation"):
         return 1
 
     # The precision ganlive would play this model in on this device.
@@ -54,9 +54,9 @@ def main(argv=None) -> int:
           f"{2 * push.shape[1] * args.latents} passes each", flush=True)
 
     started = time.perf_counter()
-    found = D.active_banded(net, names, (args.count,) * len(names), net.cfg.z_dim,
+    found = derive.active_banded(net, names, (args.count,) * len(names), net.cfg.z_dim,
                             device, dtype, into=push, seeds=args.latents)
-    how = f"{args.count}/band over {args.latents} latent(s) at eps {D.PROBE_EPS:g}"
-    where = D.save(found, args.checkpoint, net, how)
+    how = f"{args.count}/band over {args.latents} latent(s) at eps {derive.PROBE_EPS:g}"
+    where = derive.save(found, args.checkpoint, net, how)
     print(f"{found.report()}\nwritten to {where} in {time.perf_counter() - started:.1f}s")
     return 0

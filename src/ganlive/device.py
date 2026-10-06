@@ -175,8 +175,10 @@ def host_ram_free_gb() -> float:
     return round(psutil.virtual_memory().available / 1e9, 2)
 
 
-def refuse_if_gpu_busy(what: str) -> bool:
-    """False, with an explanation, while anything else holds the card."""
+def refuse_if_gpu_busy(device: str, what: str) -> bool:
+    """False, with an explanation, while anything else holds the card. The CPU is never refused."""
+    if device.lower() == "cpu":
+        return True
     others = other_gpu_pythons()
     if others is None:
         print(f"cannot tell whether anything else holds the card (no psutil); "

@@ -49,15 +49,20 @@ def worst_levels(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a - b).abs().max()) * LEVEL
 
 
+def _bytes(out: torch.Tensor) -> torch.Tensor:
+    """Generator output in [-1,1] -> uint8, channels first."""
+    return out.add(1.0).mul_(LEVEL).round_().clamp_(0, 255).to(torch.uint8)
+
+
 def to_rgb(out: torch.Tensor) -> torch.Tensor:
     """Generator output in [-1,1] -> the `(H, W, 3)` uint8 bytes a window blits, on the GPU."""
-    x = out.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+    x = _bytes(out)
     return x.permute(0, 2, 3, 1)[0].contiguous()
 
 
 def to_bgra(out: torch.Tensor) -> torch.Tensor:
     """Generator output in [-1,1] -> the `(H, W, 4)` uint8 bytes an SDL texture already is."""
-    x = out.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+    x = _bytes(out)
     b, g, r = x[:, 2], x[:, 1], x[:, 0]
     return torch.stack([b, g, r, torch.full_like(b, 255)], dim=-1)[0].contiguous()
 

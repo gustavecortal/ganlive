@@ -19,6 +19,7 @@ import pytest
 import torch
 from torch import nn
 
+from ganlive.clock import WalkConfig
 from ganlive.curves import at, evenly
 from ganlive.dials import table as S
 from ganlive.models import onnx_file, runtime
@@ -28,6 +29,7 @@ from ganlive.models.foreign import from_hub, probe
 from ganlive.models.onnx_adopt import MIN_BAND, _squash, adopt
 from ganlive.models.runtime import Unavailable, open_graph, survey, wide_norms
 from ganlive.pixels import levels, worst_levels
+from tests.support import FakeSettings
 
 
 class _Noisy(nn.Module):
@@ -162,30 +164,20 @@ def test_the_strip_reads_an_adopted_graph_without_knowing_the_architecture(adopt
     assert [t for t, _names in layout.groups] == ["MASTER", "MOTION", "LATENT", "MODEL"]
     assert dict(layout.groups)["MODEL"] == tuple(found.names)
 
-    written: dict[str, float] = {}
-
-    class _Settings:
-        index = {n: i for i, n in enumerate(found.names)}
-
-        def set(self, name, value):
-            written[name] = value
-
-    class _Walk:
-        amounts = ()
-
+    settings = FakeSettings(found.names)
     surface = S.Surface(layout=layout)
-    surface.apply(_Settings(), _Walk())
+    surface.apply(settings, WalkConfig())
     for dial in found.dials:
-        assert written[dial.name] == pytest.approx(1.0), (
+        assert settings.written[dial.name] == pytest.approx(1.0), (
             f"{dial.name} does not sit at the trained value when nothing is touching it")
 
     # And driven to each end of its own travel.
     for position, end in ((0.0, 0), (1.0, -1)):
         for dial in found.dials:
             surface.set(dial.name, position)
-        surface.apply(_Settings(), _Walk())
+        surface.apply(settings, WalkConfig())
         for dial in found.dials:
-            assert written[dial.name] == pytest.approx(dial.curve[end], rel=1e-6), (
+            assert settings.written[dial.name] == pytest.approx(dial.curve[end], rel=1e-6), (
                 f"{dial.name} at dial {position} is not what adoption measured")
 
 
@@ -225,10 +217,10 @@ def test_a_graph_runs_on_whatever_this_machine_has(playable):
     reference = open_graph(playable, backend="ort", device="CPUExecutionProvider")
     chosen = open_graph(playable)
     assert chosen.nz == reference.nz and chosen.size == reference.size
-    assert chosen.settings == reference.settings
+    assert chosen.width == reference.width
 
     z = host_latent(reference.nz)
-    k = np.ones(reference.settings, np.float32)
+    k = np.ones(reference.width, np.float32)
     gap = worst_levels(torch.from_numpy(np.asarray(chosen.infer(z, k), np.float32)),
                        torch.from_numpy(np.asarray(reference.infer(z, k), np.float32)))
     assert gap < 1.0, f"{chosen.backend}/{chosen.device} differs from ONNX Runtime by {gap:.3f} levels"
@@ -265,7 +257,7 @@ def test_a_frame_lands_in_the_buffer_it_was_given(playable):
     host = np.zeros(runner.shapes[0], runner.dtype)
     runner.land(host)
     z = host_latent(runner.nz)
-    frame = runner.infer(z, np.ones(runner.settings, np.float32))
+    frame = runner.infer(z, np.ones(runner.width, np.float32))
     assert np.shares_memory(frame, host) and np.abs(host).max() > 0
 
 

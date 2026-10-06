@@ -9,7 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from ganlive.control.kit import by_channel
+from ganlive.control.kit import by_channel, format_channel_map
 
 #: How long after a note-on the audio peaks are collected for it.
 WINDOW_S = 0.050
@@ -135,7 +135,7 @@ def report(seen, votes, levels, struck, silent, order):
     if mapping:
         print()
         print("the map, as `ganlive play --map` takes it:")
-        print("  --map " + ",".join(f"{n}={c}" for n, c in sorted(mapping.items())))
+        print("  --map " + format_channel_map(mapping))
     return mapping
 
 

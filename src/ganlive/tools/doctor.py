@@ -22,7 +22,6 @@ import numpy as np
 
 from ganlive.clock import MusicalClock
 from ganlive.control.audio import (
-    DEFAULT_MATCH,
     HOSTAPI,
     INSTALL_HINT,
     NoAudioDevice,
@@ -30,9 +29,10 @@ from ganlive.control.audio import (
     named_inputs,
     pick_input,
     require_sounddevice,
+    search,
 )
 from ganlive.control.features import FeatureConfig, FeatureExtractor
-from ganlive.control.kit import TRACKS, output_mode
+from ganlive.control.kit import TRACKS, format_channel_map, output_mode
 from ganlive.control.machine import Machine, profile
 from ganlive.control.midi import (
     CLOCK,
@@ -40,6 +40,7 @@ from ganlive.control.midi import (
     STOP,
     Traffic,
     classify,
+    control_name,
     find_ports,
     messages,
     open_inputs,
@@ -187,10 +188,21 @@ class MidiWatch:
             for ch in sorted(self.controls):
                 for cc, n in sorted(self.controls[ch].items()):
                     print(f"  ch {ch + 1:2} cc {cc:3}: {n:5} messages   "
-                          f"--cc \"{ch + 1}:{cc}=<dial>\"")
+                          f"--cc \"{control_name(ch, cc)}=<dial>\"")
         else:
             print("\ncontrol changes : NONE. Without them the knobs cannot hold a dial; the")
             print("                  sliders and the drums still can.")
+
+
+def _watch(args, needed: str | None = None) -> MidiWatch:
+    """The MIDI watch the options describe. With `needed`, a run that cannot work without MIDI
+    stops here, saying why it needs it, when no input matches."""
+    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name))
+    if needed is not None and not watch.inputs:
+        watch.close()
+        raise SystemExit(f"no MIDI input matching {args.midi_port!r}"
+                         + (f" ({watch.error})" if watch.error else "") + f". {needed}")
+    return watch
 
 
 def _pick(sd, args, rate: int | None = None):
@@ -198,25 +210,23 @@ def _pick(sd, args, rate: int | None = None):
 
     Tried at each rate in `RATES` unless one is given: a device locked to 44.1 kHz refuses
     48 kHz. Raises `NoAudioDevice` with the last reason."""
-    # As `play` does: a name the user typed is looked for on every host API.
-    named = {} if args.audio_name is None else {"pattern": args.audio_name, "hostapi": None}
     trouble = None
     for sr in (rate,) if rate else RATES:
         try:
-            device, info, nch = pick_input(sd, args.audio_device, samplerate=sr, **named)
+            device, info, nch = pick_input(sd, args.audio_device, args.audio_name, samplerate=sr)
             return device, info, nch, sr
         except NoAudioDevice as exc:
             trouble = exc
     raise trouble
 
 
-def find_devices(sd, pattern=DEFAULT_MATCH):
+def find_devices(sd, pattern=None):
     """Every input-capable device whose name matches, on any host API, with that API's name.
 
     Through `named_inputs`, the same search `pick_input` makes, so this reports on the
     devices ganlive would actually consider."""
     out = []
-    for i in named_inputs(sd, pattern, hostapi=None):
+    for i in named_inputs(sd, *search(pattern)):
         d = sd.query_devices(i)
         out.append((i, d, sd.query_hostapis(d["hostapi"])["name"]))
     return out
@@ -233,7 +243,7 @@ def list_midi() -> None:
     print("MIDI out  : " + (", ".join(name for _i, name in found.outputs) or "none"))
 
 
-def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
+def cmd_list(sd, pattern=None) -> int:
     list_midi()
     if sd is None:
         print(f"audio     : not checked -- {INSTALL_HINT}")
@@ -248,6 +258,7 @@ def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
             print("  here the wrong DLL was loaded.")
         print("  An interface on another API still works; pass --audio-device with its index.")
 
+    name, _hostapi = search(pattern)
     hits = find_devices(sd, pattern)
     matched = {i for i, _d, _api in hits}
 
@@ -262,11 +273,11 @@ def cmd_list(sd, pattern=DEFAULT_MATCH) -> int:
 
     print()
     if not hits:
-        print(f"  Nothing named {pattern!r}. ganlive plays without any audio input --")
+        print(f"  Nothing named {name!r}. ganlive plays without any audio input --")
         print("  MIDI notes alone drive it -- so this is a finding, not a failure. A driver")
         print("  may also register stubs for machines that are not plugged in, so a name in")
         print("  the list above is not a connection either.")
-        known = profile(pattern)
+        known = profile(name)
         if known.stems:
             print(f"  For per-drum audio on {known.name}: {known.stems}.")
         return 0
@@ -308,8 +319,7 @@ def cmd_meter(sd, args, seconds: float) -> int:
         rms_acc[:] += (indata.astype(np.float64) ** 2).mean(axis=0)
         blocks += 1
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or "")) \
-        if args.midi else None
+    watch = _watch(args) if args.midi else None
     print(f"device {device}: {info['name']}   {nch} ch @ {rate} Hz, blocksize {args.blocksize}")
     if watch:
         print(watch.describe())
@@ -429,13 +439,8 @@ def cmd_listen(args, seconds: float, drive: bool) -> int:
     """`--listen` and `--drive`: watch MIDI and audio together, optionally as clock master."""
     import pygame.midi
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or ""))
-    if not watch.inputs:
-        watch.close()
-        raise SystemExit(f"no MIDI input matching {args.midi_port!r}"
-                         + (f" ({watch.error})" if watch.error else "")
-                         + ". Is the machine connected over USB MIDI, and is anything that "
-                           "claims its port exclusively closed?")
+    watch = _watch(args, "Is the machine connected over USB MIDI, and is anything that claims "
+                         "its port exclusively closed?")
     print(watch.describe())
     out = None
     try:
@@ -543,12 +548,8 @@ def cmd_learn(sd, args, seconds: float) -> int:
     except NoAudioDevice as exc:
         raise SystemExit(str(exc)) from exc
 
-    watch = MidiWatch(args.midi_port, profile(args.midi_port, args.audio_name or ""))
-    if not watch.inputs:
-        raise SystemExit(f"no MIDI input matching {args.midi_port!r}"
-                         + (f" ({watch.error})" if watch.error else "")
-                         + ". --learn needs MIDI: the notes are what identify the pads, and "
-                           "nothing else can.")
+    watch = _watch(args, "--learn needs MIDI: the notes are what identify the pads, and "
+                         "nothing else can.")
     machine = watch.machine
     strikes = Strikes(nch)
     ex = FeatureExtractor(nch, rate)
@@ -614,7 +615,7 @@ def cmd_learn(sd, args, seconds: float) -> int:
                      strikes.silent, order)
     report_recall(strikes.times, onsets, mapping, order)
     if mapping:
-        text = ",".join(f"{n}={c}" for n, c in sorted(mapping.items()))
+        text = format_channel_map(mapping)
         trouble = remember(CHANNEL_MAP, text)
         print(f"\nNOT SAVED: {trouble}" if trouble else
               f"\nsaved to {CHANNEL_MAP}; `ganlive play` uses it when no --map is given.")
@@ -669,7 +670,7 @@ def main(argv=None) -> int:
             import sounddevice as sd
         except (ImportError, OSError):
             sd = None                                 # the MIDI half still answers
-        return cmd_list(sd, args.audio_name or DEFAULT_MATCH)
+        return cmd_list(sd, args.audio_name)
     sd = require_sounddevice()
     if which == "meter":
         return cmd_meter(sd, args, seconds)

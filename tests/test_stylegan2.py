@@ -15,9 +15,11 @@ import torch.nn.functional as F
 
 from ganlive import bank
 from ganlive.dials import steer as K
-from ganlive.families import LoadOptions, config_of, is_stylegan2, layout_for
+from ganlive.dials import table
+from ganlive.families import LoadOptions, config_of, is_stylegan2
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import latent
+from ganlive.pixels import levels
 from tests.support import fastgan_stub_checkpoint, tiny_stylegan2_file
 from tests.support import tiny_stylegan2 as tiny
 
@@ -149,7 +151,7 @@ def test_a_neutral_dial_is_the_network_as_trained():
     settings.set("noise_16", 40.0)
     settings.commit()
     with torch.no_grad():
-        moved = float((net(z) - before).abs().mean() * 127.5)
+        moved = levels(net(z), before)
     assert moved > 1.0, f"a noise dial that reaches the model moved {moved:.3f} levels"
 
 
@@ -159,15 +161,15 @@ def test_one_dial_per_resolution_not_per_layer():
     settings = K.install_stylegan2(net, "cpu")
     assert settings.names == ["w_coarse", "w_mid", "w_fine",
                               "noise_4", "noise_8", "noise_16", "noise_32"]
-    assert settings.sites == {"noise": 7, "style": 3}   # one block has one conv, three two
-    assert net.blocks[1].conv0.knob is net.blocks[1].conv1.knob
+    assert sum(map(len, S2.noise_sites(net).values())) == 7   # one block has one conv, three two
+    assert net.blocks[1].conv0.noise_gain is net.blocks[1].conv1.noise_gain
 
     # The style dials must be a view into the settings vector, not a copy, or `commit` never
     # reaches the module.
     settings.reset()
     settings.set("w_mid", 0.25)
     settings.commit()
-    assert float(net.mapping.knob[1]) == 0.25
+    assert float(net.mapping.truncation[1]) == 0.25
 
 
 def test_ganlive_opens_one(tmp_path, capsys):
@@ -202,20 +204,12 @@ def test_ganlive_opens_one(tmp_path, capsys):
     assert bare.dials_live == model.dials_live
 
 
-def test_without_a_measurement_it_shows_the_shared_blocks_and_nothing_else(tmp_path):
+def test_without_a_measurement_it_shows_the_shared_blocks_and_nothing_else():
     """No measurement, no MODEL block -- and specifically not FastGAN's dials. A derived
     dial's curve is its measurement, so before the sweep there is nothing to draw."""
-    path = tmp_path / "tiny.pt"
-    tiny_stylegan2_file(path)
-
-    layout = layout_for(path)
+    layout = table.stylegan2()
     assert [k.name for k in layout.knobs if k.group == "MODEL"] == []
     assert {k.name for k in layout.knobs} >= {"reaction", "speed", "dir1"}
-    # Any other `.pt` is a FastGAN, whose MODEL block is its own gates and grain.
-    fallback = layout_for(tmp_path / "ours.pt")
-    assert [k.name for k in fallback.knobs if k.group == "MODEL"] == ["se_256", "se_512",
-                                                                     "se_128", "se_64",
-                                                                     "noise"]
 
 
 def test_the_affine_map_is_the_slice_each_block_is_actually_handed():
@@ -296,7 +290,7 @@ def test_the_push_lands_after_the_truncation_and_not_before_it():
 
     with torch.no_grad():
         for trunc in (1.0, 0.2, 0.0):
-            mapping.knob = torch.full((len(S2.BANDS),), trunc)
+            mapping.truncation = torch.full((len(S2.BANDS),), trunc)
             mapping.push = torch.zeros_like(push)
             plain = mapping(z)
             mapping.push = push.clone()

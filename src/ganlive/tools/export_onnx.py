@@ -17,11 +17,18 @@ from pathlib import Path
 import torch
 
 from ganlive.checkpoints import checkpoint_for, slug_for
-from ganlive.dials import steer as K
-from ganlive.files import write_json
+from ganlive.dials import steer
+from ganlive.files import size_mb, write_json
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
-from ganlive.models.onnx_file import initializers, name_settings, structure, weights_file
+from ganlive.models.onnx_file import (
+    LATENT_INPUT,
+    SETTINGS_INPUT,
+    initializers,
+    name_settings,
+    structure,
+    weights_file,
+)
 from ganlive.models.onnx_rewrite import equivalent, settings_as_input, split_gated_convs
 from ganlive.pixels import EXACT_LEVELS
 from ganlive.tools import parser
@@ -34,7 +41,7 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     freeze_noise(net, seed=noise_seed)
     report = prepare_for_inference(net, cfg.nz, "cpu", half=False)
     # The dials become a second graph input: a view into a settings tensor traces as a constant.
-    settings = K.install(report["net"].eval(), "cpu", torch.float32)
+    settings = steer.install(report["net"].eval(), "cpu", torch.float32)
     net = settings_as_input(report["net"], settings).eval()
     names = list(settings.names)
     args = (torch.zeros(1, cfg.nz), torch.ones(len(names)))
@@ -59,7 +66,7 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     with torch.no_grad():
         torch.onnx.export(
             net, args, str(out),
-            input_names=["z", "k"],
+            input_names=[LATENT_INPUT, SETTINGS_INPUT],
             output_names=[f"image{i}" for i in range(len(outs))],
             opset_version=opset,
             dynamo=True,
@@ -68,8 +75,6 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     _settings_survived(out, names)
     _name_the_settings(out, names)
 
-    data = weights_file(out)
-    weights_mb = round(data.stat().st_size / 1e6, 1) if data.exists() else 0.0
 
     return {"checkpoint": str(checkpoint), "onnx": str(out),
             "nz": cfg.nz, "native": [cfg.im_size, cfg.im_width],
@@ -78,8 +83,8 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
             "split_glu": split, "split_glu_drift_levels": round(drift, 6),
             "settings": names,
             "export_s": round(seconds, 1),
-            "graph_mb": round(out.stat().st_size / 1e6, 2),
-            "weights_mb": weights_mb}
+            "graph_mb": round(size_mb(out), 2),
+            "weights_mb": round(size_mb(weights_file(out)), 1)}
 
 
 def _settings_survived(path: Path, names: list[str]) -> None:

@@ -637,10 +637,4 @@ def _measure(net: nn.Module, dirs: Directions, device, dtype, amount: float, see
                 for i, row in enumerate(basis):
                     moved = pushed(net, z, (sign * amount) * row, into, dirs.push_shape)
                     got[k, s, i] = (moved - base).abs().mean(dtype=torch.float32)
-    vals = got.cpu().tolist()
-    totals = [[0.0] * len(basis) for _ in signs]
-    for k in range(seeds):
-        for s in range(len(signs)):
-            for i in range(len(basis)):
-                totals[s][i] += vals[k][s][i] * LEVEL
-    return [[t / seeds for t in row] for row in totals]
+    return (got.cpu().double().mean(dim=0) * LEVEL).tolist()

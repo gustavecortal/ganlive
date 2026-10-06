@@ -13,6 +13,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 
 from ganlive.clock import WalkConfig
+from ganlive.control.features import NEVER
 from ganlive.curves import clamp01
 from ganlive.dials.table import MOTION, Surface
 from ganlive.files import next_path, remember, write_json
@@ -74,7 +75,7 @@ class Macro:
 
 @dataclass
 class Preset:
-    """One complete performance setting."""
+    """Everything one performance sets: dial values, rules, and where the walk starts."""
 
     name: str
     blurb: str
@@ -122,7 +123,7 @@ def from_dict(data: dict) -> Preset:
     known = {f.name for f in fields(Preset)}
     for key, value in data.items():
         if key not in known:
-            raise KeyError(f"{key!r} is not part of a setting; have {', '.join(sorted(known))}")
+            raise KeyError(f"{key!r} is not part of a preset; have {', '.join(sorted(known))}")
         cls = RULE_KINDS.get(key)
         if cls is None:
             kwargs[key] = value
@@ -167,7 +168,7 @@ class PresetRunner:
 
         self._macro_state: dict[str, float] = {}
         self._velocity: dict[int, float] = {}
-        #: Dials this model can actually write, from `bank.live_dials`. Empty means no model
+        #: Dials this model can actually write: the model's `dials_live`, from `dials.gate`. Empty means no model
         #: has said -- every offline tool -- and then everything is playable.
         self.live: frozenset[str] = frozenset()
         #: The model `use_model` last finished switching to, or `None` before the first. Written
@@ -363,7 +364,7 @@ class PresetRunner:
 
         reaction = surface["reaction"] * 2.0
         elapsed_by_channel = since.tolist() if hasattr(since, "tolist") else list(since)
-        since_any = min(elapsed_by_channel) if elapsed_by_channel else 1e6
+        since_any = min(elapsed_by_channel) if elapsed_by_channel else NEVER
         for imp, ch in self._impulses:
             if ch < 0:
                 elapsed, velocity = since_any, 1.0
@@ -415,12 +416,12 @@ DEFAULT = Preset(
 
 
 #: The file `Positions` writes into the settings folder. `Library` skips it when it scans
-#: that folder for settings.
+#: that folder for presets.
 POSITIONS_NAME = "positions.json"
 
 
 class Library:
-    """The settings a performance can move between: `DEFAULT`, then every one saved in
+    """The presets a performance can move between: `DEFAULT`, then every one saved in
     `folder`, each named by its file."""
 
     def __init__(self, folder) -> None:
@@ -430,7 +431,7 @@ class Library:
         self.index = 0
 
     def _found(self) -> list[Preset]:
-        """Every setting saved in the folder. One that will not load is listed in `broken`."""
+        """Every preset saved in the folder. One that will not load is listed in `broken`."""
         out = []
         for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
             if path.name == POSITIONS_NAME:
@@ -451,7 +452,7 @@ class Library:
         return self.presets[self.index]
 
     def step(self, delta: int) -> Preset:
-        """Next or previous setting. Wraps, so a rotation has no ends to fall off."""
+        """Next or previous preset. Wraps, so a rotation has no ends to fall off."""
         self.index = (self.index + delta) % len(self.presets)
         return self.current
 
@@ -460,9 +461,9 @@ class Library:
         return self.current
 
     def save(self, preset: Preset) -> Path:
-        """Write this setting out, and make it the current one.
+        """Write this preset out, and make it the current one.
 
-        A setting saved before is overwritten in place; `DEFAULT`, or one with no file yet,
+        A preset saved before is overwritten in place; `DEFAULT`, or one with no file yet,
         goes to a new numbered `take-NN.json` instead."""
         path = self.folder / f"{preset.name}.json"
         if preset.name == DEFAULT.name or not path.exists():
@@ -483,7 +484,7 @@ class Positions:
     """Where the holders left each model's own dials, so a switch lands where you left it.
 
     Holds only: a dial nobody is holding follows the preset, which is shared. Keyed by
-    `bank.slug_for`, written on every switch and at the end, read back the next time."""
+    `checkpoints.slug_for`, written on every switch and at the end, read back the next time."""
 
     def __init__(self, path) -> None:
         self.path = Path(path)

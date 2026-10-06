@@ -86,14 +86,6 @@ def _ramped_to(gains):
             for name, levels, start in NOISE_BANDS}
 
 
-def _displacement(spread):
-    """Read the measured table the other way round: spread in, distance moved out."""
-    for (s0, d0), (s1, d1) in zip(SPREAD_TABLE, SPREAD_TABLE[1:], strict=False):
-        if spread <= s1:
-            return d0 + (d1 - d0) * (spread - s0) / (s1 - s0)
-    return SPREAD_TABLE[-1][1]
-
-
 def test_every_dial_changes_something():
     """A dial that writes nothing gives a clean-looking null result, so each one is moved to
     both ends of its travel and something downstream has to differ."""
@@ -148,7 +140,8 @@ def test_spread_is_laid_out_so_equal_turns_are_equal_amounts_of_change():
     """The underlying number is strongly compressive at the top, so a dial mapped straight
     onto it would be dead over most of its travel. The dial is laid out against the measured
     distance instead."""
-    steps = [_displacement(spread_for(x / 10)) for x in range(11)]
+    # The measured table read the other way round: spread in, distance moved out.
+    steps = [at(SPREAD_TABLE, spread_for(x / 10)) for x in range(11)]
     gaps = [b - a for a, b in zip(steps, steps[1:], strict=False)]
     assert max(gaps) - min(gaps) < 0.05, gaps
     assert steps[0] == pytest.approx(0.0, abs=1e-6)
@@ -505,18 +498,13 @@ def test_the_calibration_finds_the_gain_that_buys_the_levels_asked_for():
 
 def test_use_model_relayouts_at_startup_not_only_on_a_switch():
     """The first model gets its own dials, the same as the fourth."""
-    @dataclasses.dataclass
-    class _Model:
-        layout: object
-        dials_live: frozenset
-
     foreign = S.adopted(("gain_128",), (0.5,), ((0.1, 1.0, 2.0),), (30.0,))
     runner = PresetRunner(Preset(name="t", blurb=""), {}, 60.0)
     # A runner with no model yet has the dials every model has, not this project's own.
     assert "se_256" not in runner.surface.layout
     assert "reaction" in runner.surface.layout and "dir1" in runner.surface.layout
 
-    runner.use_model(_Model(layout=foreign, dials_live=frozenset({"gain_128"})))
+    runner.use_model(_StubModel(layout=foreign, dials_live=frozenset({"gain_128"})))
 
     assert runner.surface.layout == foreign
     assert "gain_128" in runner.surface.layout

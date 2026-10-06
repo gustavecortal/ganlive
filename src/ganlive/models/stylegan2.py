@@ -16,8 +16,6 @@ from torch import nn
 
 LRELU_SLOPE = 0.2
 LRELU_GAIN = math.sqrt(2.0)
-#: What each branch of a residual is scaled by so that adding the two keeps unit variance.
-SQRT_HALF = math.sqrt(0.5)
 #: Every StyleGAN2-ADA checkpoint published uses this resample filter.
 TAPS = (1.0, 3.0, 3.0, 1.0)
 #: The three style ranges StyleGAN is described in, as `(name, first w, end w)`. The bounds
@@ -204,7 +202,7 @@ class SynthesisLayer(nn.Module):
         self.register_buffer("noise_const", torch.randn(resolution, resolution))
         self.noise_strength = nn.Parameter(torch.zeros([]))
         #: A live gain on this layer's noise, or `None` for the network as trained.
-        self.knob = None
+        self.noise_gain = None
 
         self.up, self.half = up, half
         # NVIDIA renormalises the weight and the styles before a half-precision modulation so
@@ -272,7 +270,8 @@ class SynthesisLayer(nn.Module):
 
         # The two scalars multiply each other, not the pattern, so a live gain costs one
         # broadcast rather than two.
-        strength = self.noise_strength if self.knob is None else self.noise_strength * self.knob
+        strength = (self.noise_strength if self.noise_gain is None
+                    else self.noise_strength * self.noise_gain)
         x = x.add_(self.noise_const * strength)
         x = F.leaky_relu(x + self.bias.to(x.dtype).reshape(1, -1, 1, 1), LRELU_SLOPE)
         x = x * LRELU_GAIN
@@ -357,8 +356,8 @@ class Mapping(nn.Module):
         super().__init__()
         self.num_ws = cfg.num_ws
         #: A live truncation per style range, or `None` for the network as trained. A plain
-        #: attribute, set before `torch.compile`, like `SynthesisLayer.knob`.
-        self.knob = None
+        #: attribute, set before `torch.compile`, like `SynthesisLayer.noise_gain`.
+        self.truncation = None
         #: The push buffer: a live offset per style range, `(len(BANDS), w_dim)`, written by
         #: the direction dials. `None` for the network as trained.
         self.push = None
@@ -382,8 +381,8 @@ class Mapping(nn.Module):
         x = x.unsqueeze(1).repeat(1, self.num_ws, 1)
         # Truncation: below 1 the style is pulled toward the average `w` and the picture
         # becomes more typical; above it, less.
-        if self.knob is not None:
-            x = self.w_avg.lerp(x, (self.bands @ self.knob).reshape(1, -1, 1))
+        if self.truncation is not None:
+            x = self.w_avg.lerp(x, (self.bands @ self.truncation).reshape(1, -1, 1))
         # After the truncation, so a direction dial does not weaken when truncation is
         # turned down.
         if self.push is not None:

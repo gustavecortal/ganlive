@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from ganlive.files import size_mb
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
 from ganlive.pixels import levels, worst_levels
@@ -101,7 +102,7 @@ def main(argv=None) -> int:
                              f"wrong. Nothing written.")
 
     S2.save(out, cfg, state)
-    print(f"wrote {out} ({out.stat().st_size / 1e6:.0f} MB)\n"
+    print(f"wrote {out} ({size_mb(out):.0f} MB)\n"
           f"  ganlive.models.stylegan2.from_file({str(out)!r}, device) opens it with no other "
           f"code in the room.", flush=True)
     return 0

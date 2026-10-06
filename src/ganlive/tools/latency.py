@@ -40,7 +40,7 @@ def _far(rest: float) -> float:
 
 
 def worst_case(layout=None) -> Preset:
-    """Every dial off its rest and every drum wired. A frame budget, not a setting.
+    """Every dial off its rest and every drum wired. A frame budget, not a preset.
 
     Built from the loaded model's own layout when there is one, so every dial named is one
     the model has. Without one it uses this project's FastGAN surface, the most crowded here.
@@ -49,7 +49,7 @@ def worst_case(layout=None) -> Preset:
     rests = {k.name: k.rest for k in (layout or fastgan()).knobs}
     return Preset(
         name="worst-case",
-        blurb="Every dial away from rest and every track wired. A frame budget, not a setting.",
+        blurb="Every dial away from rest and every track wired. A frame budget, not a preset.",
         dials={name: _far(rest) for name, rest in rests.items()},
         impulses=[Impulse(track, dial, decay=0.2,
                           amount=-0.3 if _far(rests[dial]) > 0.5 else 0.3)

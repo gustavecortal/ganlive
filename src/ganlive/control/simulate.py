@@ -9,6 +9,7 @@ The vocabulary it speaks is `control/kit.py`.
 """
 from __future__ import annotations
 
+import functools
 import threading
 import time
 from collections import deque
@@ -131,11 +132,17 @@ HAT_PARTIALS = (2380.0, 3140.0, 4270.0, 5630.0, 7180.0, 8890.0)
 CYMBAL_PARTIALS = (1180.0, 1670.0, 2410.0, 3320.0, 4710.0, 6180.0, 8330.0)
 
 
-def _hat(v, sr, rng, track):
+@functools.lru_cache(maxsize=8)
+def _hat_at_full(track: str, sr: int) -> np.ndarray:
+    """A hat at full strength. It draws no noise, so every hit is this, scaled."""
     dec = 0.032 if track == "CH" else 0.34
     n = int(max(0.12, dec * 4.5) * sr)
     metal = _band(_metal(n, sr, HAT_PARTIALS), 5800, 13000, sr)
-    return metal * _env(n, dec, sr) * 0.85 * v
+    return metal * _env(n, dec, sr) * 0.85
+
+
+def _hat(v, sr, rng, track):
+    return _hat_at_full(track, sr) * v
 
 
 def _cymbal(v, sr, rng, _track):
@@ -145,12 +152,18 @@ def _cymbal(v, sr, rng, _track):
     return (body + wash) * 0.7 * v
 
 
-def _cowbell(v, sr, rng, _track):
+@functools.lru_cache(maxsize=4)
+def _cowbell_at_full(sr: int) -> np.ndarray:
+    """A cowbell at full strength. Like a hat, it draws no noise."""
     n = int(0.34 * sr)
     t = np.arange(n) / sr
     tone = (np.sign(np.sin(2 * np.pi * 541 * t))
             + 0.8 * np.sign(np.sin(2 * np.pi * 812 * t))).astype(np.float32)
-    return _band(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8 * v
+    return _band(tone / 1.8, 480, 4200, sr) * _env(n, 0.13, sr) * 0.8
+
+
+def _cowbell(v, sr, rng, _track):
+    return _cowbell_at_full(sr) * v
 
 
 #: One recipe per track. The four toms share one and the two hats share another, and they are
@@ -250,10 +263,8 @@ class Rendered:
 class StemFeeder(threading.Thread):
     """Pushes rendered audio into an extractor at wall-clock rate, like the sound card will."""
 
-    daemon = True
-
     def __init__(self, extractor, pcm, samplerate: int, blocksize: int) -> None:
-        super().__init__()
+        super().__init__(name="stand-in drums", daemon=True)
         self.ex, self.pcm, self.sr, self.bs = extractor, pcm, int(samplerate), int(blocksize)
         if self.pcm.shape[1] < self.bs:
             raise ValueError(f"{self.pcm.shape[1]} samples is shorter than one {self.bs}-frame "

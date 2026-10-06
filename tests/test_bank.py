@@ -15,8 +15,9 @@ from ganlive import bank as R
 from ganlive.bank import Bank, Shelf, frame_size
 from ganlive.checkpoints import admit, checkpoint_for, is_onnx, label_for, run_step, slug_for
 from ganlive.clock import WalkConfig
+from ganlive.dials import fastgan_dials
 from ganlive.dials import table as S
-from ganlive.families import FAMILIES, LoadOptions, family_of, layout_for
+from ganlive.families import FAMILIES, LoadOptions, family_of
 from ganlive.frame import FrameStage
 from ganlive.models.fastgan import Generator
 from ganlive.tools import play as live
@@ -25,7 +26,6 @@ from tests.support import (
     _StubModel,
     fastgan_stub_checkpoint,
     stub_cfg,
-    tiny_stylegan2_file,
 )
 
 
@@ -98,7 +98,7 @@ def test_the_shelf_lists_what_is_on_disk_and_every_readable_model_can_join(tmp_p
     _fake_run(tmp_path, "gv-narrow", 1000, 1536, 1024, nz=128)   # another latent width
     (tmp_path / "not-a-run").mkdir()                          # no checkpoint: not listed
 
-    loaded = types.SimpleNamespace(path=here, name="gv-here 82000", cfg=stub_cfg(256, 1536, 1024))
+    loaded = _StubModel(path=here, name="gv-here 82000", cfg=stub_cfg(256, 1536, 1024))
     bank = Bank(models=[loaded], stage=FrameStage(1024, 1536, device="cpu"), device="cpu")
     shelf = Shelf(bank, tmp_path)
 
@@ -170,21 +170,17 @@ def test_one_record_answers_every_question_about_a_model_file():
         "the tail takes anything, so this never returns None")
 
     for family in FAMILIES:
-        for field in ("owns", "config_of", "prepare", "layout"):
+        for field in ("owns", "config_of", "prepare"):
             assert callable(getattr(family, field)), f"{family.name}.{field}"
     assert [f.name for f in FAMILIES if not f.capturable] == ["onnx"], (
         "an ONNX graph runs under its own runtime, so a torch-stream recording holds nothing")
 
 
-def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks(tmp_path):
-    """The swept layout `_prepare_stylegan2` builds and the bare one a caller with no
-    measurement gets must offer the same shared dials, or the surface changes under the hand
-    for reasons the player cannot see."""
-    converted = tmp_path / "converted.pt"
-    tiny_stylegan2_file(converted)
-    ours = fastgan_stub_checkpoint(tmp_path / "ours.pt", nz=256, im_size=512)
-
-    bare = layout_for(converted)
+def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():
+    """The swept layout `_prepare_stylegan2` builds and the bare one, before any measurement,
+    must offer the same shared dials, or the surface changes under the hand for reasons the
+    player cannot see."""
+    bare = S.stylegan2()
     # `curves` are values at even spacing, one tuple per dial, as `calibrate.Dial.curve`.
     swept = S.stylegan2(("w_coarse", "noise_32"), (0.5, 0.0),
                         ((0.3, 1.0, 2.0), (0.0, 1.5, 3.0)), (25.0, 25.0))
@@ -195,7 +191,7 @@ def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks(tmp_path):
     assert [n for n in swept if swept[n].group == "MODEL"] == ["w_coarse", "noise_32"], (
         "the calibrated builder must still carry the model's own dials")
 
-    mine = layout_for(ours)
+    mine = fastgan_dials.fastgan()
     assert [n for n in mine if mine[n].group != "MODEL"] == shared, (
         "the shared blocks are the same on every family")
 
@@ -286,19 +282,18 @@ def test_a_switch_moves_the_stage_to_the_incoming_models_size():
                                                                    self.w // 4)]
 
     def model(w, h):
-        return types.SimpleNamespace(net=Net(w, h), graphs=0, rows=None, push=None,
-                                     path=pathlib.Path("m.pt"), cfg=stub_cfg(8, w, h))
+        return _StubModel(net=Net(w, h), path=pathlib.Path("m.pt"), cfg=stub_cfg(8, w, h))
 
     big, small = model(48, 32), model(24, 16)
     r = Bank(models=[big, small], stage=FrameStage(32, 48, device="cpu"), device="cpu",
              dtype=torch.float32)
 
     assert (r.height, r.width) == (32, 48)
-    assert r.stage.rgb_bytes(r.stage.step(big.net(None))).shape == (32, 48, 3)
+    assert r.stage.bgra_bytes(r.stage.step(big.net(None))).shape == (32, 48, 4)
 
     r.use(1)
     assert (r.height, r.width) == (16, 24), "the stage did not follow the switch"
-    assert r.stage.rgb_bytes(r.stage.step(small.net(None))).shape == (16, 24, 3)
+    assert r.stage.bgra_bytes(r.stage.step(small.net(None))).shape == (16, 24, 4)
 
     r.use(0)
     assert (r.height, r.width) == (32, 48), "switching back left the big model downscaled"

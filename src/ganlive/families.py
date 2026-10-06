@@ -10,14 +10,9 @@ import torch
 
 from ganlive.checkpoints import is_onnx
 from ganlive.device import playback_dtype
-from ganlive.dials import derive as D
-from ganlive.dials import fastgan_dials as F
-from ganlive.dials import steer as K
-from ganlive.dials import table as S
+from ganlive.dials import derive, fastgan_dials, steer, table
 from ganlive.dials.gate import directions_for
-from ganlive.models import calibrate as A
-from ganlive.models import fastgan as FG
-from ganlive.models import onnx_file
+from ganlive.models import calibrate, fastgan, onnx_file
 from ganlive.models import stylegan2 as S2
 from ganlive.models.capture import compile_and_count
 from ganlive.models.fold import prepare_for_inference
@@ -36,7 +31,6 @@ class LoadOptions:
     #: Record the compiled forward as one device graph and replay it, instead of launching a
     #: hundred-odd kernels a frame from Python. Exact, and worth ~1-3 ms a frame.
     capture: bool = True
-    noise_seed: int = 0
     #: Measure each model's grain gains at load rather than using a stock table. The dial
     #: sweep and the dial gate run either way.
     measure_grain: bool = True
@@ -77,7 +71,7 @@ def open_stylegan2(path, device, exact: bool = False, dtype=None):
     `dtype` is the session's precision, the device's by default; see `S2.half_from_for`."""
     net = S2.from_file(path, device,
                        half_from=S2.half_from_for(dtype or playback_dtype(device), exact))
-    settings = K.install_stylegan2(net, device)
+    settings = steer.install_stylegan2(net, device)
     # Read off the module tree now; the compile that follows hides it.
     return net, settings, net.mapping.push, S2.style_bands(net)
 
@@ -92,8 +86,8 @@ def _compiled(net, nz: int, device, dtype, options: LoadOptions):
 def _onnx_layout(path):
     said = onnx_file.dials_of(path)
     # An export with no settings baked in is a plain graph with nothing to steer inside it.
-    return (S.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
-            if said["curves"] else S.adopted((), (), (), ()))
+    return (table.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
+            if said["curves"] else table.adopted((), (), (), ()))
 
 
 def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
@@ -102,7 +96,7 @@ def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
     print(net.report(), flush=True)
     found = directions_for(net, net.cfg.nz, device, dtype, floor=options.direction_floor,
                            path=path,
-                           read=lambda _net, nz: D.sefa_onnx(path, nz, count=D.CANDIDATES))
+                           read=lambda _net, nz: derive.sefa_onnx(path, nz, count=derive.CANDIDATES))
     return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=_onnx_layout(path),
                     directions=found)
 
@@ -118,16 +112,16 @@ def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
     found_dirs = directions_for(
         net, cfg.nz, device, dtype, into=push, floor=options.direction_floor, path=path,
         # `CANDIDATES` is per band.
-        read=lambda _net, nz: D.sefa_banded(bands, (D.CANDIDATES,) * len(bands), nz))
+        read=lambda _net, nz: derive.sefa_banded(bands, (derive.CANDIDATES,) * len(bands), nz))
     ranges = () if found_dirs is None or not found_dirs.ranges else tuple(
         (name, S2.BAND_PIXELS[name]) for name in found_dirs.ranges)
 
     # Not gated on `measure_grain`: this sweep is where a StyleGAN2's MODEL dials come from,
     # since a derived dial's curve is its measurement.
-    found = A.measured(A.TorchProbe(net, settings, cfg.nz, device, dtype), settings.names,
+    found = calibrate.measured(calibrate.TorchProbe(net, settings, cfg.nz, device, dtype), settings.names,
                        size=(cfg.ladder.height, cfg.ladder.width))
     print(found.report(), flush=True)
-    layout = S.stylegan2(found.names, [d.rest for d in found.dials],
+    layout = table.stylegan2(found.names, [d.rest for d in found.dials],
                          [d.curve for d in found.dials],
                          [d.moved for d in found.dials], ranges)
     return Prepared(net=net, cfg=cfg, settings=settings, layout=layout, directions=found_dirs,
@@ -136,14 +130,14 @@ def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
 
 def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
     """This project's own generator made ready to play."""
-    net, cfg = FG.load(path, device)
-    FG.freeze_noise(net, seed=options.noise_seed)
+    net, cfg = fastgan.load(path, device)
+    fastgan.freeze_noise(net, seed=0)
     net = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16)["net"]
 
-    settings = K.install(net, device, dtype)
+    settings = steer.install(net, device, dtype)
     net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
-    gains = K.calibrate_noise(net, settings, cfg.nz, device, dtype) if options.measure_grain else None
-    return Prepared(net=net, cfg=cfg, settings=settings, layout=F.fastgan(noise_gains=gains),
+    gains = steer.calibrate_noise(net, settings, cfg.nz, device, dtype) if options.measure_grain else None
+    return Prepared(net=net, cfg=cfg, settings=settings, layout=fastgan_dials.fastgan(noise_gains=gains),
                     directions=directions_for(net, cfg.nz, device, dtype, path=path,
                                               floor=options.direction_floor),
                     graphs=graphs, compile_s=secs)
@@ -160,8 +154,6 @@ class Family:
     config_of: Callable
     #: `(path, device, dtype, LoadOptions) -> Prepared`.
     prepare: Callable
-    #: `(path) -> Layout`: the dials a file of this family offers before any measurement.
-    layout: Callable
     #: Whether its forward can be recorded as one device graph. An ONNX graph runs under its
     #: own runtime, so a recording of the torch stream would hold none of its work.
     capturable: bool = True
@@ -169,13 +161,9 @@ class Family:
 
 #: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
 FAMILIES = (
-    Family("onnx", is_onnx, onnx_file.config_of, _prepare_onnx, _onnx_layout, capturable=False),
-    # `S.stylegan2()` bare is the shared blocks and an empty MODEL block: a derived dial's
-    # curve is its measurement, so there is nothing honest to draw without one.
-    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_stylegan2,
-           lambda _path: S.stylegan2()),
-    Family("fastgan", lambda _path: True, FG.config_of, _prepare_fastgan,
-           lambda _path: F.fastgan()),
+    Family("onnx", is_onnx, onnx_file.config_of, _prepare_onnx, capturable=False),
+    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_stylegan2),
+    Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_fastgan),
 )
 
 
@@ -188,8 +176,3 @@ def config_of(path):
     """A model's latent width and output size, whichever kind of file it is."""
     return family_of(path).config_of(path)
 
-
-def layout_for(path):
-    """The dials a model file offers before anything is measured: its own if it declares them,
-    this project's if it is a FastGAN, and only the shared blocks otherwise."""
-    return family_of(path).layout(path)

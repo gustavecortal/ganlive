@@ -32,9 +32,9 @@ class OnnxGenerator:
             synchronize(device)
         self.runner = open_graph(self.path)
         self.names = dials_of(self.path)["settings"]
-        if len(self.names) != self.runner.settings:
+        if len(self.names) != self.runner.width:
             raise RuntimeError(
-                f"the graph takes {self.runner.settings} settings and names "
+                f"the graph takes {self.runner.width} settings and names "
                 f"{len(self.names)} of them; refusing to guess which dial is which")
         self.precision = self.runner.precision
         self.cfg = OnnxConfig(nz=self.runner.nz,

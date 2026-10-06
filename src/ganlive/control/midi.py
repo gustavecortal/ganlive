@@ -395,11 +395,10 @@ class ClockReader(threading.Thread):
     A thread rather than a callback, so the frame loop never waits on MIDI nor MIDI on a frame.
     A handler that raises loses that one message, counted in `faults`, and reading goes on."""
 
-    daemon = True
-
     def __init__(self, clock: MusicalClock, port_match: str = "", poll: float = 0.001,
                  on_control=None, on_note=None, on_pressure=None) -> None:
-        super().__init__()
+        # Daemon through the constructor: a class attribute would shadow `Thread.daemon`.
+        super().__init__(name="midi in", daemon=True)
         self.clock = clock
         self.on_pressure = on_pressure
         self.on_note = on_note
@@ -414,6 +413,8 @@ class ClockReader(threading.Thread):
         self.faults: dict[str, int] = {}
         self.first_fault: str | None = None
         self.nrpn = Nrpn()
+        #: Set once the ports are open (or found missing), so `describe` has something to say.
+        self.ready = threading.Event()
 
     def open_ports(self):
         """Every matching input port, or every port if no filter was given."""
@@ -423,6 +424,7 @@ class ClockReader(threading.Thread):
 
     def run(self) -> None:
         opened = self.open_ports()
+        self.ready.set()
         if not opened:
             return
         import pygame.midi
@@ -461,6 +463,10 @@ class ClockReader(threading.Thread):
             self.on_note(event[0] & 0x0F, event[1], event[2])
         elif what == "aftertouch_poly" and self.on_pressure is not None:
             self.on_pressure(event[0] & 0x0F, event[1], event[2])
+
+    def stop(self) -> None:
+        """Stop reading after the current poll."""
+        self.stop_flag = True
 
     def trouble(self) -> str:
         """What went wrong on this thread, for the end-of-run report. Empty if nothing did."""

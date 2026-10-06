@@ -75,11 +75,6 @@ class MusicalClock:
         return self._bpm
 
     @property
-    def bar_phase(self) -> float:
-        """Position within the current bar, 0 on the downbeat."""
-        return (self._beats % BEATS_PER_BAR) / BEATS_PER_BAR
-
-    @property
     def source(self) -> str:
         return "midi" if self._external else "internal"
 

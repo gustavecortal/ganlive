@@ -57,7 +57,6 @@ def install(net: nn.Module, device, dtype=torch.float16) -> Settings:
             f"steering install matched nothing it needed: {sites}. The net must be folded "
             f"by `prepare_for_inference` before installing, or the noise gain is still "
             f"inside `NoiseInjection` and no dial will do anything.")
-    settings.sites = sites
     return settings
 
 
@@ -68,7 +67,7 @@ def install_stylegan2(net, device) -> Settings:
     styles = [name for name, _lo, _hi in BANDS]
     settings = Settings(styles + list(sites), device, torch.float32)
     # Truncation first in the vector, and so first on the strip.
-    net.mapping.knob = settings.span(styles)
+    net.mapping.truncation = settings.span(styles)
     # The push buffer is allocated before `torch.compile` too, or the graph closes over
     # `None`. It is not part of the `Settings` vector: an offset whose neutral is 0, written
     # by the walk.
@@ -77,8 +76,7 @@ def install_stylegan2(net, device) -> Settings:
     for name, layers in sites.items():
         view = settings.view(name)
         for layer in layers:
-            layer.knob = view
-    settings.sites = {"noise": sum(len(v) for v in sites.values()), "style": len(styles)}
+            layer.noise_gain = view
     return settings
 
 

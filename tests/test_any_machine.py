@@ -111,7 +111,7 @@ def test_a_named_input_is_found_on_any_host_api_when_asked_and_a_rytm_only_on_as
     sd, _ = _sd(table, hostapis=("Core Audio",))
     with pytest.raises(NoAudioDevice, match="--audio-name"):
         pick_input(sd)
-    device, _info, nch = pick_input(sd, pattern="scarlett", hostapi=None)
+    device, _info, nch = pick_input(sd, pattern="scarlett")
     assert (device, nch) == (0, 2)
 
 

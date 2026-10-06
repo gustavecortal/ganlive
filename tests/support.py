@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from ganlive.clock import MusicalClock, WalkConfig
-from ganlive.control.features import FeatureExtractor
+from ganlive.control.features import NEVER, FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.dials import fastgan_dials as _fastgan
 from ganlive.dials.table import Surface
@@ -197,7 +197,7 @@ def _runner(preset: Preset | str = "still", channel_of=None, channels: int = 0):
 
 def since(*tracks) -> list[float]:
     """A frame's time-since-hit per track: the named tracks hit just now, the rest long ago."""
-    out = [1e6] * len(INDEX)
+    out = [NEVER] * len(INDEX)
     for track in tracks:
         out[INDEX[track]] = 0.0
     return out
@@ -225,7 +225,7 @@ def headless_renderer(size, title: str = "test"):
     with dummy_display():
         from pygame._sdl2.video import Renderer, Window
 
-        pygame.init()
+        pygame.display.init()
         yield Renderer(Window(title, size=size), vsync=False)
 
 

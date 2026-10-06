@@ -42,7 +42,7 @@ class Runner:
     #: `(height, width)` of the first output.
     size: tuple[int, int]
     #: How many settings the graph takes as its second input. Zero if it takes none.
-    settings: int
+    width: int
     #: The shape of every output.
     shapes: tuple[tuple[int, ...], ...]
     #: The precision this graph runs in.
@@ -59,13 +59,16 @@ class Runner:
     def outputs(self) -> int:
         return len(self.shapes)
 
-    def infer(self, z, k=None) -> np.ndarray:
-        """One frame, in host memory. `z` is `(1, nz)` float32; `k` is the settings vector."""
-        return self._run(z, k)
+    def infer(self, z, settings=None) -> np.ndarray:
+        """One frame, in host memory. `z` is `(1, nz)` float32; `settings` is the settings
+        vector, every setting at its neutral 1.0 when omitted."""
+        if settings is None and self.width:
+            settings = np.ones(self.width, np.float32)
+        return self._run(z, settings)
 
     def report(self) -> str:
         return (f"{self.backend} on {self.device}: {self.size[1]}x{self.size[0]}, "
-                f"latent {self.nz}, {self.settings} setting(s), {self.outputs} output(s)"
+                f"latent {self.nz}, {self.width} setting(s), {self.outputs} output(s)"
                 + (f", {self.precision}" if self.precision else ""))
 
 
@@ -240,17 +243,17 @@ def _openvino(path: Path, device: str, precision: str) -> Runner:
     except RuntimeError as exc:
         raise Unavailable(str(exc)) from exc
     request = compiled.create_infer_request()
-    _n, _c, height, width = (d.get_length() for d in compiled.outputs[0].partial_shape)
-    settings = (int(compiled.inputs[1].partial_shape[0].get_length())
+    _n, _c, height, out_width = (d.get_length() for d in compiled.outputs[0].partial_shape)
+    width = (int(compiled.inputs[1].partial_shape[0].get_length())
                 if len(compiled.inputs) > 1 else 0)
 
-    def run(z, k=None):
+    def run(z, settings):
         # `start_async` then `wait`, never `request.infer()`, which copies every output into
         # a fresh array. This leaves the frame in the request's own output tensor, already in
         # host-visible memory, so `.data` is a view. It is overwritten by the next submission.
         feed = {0: z}
-        if settings:
-            feed[1] = np.ones(settings, np.float32) if k is None else k
+        if width:
+            feed[1] = settings
         request.start_async(feed)
         request.wait()
         return request.get_output_tensor(0).data
@@ -262,7 +265,7 @@ def _openvino(path: Path, device: str, precision: str) -> Runner:
 
     return Runner(backend="openvino", device=f"{device} ({full_name})", asked=device,
                   nz=int(compiled.inputs[0].partial_shape[-1].get_length()),
-                  size=(int(height), int(width)), settings=settings,
+                  size=(int(height), int(out_width)), width=width,
                   shapes=tuple(tuple(d.get_length() for d in out.partial_shape)
                                for out in compiled.outputs),
                   precision=precision, _run=run, land=land,
@@ -303,20 +306,20 @@ def _ort(path: Path, device: str, precision: str) -> Runner:
     inputs = session.get_inputs()
     outputs = session.get_outputs()
     shape = outputs[0].shape
-    settings = int(inputs[1].shape[0]) if len(inputs) > 1 else 0
+    width = int(inputs[1].shape[0]) if len(inputs) > 1 else 0
     names = [i.name for i in inputs]
     # Only the first output: ONNX Runtime allocates a fresh array for every output it returns.
     fetch = [outputs[0].name]
 
-    def run(z, k=None):
+    def run(z, settings):
         feed = {names[0]: z}
-        if settings:
-            feed[names[1]] = np.ones(settings, np.float32) if k is None else k
+        if width:
+            feed[names[1]] = settings
         return session.run(fetch, feed)[0]
 
     return Runner(backend="ort", device=wanted, asked=wanted,
                   nz=int(inputs[0].shape[-1]),
-                  size=(int(shape[-2]), int(shape[-1])), settings=settings,
+                  size=(int(shape[-2]), int(shape[-1])), width=width,
                   shapes=tuple(tuple(o.shape) for o in outputs),
                   precision=precision, _run=run)
 
