@@ -62,6 +62,8 @@ def test_a_published_model_named_after_its_folder_is_called_by_that_name_alone()
     assert run_step(published) == ("lichen", "")
     assert label_for(published) == "lichen"
     assert slug_for(published) == "lichen"
+    # Its export is named by that slug, and reads back the same way.
+    assert label_for(pathlib.Path("runs/onnx/lichen.onnx")) == "lichen onnx"
 
 
 def test_the_shelf_lists_every_graph_but_only_the_newest_checkpoint(tmp_path):

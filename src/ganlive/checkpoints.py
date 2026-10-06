@@ -21,10 +21,13 @@ def run_step(path) -> tuple[str, str]:
     published model is (`lichen/lichen.pt`), has no step: its run says everything."""
     path = Path(path)
     if is_onnx(path):
-        # Exports sit in one flat folder as `<run>-<step>.onnx`, so the parent says nothing.
-        # The step keeps `onnx` so an export and its checkpoint never share a name.
+        # Exports sit in one flat folder as `<run>-<step>.onnx`, so the parent says nothing;
+        # a graph with no step in its name (`lichen.onnx`, an adopted one) is its stem.
+        # `onnx` stays in the step so an export and its checkpoint never share a name.
         run, _dash, step = path.stem.rpartition("-")
-        return run or path.stem, f"{step.lstrip('0') or step} onnx"
+        if run and step.isdigit():
+            return run, f"{int(step)} onnx"
+        return path.stem, "onnx"
     run = path.parent.parent.name if path.parent.name == "checkpoints" else path.parent.name
     if path.stem == run:
         return run, ""
