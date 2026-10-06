@@ -256,6 +256,8 @@ class Shelf:
             if path not in here:
                 try:
                     cfg = self._config(path)
+                except ValueError:
+                    why = "not playable"          # a file of the wrong kind, such as an adapter
                 except Exception as exc:          # noqa: BLE001  a broken file is not a crash
                     why = f"unreadable: {type(exc).__name__}"
                 else:

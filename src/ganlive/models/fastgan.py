@@ -257,6 +257,10 @@ def _open(checkpoint: str | Path) -> tuple[dict, Config]:
     `weights_only`, so opening a file -- which the model picker does for every `.pt` under
     `runs/` -- never runs code from it."""
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True, mmap=True)
+    if "g_ema" not in ckpt:
+        # A trainer's other files sit in the same folders: a LoRA adapter, a resume state.
+        raise ValueError(f"{Path(checkpoint).name} holds no FastGAN generator (`g_ema`); it "
+                         f"has {', '.join(sorted(ckpt)) or 'nothing'}")
     known = {f.name for f in fields(Config)}
     saved = ckpt.get("config", {})
     return ckpt, Config(**{k: v for k, v in saved.items() if k in known})

@@ -71,6 +71,18 @@ def test_the_shelf_lists_every_graph_but_only_the_newest_checkpoint(tmp_path):
     assert names == ["0002000.pt", "a-run-0002000.onnx", "b-run-0009000.onnx"], names
 
 
+def test_a_file_that_holds_no_generator_is_listed_but_not_offered(tmp_path):
+    """A training run may save adapters or resume states beside its checkpoints; the picker
+    says so on the row rather than offering a load that fails."""
+    folder = tmp_path / "an-adapter" / "checkpoints"
+    folder.mkdir(parents=True)
+    torch.save({"adapter": {}, "step": 1, "config": {}}, folder / "0000001.pt")
+    with pytest.raises(ValueError, match="no FastGAN generator"):
+        family_of(folder / "0000001.pt").config_of(folder / "0000001.pt")
+    (entry,) = Shelf(_no_models(), tmp_path).entries()
+    assert entry.why == "not playable", entry
+
+
 def test_the_shelf_is_empty_rather_than_a_crash_without_a_runs_directory(tmp_path):
     """Playing a checkpoint that lives anywhere else is the ordinary first run, and nothing
     creates `runs/` until a model is imported into it."""
