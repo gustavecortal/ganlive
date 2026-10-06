@@ -17,7 +17,8 @@ def is_onnx(path) -> bool:
 
 
 def run_step(path) -> tuple[str, str]:
-    """A checkpoint's identity as the pair `(run, step)`."""
+    """A checkpoint's identity as the pair `(run, step)`. A file named after its run, as a
+    published model is (`lichen/lichen.pt`), has no step: its run says everything."""
     path = Path(path)
     if is_onnx(path):
         # Exports sit in one flat folder as `<run>-<step>.onnx`, so the parent says nothing.
@@ -25,17 +26,19 @@ def run_step(path) -> tuple[str, str]:
         run, _dash, step = path.stem.rpartition("-")
         return run or path.stem, f"{step.lstrip('0') or step} onnx"
     run = path.parent.parent.name if path.parent.name == "checkpoints" else path.parent.name
+    if path.stem == run:
+        return run, ""
     return run, path.stem.lstrip("0") or path.stem
 
 
 def label_for(path) -> str:
     """A checkpoint's short name, as `run step`: `my-run 72000`."""
-    return "{} {}".format(*run_step(path))
+    return " ".join(part for part in run_step(path) if part)
 
 
 def slug_for(path) -> str:
     """The same identity as a filename and a JSON key: `my-run-72000`."""
-    return "{}-{}".format(*run_step(path))
+    return "-".join(part for part in run_step(path) if part)
 
 
 def index_of(models, path) -> int | None:

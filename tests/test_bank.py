@@ -55,6 +55,15 @@ def test_an_exported_graph_is_a_model_on_the_shelf_and_names_itself_apart():
     assert slug_for(graph) != slug_for(check)
 
 
+
+def test_a_published_model_named_after_its_folder_is_called_by_that_name_alone():
+    """`hf download ... --local-dir runs/lichen` gives `runs/lichen/lichen.pt`."""
+    published = pathlib.Path("runs/lichen/lichen.pt")
+
+    assert run_step(published) == ("lichen", "")
+    assert label_for(published) == "lichen"
+    assert slug_for(published) == "lichen"
+
 def test_the_shelf_lists_every_graph_but_only_the_newest_checkpoint(tmp_path):
     """A run holds many checkpoints and the newest is the one anybody means, so it is one row.
     Every export is a different model, so that folder is as many rows as it has files."""

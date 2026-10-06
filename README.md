@@ -12,7 +12,7 @@ Load a GAN. Explore its latent space with automatically derived dials, by hand, 
 
 Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Supports Windows, macOS, and Linux, with NVIDIA, AMD, Intel, and Apple GPU backends or CPU.
-A $350 Intel Arc A770 generates 3072×2048 [FastGAN](https://huggingface.co/gustavecortal/ganlive-lichen-3072) frames at over 100 fps.
+A $350 Intel Arc A770 generates 3072×2048 [FastGAN](https://huggingface.co/gustavecortal/ganlive-lichen) frames at over 100 fps.
 
 ### 1. Install
 
@@ -78,7 +78,7 @@ MIDI clock keeps movement in time with your device.
 | Model | Load with |
 |---|---|
 | **StyleGAN2** | `ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch` |
-| **FastGAN** | A [smallgen](https://github.com/gustavecortal/smallgen) checkpoint or a published one: [lichen 3072](https://huggingface.co/gustavecortal/ganlive-lichen-3072), [amber 1536](https://huggingface.co/gustavecortal/ganlive-amber-1536) |
+| **FastGAN** | A [smallgen](https://github.com/gustavecortal/smallgen) checkpoint or a published one: [ganlive-lichen](https://huggingface.co/gustavecortal/ganlive-lichen), [ganlive-amber](https://huggingface.co/gustavecortal/ganlive-amber) |
 | **Other GANs** | `ganlive adopt model.onnx` or `ganlive adopt hf:owner/repo` |
 
 Other generators need a compatible ONNX export or Hub repository.
