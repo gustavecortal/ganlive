@@ -206,7 +206,7 @@ Measure your hardware with:
 ganlive latency --checkpoint runs/stylegan2/ffhq.pt
 ```
 
-Reported measurements on an Intel Arc A770 with PyTorch 2.13+xpu:
+Reported measurements on a $350 Intel Arc A770 with PyTorch 2.13+xpu:
 
 | Model | Native resolution | Frame time | FPS |
 |---|---|---|---|

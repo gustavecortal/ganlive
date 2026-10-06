@@ -12,6 +12,7 @@ Load a GAN. Explore its latent space with automatically derived dials, by hand o
 
 Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Supports Windows, macOS, and Linux, with NVIDIA, AMD, Intel, and Apple GPU backends or CPU.
+A $350 Intel Arc A770 generates 3072×2048 [FastGAN](https://huggingface.co/gustavecortal/ganlive-lichen-3072) frames at over 100 fps.
 
 ### 1. Install
 
