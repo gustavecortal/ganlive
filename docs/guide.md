@@ -34,12 +34,13 @@ The converted model runs without NVIDIA's custom CUDA kernels.
 ### FastGAN
 
 Load a checkpoint trained with [smallgen](https://github.com/gustavecortal/smallgen),
-or download the [published FastGAN model](https://huggingface.co/gustavecortal/ganlive-fastgan-3072):
+or download a published one, [lichen 3072](https://huggingface.co/gustavecortal/ganlive-lichen-3072)
+or the lighter [amber 1536](https://huggingface.co/gustavecortal/ganlive-amber-1536):
 
 ```bash
 uv pip install huggingface_hub
-hf download gustavecortal/ganlive-fastgan-3072 --local-dir runs/gv-2048-ft
-ganlive play --checkpoint runs/gv-2048-ft --console
+hf download gustavecortal/ganlive-lichen-3072 --local-dir runs/lichen-3072
+ganlive play --checkpoint runs/lichen-3072 --console
 ```
 
 ### Other generators

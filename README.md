@@ -77,7 +77,7 @@ MIDI clock keeps movement in time with your device.
 | Model | Load with |
 |---|---|
 | **StyleGAN2** | `ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch` |
-| **FastGAN** | A [smallgen](https://github.com/gustavecortal/smallgen) checkpoint or the [published model](https://huggingface.co/gustavecortal/ganlive-fastgan-3072) |
+| **FastGAN** | A [smallgen](https://github.com/gustavecortal/smallgen) checkpoint or a published one: [lichen 3072](https://huggingface.co/gustavecortal/ganlive-lichen-3072), [amber 1536](https://huggingface.co/gustavecortal/ganlive-amber-1536) |
 | **Other GANs** | `ganlive adopt model.onnx` or `ganlive adopt hf:owner/repo` |
 
 Other generators need a compatible ONNX export or Hub repository.
