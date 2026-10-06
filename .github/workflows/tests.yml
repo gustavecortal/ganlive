@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    env:
+      GANLIVE_DEVICE: cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # PortAudio for the `audio` extra; the tests open no device.
+      - run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - run: uv venv --python ${{ matrix.python }}
+      - run: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: uv pip install -e ".[dev]"
+      - run: uv run --no-sync ruff check src tests scripts
+      - run: uv run --no-sync pytest tests -q
