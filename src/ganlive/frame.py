@@ -33,9 +33,8 @@ class _Deferred:
         stage._wait = True
         if stage._pending:
             stage._pending = False
-            if self._keep and stage._side is not None:
-                event = stage._streams.Event()
-                event.record(stage._side)
+            event = stage._mark() if self._keep else None
+            if event is not None:
                 self.ticket = Ticket(event)
             else:
                 stage.sync()
@@ -45,8 +44,8 @@ class _Deferred:
 class Ticket:
     """The downloads of one frame, started and not yet waited for. `wait` before reading them.
 
-    An event on the stage's own queue, so waiting on it waits for this frame's copies and
-    nothing else -- not for the generator, which by then is drawing the next frame."""
+    An event recorded after this frame's copies, so waiting on it waits for them and nothing
+    queued after -- not for the generator, which by then is drawing the next frame."""
 
     def __init__(self, event) -> None:
         self._event = event
@@ -72,6 +71,9 @@ class FrameStage:
         self.device = device or detect_backend()
         self._streams = streams(self.device)
         self._side = self._streams.Stream() if self._streams is not None else None
+        #: Whether the device's one queue takes events, so a frame's copies can be waited for
+        #: apart from the work queued after them where there is no second queue (MPS).
+        self._events = self._side is None and torch.device(self.device).type != "cpu"
         self._rings: dict[str, object] = {}
         self.to_yuv = to_yuv or to_nv12
         self.to_rgb = to_rgb or _eager_rgb
@@ -121,13 +123,24 @@ class FrameStage:
         ring = self._rings.get(key)
         if ring is None:
             ring = self._rings[key] = PinnedRing(depth, self.device)
-        if self._side is not None:
-            self._read = self._streams.Event()
-            self._read.record(self._side)
+        self._read = self._mark()
         if self._wait:
             return ring.take(tensor)
         self._pending = True
         return ring.take(tensor, wait=False)
+
+    def _mark(self):
+        """An event recorded at this point of the stage's queue -- its own stream, or the
+        device's one queue -- or None where the device keeps no events (the CPU)."""
+        if self._side is not None:
+            event = self._streams.Event()
+            event.record(self._side)
+            return event
+        if self._events:
+            event = torch.Event(device=self.device)
+            event.record()
+            return event
+        return None
 
     def sync(self) -> None:
         """Wait for every copy this stage has started, on the device it started them on."""
@@ -139,8 +152,8 @@ class FrameStage:
 
     def handoff(self) -> _Deferred:
         """Start the downloads inside this block and do not wait for them: the block's `ticket`
-        does, when the bytes are about to be read. Where there is no second queue to record
-        on, this is `deferred` and the ticket is already done.
+        does, when the bytes are about to be read. Where the device keeps no events (the
+        CPU), this is `deferred` and the ticket is already done.
 
         **Call `release` before the generator runs again.** A captured generator writes every
         frame into the same buffer, and these conversions read it."""
