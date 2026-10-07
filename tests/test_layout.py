@@ -28,6 +28,8 @@ LAYERS = {
     "ganlive.pixels": 1, "ganlive.settings": 1,
     "ganlive.models": 2,
     "ganlive.dials": 3,
+    # The WGSL engine: shaders generated from a converted model, and the hosts that run them.
+    "ganlive.engine": 3,
     # What plays the dials: the walk, the rules, the controllers, the recorders.
     "ganlive.walk": 4, "ganlive.presets": 4, "ganlive.control": 4, "ganlive.record": 4,
     "ganlive.frame": 5, "ganlive.families": 5,
