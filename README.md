@@ -2,7 +2,7 @@
 
 **Plug-and-play GAN exploration in real time.**
 
-Load a GAN. Explore its latent space with automatically derived dials, by hand, with MIDI, or from drums.
+Explore a GAN's latent space with automatically derived dials, played by hand, with MIDI, or from drums, on any GPU.
 
 <p align="center">
   <a href="docs/demo.mp4"><img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials: ganlive-lichen, a FastGAN trained on the author's photographs, with a dial turned by hand and drums wired to dials in the routing grid" width="860"></a>
@@ -12,7 +12,7 @@ Load a GAN. Explore its latent space with automatically derived dials, by hand, 
 
 Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Supports Windows, macOS, and Linux, with NVIDIA, AMD, Intel, and Apple GPU backends or CPU.
-A $350 Intel Arc A770 generates 3072×2048 [FastGAN](https://huggingface.co/gustavecortal/ganlive-lichen) frames at over 100 fps.
+[FastGAN models](https://huggingface.co/collections/gustavecortal/ganlive-6ac56a61006a78b3e1ff5406) run at over 100 fps in 3072×2048 on a $350 GPU.
 
 ### 1. Install
 
