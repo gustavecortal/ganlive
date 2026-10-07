@@ -20,6 +20,8 @@ from __future__ import annotations
 import math
 from string import Template
 
+import numpy as np
+
 FORMAT = "ganlive-engine/1"
 WG = 8                      # direct-convolution workgroups are WG x WG threads
 GEMM_MAX = 6144             # maps up to this many pixels run as a matrix product
@@ -84,7 +86,7 @@ def compile_program(manifest: dict, plans: dict | None = None) -> dict:
     b.buffer("Z", m["nz"] * 4)
     b.buffer("K", len(m["settings"]) * 4, init="ones")
     for key, (h, w) in m["patterns"].items():
-        b.buffer(f"noise.{key}", h * w * 4, init="noise", seed=_hash(key))
+        b.buffer(f"noise.{key}", h * w * 4, init="noise", seed=noise_seed(key))
 
     convs = [op for op in m["ops"] if op["op"] == "conv"]
     plans = {op["out"]: _plan(b, op) for op in convs}
@@ -109,7 +111,7 @@ def compile_program(manifest: dict, plans: dict | None = None) -> dict:
 
     H, W = m["height"], m["width"]
     return {"format": FORMAT, "nz": m["nz"], "height": H, "width": W,
-            "settings": m["settings"], "shaders": b.shaders, "buffers": b.buffers,
+            "settings": m["settings"], "bytes": m["bytes"], "shaders": b.shaders, "buffers": b.buffers,
             "steps": b.steps, "outputs": outputs, "noise": NOISE}
 
 
@@ -499,6 +501,42 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let a = unit((2u * i) ^ ${seed}u); let b = unit((2u * i + 1u) ^ ${seed}u);
   Y[i] = sqrt(-2.0 * log(a)) * cos(6.2831853 * b);
 }"""
+
+
+def seeded_noise(n: int, seed: int) -> np.ndarray:
+    """What `NOISE` writes into an n-element buffer, computed on the host: the noise every
+    engine model plays, so that `convert` can give PyTorch the same."""
+    i = np.arange(n, dtype=np.uint32)
+
+    def pcg(v):
+        s = v * np.uint32(747796405) + np.uint32(2891336453)
+        w = ((s >> ((s >> np.uint32(28)) + np.uint32(4))) ^ s) * np.uint32(277803737)
+        return (w >> np.uint32(22)) ^ w
+
+    def unit(v):
+        return ((pcg(v) >> np.uint32(8)).astype(np.float32) + np.float32(0.5)) / np.float32(16777216.0)
+
+    a = unit((np.uint32(2) * i) ^ np.uint32(seed))
+    b = unit((np.uint32(2) * i + np.uint32(1)) ^ np.uint32(seed))
+    return (np.sqrt(np.float32(-2.0) * np.log(a)) * np.cos(np.float32(6.2831853) * b)).astype(np.float32)
+
+
+def noise_seed(layer: str) -> int:
+    return _hash(layer)
+
+
+#: A probe is the picture's mean over this grid of blocks, coarse enough that fp16 rounding
+#: averages out and fine enough that a backend drawing the wrong picture cannot match it.
+PROBE_GRID = (16, 24)
+#: How far a backend's probe may stray, in 8-bit levels averaged over the blocks.
+PROBE_LEVELS = 2.0
+
+
+def box_means(image: np.ndarray) -> np.ndarray:
+    """(3, H, W) in [-1, 1] -> (3, 16, 24) block means."""
+    c, h, w = image.shape
+    gh, gw = PROBE_GRID
+    return image.reshape(c, gh, h // gh, gw, w // gw).mean(axis=(2, 4))
 
 
 def _hash(text: str) -> int:

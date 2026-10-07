@@ -50,6 +50,7 @@ DEFERRED = {
     ("ganlive.models.capture", "torch._dynamo.utils"): "torch",
     # `play` answers `--help` and a bad argument without loading torch.
     ("ganlive.tools.play", "torch"): "torch",
+    ("ganlive.tools.convert", "ganlive.engine.convert"): "torch",
     ("ganlive.tools.play", "ganlive.bank"): "torch",
     ("ganlive.tools.play", "ganlive.device"): "torch",
     ("ganlive.tools.play", "ganlive.families"): "torch",

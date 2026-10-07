@@ -94,6 +94,7 @@ export async function loadModel(device, program, weights, options = {}) {
 
   async function upload(size, source) {
     if (source instanceof ArrayBuffer) {
+      if (source.byteLength !== program.bytes) throw new Error(`weights: ${source.byteLength} bytes, the program expects ${program.bytes}`);
       const b = create(size);
       device.queue.writeBuffer(b, 0, source);
       return b;
@@ -105,13 +106,13 @@ export async function loadModel(device, program, weights, options = {}) {
     for (const reader = source.body.getReader(); ;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (at + value.byteLength > size) throw new Error(`weights: more than the ${size} bytes the program expects`);
+      if (at + value.byteLength > size) throw new Error(`weights: more than the ${program.bytes} bytes the program expects`);
       view.set(value, at);
       at += value.byteLength;
       onProgress?.(at);
     }
     b.unmap();
-    if (at !== Math.ceil(size / 4) * 4 && at !== size) throw new Error(`weights: got ${at} bytes, the program expects ${size}`);
+    if (at !== program.bytes) throw new Error(`weights: got ${at} bytes, the program expects ${program.bytes}`);
     return b;
   }
 

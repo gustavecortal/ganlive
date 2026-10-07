@@ -1,10 +1,10 @@
 """Run a ganlive engine program (from `ganlive convert`) through wgpu-py: the same shaders and
 dispatches `runner.mjs` runs in a browser, on Vulkan, Metal or DX12.
 
-    model = Model.load("models/lichen")
+    model = Model.load("models/lichen")   # on this machine's fastest backend
     model.set_latent(z); model.set_settings(k)
-    model.frame()                       # submits one frame
-    pixels = model.read()               # (H, W, 4) uint8, or (3, H, W) float32 with output="f32"
+    model.frame()                         # submits one frame
+    pixels = model.read()                 # (H, W, 4) uint8, or (3, H, W) float32 with output="f32"
 """
 
 from __future__ import annotations
@@ -12,11 +12,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import wgpu
+
+from ganlive.engine.program import PROBE_LEVELS, box_means
 
 USAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
 
@@ -33,6 +37,9 @@ class Model:
 
     def __init__(self, device, program: dict, weights: bytes, *, output: str = "rgba8",
                  noise: dict[str, np.ndarray] | None = None) -> None:
+        if len(weights) != program["bytes"]:
+            raise ValueError(f"the weights are {len(weights)} bytes and the program expects "
+                             f"{program['bytes']}: they come from different conversions")
         self.device, self.program = device, program
         self.height, self.width = program["height"], program["width"]
         self.format = output
@@ -53,7 +60,7 @@ class Model:
             buf = create(name, spec["size"])
             init = spec.get("init")
             if init == "weights":
-                device.queue.write_buffer(buf, 0, _words(weights))
+                device.queue.write_buffer(buf, 0, weights)
             elif init == "ones":
                 device.queue.write_buffer(buf, 0, np.ones(spec["size"] // 4, np.float32))
             elif init == "noise":
@@ -63,15 +70,15 @@ class Model:
                 else:
                     self._seed(buf, spec["size"] // 4, spec["seed"])
 
-        modules: dict[int, object] = {}
+        pipelines: dict[int, object] = {}
         self.steps = []
         for spec in [*program["steps"], last["step"]]:
             index = spec["shader"]
-            if index not in modules:
+            if index not in pipelines:
                 module = device.create_shader_module(code=program["shaders"][index])
-                modules[index] = device.create_compute_pipeline(
+                pipelines[index] = device.create_compute_pipeline(
                     layout="auto", compute={"module": module, "entry_point": "main"})
-            pipeline = modules[index]
+            pipeline = pipelines[index]
             bind = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=[
                 {"binding": i, "resource": {"buffer": self.buffers[n], "offset": 0,
                                             "size": self.buffers[n].size}}
@@ -118,6 +125,18 @@ class Model:
             return np.frombuffer(data, np.float32).reshape(3, self.height, self.width)
         return np.frombuffer(data, np.uint8).reshape(self.height, self.width, 4)
 
+    def strays(self) -> float:
+        """How far this backend's picture of the program's probe is from PyTorch's, in 8-bit
+        levels averaged over the probe's blocks. Leaves the settings at neutral."""
+        probe = self.program["probe"]
+        self.set_latent(np.asarray(probe["z"], np.float32))
+        self.set_settings(np.ones(len(self.program["settings"]), np.float32))
+        self.frame()
+        image = self.read()
+        if self.format != "f32":
+            image = image[..., :3].transpose(2, 0, 1).astype(np.float32) / 127.5 - 1.0
+        return float(np.abs(box_means(image).ravel() - np.asarray(probe["means"])).mean() * 127.5)
+
     def _seed(self, buf, n: int, seed: int) -> None:
         code = self.program["noise"].replace("${n}", str(n)).replace("${seed}", str(seed))
         pipeline = self.device.create_compute_pipeline(
@@ -141,63 +160,66 @@ def read(folder) -> tuple[dict, bytes]:
     return program, (folder / "weights.bin").read_bytes()
 
 
-#: Where each machine's measured choice of backend is kept, per adapter, driver and program.
-CHOICES = Path("runs/ganlive/backends.json")
-
-
-def _identity(adapter) -> str:
-    """An adapter as its backend, GPU and driver: a driver update measures again. Backends
-    report the driver version in different fields, so all of them are kept."""
-    i = adapter.info
-    return " | ".join(str(i.get(k, "")) for k in (
-        "backend_type", "device", "vendor_id", "device_id", "vendor", "description"))
+def cache_dir() -> Path:
+    """Where this user's machine-specific measurements are kept."""
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ganlive"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ganlive"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ganlive"
 
 
 def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
-            choices: Path = CHOICES, **options) -> tuple[Model, dict]:
-    """The model built on whichever GPU backend runs it fastest here, and what was measured.
+            choices: Path | None = None, **options) -> tuple[Model, dict]:
+    """The model built on whichever GPU backend draws it right and fastest here, and what was
+    measured.
 
-    The same card can differ several times over between backends (on an Arc A770, wgpu-py's
-    Vulkan runs a frame in 10 ms and its DX12 in 39), and which wins depends on the GPU and
-    driver, so each backend is timed once and the winner remembered. `backend` ("vulkan",
-    "d3d12", "metal", ...) skips the measurement and uses that one."""
-    adapters = [a for a in wgpu.gpu.enumerate_adapters_sync()
-                if a.info["adapter_type"] != "CPU" and a.info["backend_type"] != "OpenGL"]
+    One card can differ between backends (on an Arc A770, wgpu-py's DX12 runs amber in 8.1 ms
+    and its Vulkan in 9.4; DX12 compiled with DXC runs it in 114), and the order depends on
+    the GPU and driver, so each backend that matches the program's probe is timed and the
+    winner remembered in `choices`. `backend` ("vulkan", "d3d12", "metal", ...) uses that
+    backend without measuring."""
+    choices = choices or cache_dir() / "backends.json"
+    adapters = _gpus(backend)
     if backend:
-        adapters = [a for a in adapters if a.info["backend_type"].lower() == backend.lower()]
-        if not adapters:
-            raise ValueError(f"no {backend} adapter; this machine has "
-                             f"{', '.join(_identity(a) for a in wgpu.gpu.enumerate_adapters_sync())}")
-    if not adapters:
-        adapters = [wgpu.gpu.request_adapter_sync(power_preference="high-performance")]
+        return _checked(adapters[0], program, weights, options), {"best": _names(adapters)[0]}
+    names = _names(adapters)
     key = hashlib.sha1("\n".join(program["shaders"]).encode()).hexdigest()[:12]
-    names = sorted(_identity(a) for a in adapters)
     known = _choices(choices).get(key, {})
-    if len(adapters) == 1 or set(known.get("measured", {})) == set(names):
-        best = known.get("best") if len(adapters) > 1 else names[0]
-        adapter = next((a for a in adapters if _identity(a) == best), adapters[0])
-        return Model(_device(adapter), program, weights, **options), known
+    if len(adapters) == 1 or sorted(known.get("measured", {})) == sorted(names):
+        best = names[0] if len(adapters) == 1 else known.get("best")
+        if best in names:
+            try:
+                return _checked(adapters[names.index(best)], program, weights, options), known
+            except (RuntimeError, ValueError, wgpu.GPUError):
+                pass                        # the remembered backend fails today: measure again
 
     measured, built = {}, {}
-    for adapter in adapters:
+    for name, adapter in zip(names, adapters, strict=True):
         try:
-            built[_identity(adapter)] = Model(_device(adapter), program, weights, **options)
-        except Exception as exc:  # noqa: BLE001 -- a backend that cannot build it just loses
-            measured[_identity(adapter)] = {"error": str(exc)[:200]}
-    if not built:
-        raise RuntimeError(f"no backend could build this model: {measured}")
+            built[name] = _checked(adapter, program, weights, options)
+        except (RuntimeError, ValueError, wgpu.GPUError) as exc:
+            measured[name] = {"error": str(exc)[:200]}
     # Rounds alternate between backends and each keeps its best, so a moment when something
-    # else holds the GPU cannot decide the choice.
+    # else holds the GPU cannot decide the choice. A backend that fails mid-way drops out.
     best_ms = dict.fromkeys(built, math.inf)
     for _ in range(3):
-        for name, model in built.items():
-            model.frame()
-            model.read()
-            started = time.perf_counter()
-            for _ in range(frames):
+        for name in [n for n in best_ms if n in built]:
+            model = built[name]
+            try:
                 model.frame()
-            model.read()
+                model.read()
+                started = time.perf_counter()
+                for _ in range(frames):
+                    model.frame()
+                model.read()
+            except (RuntimeError, wgpu.GPUError) as exc:
+                measured[name] = {"error": str(exc)[:200]}
+                del built[name], best_ms[name]
+                continue
             best_ms[name] = min(best_ms[name], (time.perf_counter() - started) / frames * 1000)
+    if not built:
+        raise RuntimeError(f"no backend draws this model: {measured}")
     measured.update({n: {"ms": round(ms, 2)} for n, ms in best_ms.items()})
     best = min(best_ms, key=best_ms.get)
     for name, model in built.items():
@@ -206,9 +228,45 @@ def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames
     report = {"best": best, "measured": measured}
     saved = _choices(choices)
     saved[key] = report
-    choices.parent.mkdir(parents=True, exist_ok=True)
-    choices.write_text(json.dumps(saved, indent=2), encoding="utf-8")
+    try:
+        choices.parent.mkdir(parents=True, exist_ok=True)
+        choices.write_text(json.dumps(saved, indent=2), encoding="utf-8")
+    except OSError:
+        pass                                # not remembered: the next load measures again
     return built[best], report
+
+
+def _checked(adapter, program, weights, options) -> Model:
+    """A model built on `adapter`, refused if it does not draw the program's probe."""
+    model = Model(_device(adapter), program, weights, **options)
+    if "probe" in program:
+        off = model.strays()
+        if off > PROBE_LEVELS:
+            model.destroy()
+            raise RuntimeError(f"draws the probe {off:.1f} levels off")
+    return model
+
+
+def _gpus(backend: str | None) -> list:
+    """The GPU adapters worth measuring: not the CPU one, nor OpenGL, whose compute is the
+    least complete; any adapter if nothing else is there."""
+    every = wgpu.gpu.enumerate_adapters_sync()
+    gpus = [a for a in every if a.info["adapter_type"] != "CPU"
+            and not a.info["backend_type"].startswith("OpenGL")]
+    if backend:
+        gpus = [a for a in every if a.info["backend_type"].lower() == backend.lower()]
+        if not gpus:
+            raise ValueError(f"no {backend} adapter here; there are "
+                             f"{', '.join(sorted({a.info['backend_type'] for a in every}))}")
+    return gpus or [wgpu.gpu.request_adapter_sync(power_preference="high-performance")]
+
+
+def _names(adapters) -> list[str]:
+    """Each adapter as its backend, GPU and the driver version where the backend reports one
+    (backends put it in different fields), numbered when two are otherwise the same."""
+    base = [" | ".join(str(a.info.get(k, "")) for k in (
+        "backend_type", "device", "vendor_id", "device_id", "vendor", "description")) for a in adapters]
+    return [f"{b} #{base[:i].count(b) + 1}" if base.count(b) > 1 else b for i, b in enumerate(base)]
 
 
 def _choices(path: Path) -> dict:
@@ -223,8 +281,3 @@ def _device(adapter):
         "max-buffer-size", "max-storage-buffer-binding-size", "max-storage-buffers-per-shader-stage")}
     features = [f for f in ("timestamp-query",) if f in adapter.features]
     return adapter.request_device_sync(required_features=features, required_limits=limits)
-
-
-def _words(data: bytes) -> bytes:
-    """GPU uploads come in whole 4-byte words."""
-    return data if len(data) % 4 == 0 else data + bytes(4 - len(data) % 4)

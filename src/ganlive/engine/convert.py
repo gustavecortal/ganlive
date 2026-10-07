@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from ganlive.dials import steer
-from ganlive.engine.program import compile_program
+from ganlive.engine.program import box_means, compile_program, noise_seed, seeded_noise
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import _bn_affine, prepare_for_inference
 from ganlive.models.onnx_rewrite import (
@@ -78,7 +78,11 @@ def prepared(source, noise_seed: int = 0):
 
 
 def manifest_of(steerable, cfg, names: list[str]) -> tuple[dict, Blob, dict]:
-    """The ops in run order, the weights they read, and the frozen noise by layer."""
+    """The ops in run order, the weights they read, and the noise by layer.
+
+    The noise becomes the engine's own, seeded per layer and made on the GPU at load (see
+    `program.NOISE`), and is written into `steerable` too, so that it draws what the engine
+    draws: no host ships the 25 MB patterns of a 3072x2048 layer."""
     g, blob = steerable.net, Blob()
     ops, tensors, patterns = [], {}, {}
 
@@ -120,7 +124,9 @@ def manifest_of(steerable, cfg, names: list[str]) -> tuple[dict, Blob, dict]:
                   "bv": blob.put(pair.value.bias.detach()), "bg": blob.put(pair.gate.bias.detach())}
             if pair.noise:
                 key = f"{name}.{i}"
-                patterns[key] = pair.pattern.detach().float().numpy().reshape(h, wd)
+                noise = seeded_noise(h * wd, noise_seed(key))
+                pair.pattern.copy_(torch.from_numpy(noise).reshape(pair.pattern.shape))
+                patterns[key] = noise.reshape(h, wd)
                 # `gain` is the bound `value` method of the slot the dial reads.
                 op.update(noise=key, cv=blob.put(pair.coeff_value.reshape(-1)),
                           cg=blob.put(pair.coeff_gate.reshape(-1)),
@@ -160,8 +166,18 @@ def convert(checkpoint, out: Path, plans: dict | None = None) -> dict:
     steerable, cfg, names = prepared(checkpoint)
     manifest, blob, _ = manifest_of(steerable, cfg, names)
     program = compile_program(manifest, plans)
+    program["probe"] = probe(steerable, cfg, names)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "weights.bin").write_bytes(blob.data)
     (out / "program.json").write_text(json.dumps(program), encoding="utf-8")
     return program
+
+
+def probe(steerable, cfg, names: list[str]) -> dict:
+    """What PyTorch draws for a fixed latent at neutral settings, as block means: a host checks
+    a backend against it before trusting the backend's timings."""
+    z = np.random.default_rng(0).standard_normal((1, cfg.nz)).astype(np.float32)
+    with torch.no_grad():
+        image = steerable(torch.from_numpy(z), torch.ones(len(names)))[0][0].numpy()
+    return {"z": z[0].tolist(), "means": np.round(box_means(image), 5).ravel().tolist()}

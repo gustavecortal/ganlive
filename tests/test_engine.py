@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.engine.convert import manifest_of, prepared
-from ganlive.engine.program import compile_program
+from ganlive.engine.convert import manifest_of, prepared, probe
+from ganlive.engine.program import PROBE_LEVELS, compile_program
 from ganlive.models.fastgan import Config, Generator
 
 wgpu = pytest.importorskip("wgpu")
@@ -54,9 +54,13 @@ def _prepared(nz: int = 32):
 
 
 def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device):
+    """With the noise the engine makes on the GPU itself, as a converted model plays."""
     steerable, cfg, names = _prepared()
-    manifest, blob, patterns = manifest_of(steerable, cfg, names)
-    model = Model(device, compile_program(manifest), bytes(blob.data), output="f32", noise=patterns)
+    manifest, blob, _ = manifest_of(steerable, cfg, names)
+    program = compile_program(manifest)
+    program["probe"] = probe(steerable, cfg, names)
+    model = Model(device, program, bytes(blob.data), output="f32")
+    assert model.strays() < PROBE_LEVELS                # what a backend must pass to be used
     rng = np.random.default_rng(0)
     for k in (np.ones(len(names)), np.linspace(0.3, 1.7, len(names))):
         z = rng.standard_normal((1, cfg.nz)).astype(np.float32)
