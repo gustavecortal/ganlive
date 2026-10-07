@@ -52,6 +52,7 @@ from ganlive.dials.table import (
 )
 from ganlive.models.fastgan import SkipLayerExcitation
 from ganlive.models.fold import FoldedNoise
+from ganlive.models.steerable import Slot
 from ganlive.pixels import RANDOM_FLOOR
 from ganlive.presets import Preset, PresetRunner
 from ganlive.settings import Settings
@@ -74,7 +75,7 @@ def _stub_net(gates=("se_64", "se_128", "se_256", "se_512"),
         coeff = torch.ones(1, 2, 1, 1)
         net.add_module(name, nn.Sequential(FoldedNoise(coeff, torch.zeros(1, 1, 4, 4))))
     for name in gates:
-        net.add_module(name, SkipLayerExcitation(2, 2))
+        net.add_module(name, SkipLayerExcitation(2, 2, (4, 4)))
     net.to_big = nn.Identity()
     net.init = nn.Identity()
     return net
@@ -412,6 +413,17 @@ def test_a_smaller_generator_installs_the_rungs_it_has_and_no_others():
     assert "sle.se_512" not in settings.index
     assert "sle.se_256" in settings.index
     settings.set("sle.se_512", 2.0)          # dropped, not raised: no KeyError mid-performance
+
+
+def test_a_steerable_module_reads_the_whole_vector_and_not_a_view_of_its_slot():
+    """A compiled MPS kernel reads a half-precision view at an odd offset from the wrong
+    element, so every module slices its slot inside its own forward."""
+    net = _stub_net()
+    settings = install(net, "cpu", torch.float16)
+    modules = [m for m in net.modules() if isinstance(m, Slot)]
+    assert len(modules) == 8
+    assert all(m.holder is settings for m in modules)
+    assert sorted(m.index for m in modules) == list(range(8))
 
 
 def test_only_the_settings_something_can_write_are_installed():

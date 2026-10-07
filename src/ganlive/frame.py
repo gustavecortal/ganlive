@@ -80,6 +80,9 @@ class FrameStage:
                          "bgra": to_bgra is not None}
         self._wait = True
         self._pending = False
+        #: `(input size, output size)` pairs this backend would not shrink through `area`;
+        #: see `_shrink`.
+        self._refused: set = set()
         #: Recorded on this stage's queue after the last conversion, before its copy: once it
         #: has passed, the generator's frame has been read and the generator may write the
         #: next one into the same buffer -- see `release`.
@@ -174,9 +177,34 @@ class FrameStage:
             if (h, w) == (self.height, self.width):
                 return o
             if self.height * self.width <= h * w:
-                return F.interpolate(o, size=(self.height, self.width), mode="area")
+                return self._shrink(o)
             return F.interpolate(o, size=(self.height, self.width), mode="bilinear",
                                  align_corners=False)
+
+    def _shrink(self, frame: torch.Tensor) -> torch.Tensor:
+        """Down through `area`, or where the backend refuses it -- MPS pools by whole factors
+        alone, and a frame fitted to a screen is rarely one -- box-filtered by the largest
+        whole power of two that fits and finished by the antialiased bilinear filter: 2.0 ms
+        on an M5 for 3072x2048 to 1472x982, against 4.2 for the bilinear filter alone."""
+        size = (self.height, self.width)
+        pair = (tuple(frame.shape[-2:]), size)
+        if pair not in self._refused:
+            try:
+                return F.interpolate(frame, size=size, mode="area")
+            except RuntimeError as exc:
+                self._refused.add(pair)
+                print(f"resize: antialiased bilinear -- {str(exc).splitlines()[0][:120]}",
+                      flush=True)
+        factor = 1
+        while all(side % (2 * factor) == 0 and side >= 2 * factor * want
+                  for side, want in zip(frame.shape[-2:], size, strict=True)):
+            factor *= 2
+        if factor > 1:
+            frame = F.avg_pool2d(frame, factor)
+        if tuple(frame.shape[-2:]) == size:
+            return frame
+        return F.interpolate(frame, size=size, mode="bilinear", antialias=True,
+                             align_corners=False)
 
     def nv12_bytes(self, frame: torch.Tensor, dest: str = "yuv", depth: int = 3):
         """A stepped frame as the `(H*3/2, W)` uint8 plane stack an encoder wants."""

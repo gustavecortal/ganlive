@@ -38,13 +38,24 @@ class Settings:
         self._fed = False
         self.skipped = 0
 
+    def _viewable(self) -> None:
+        """Refuse a view into a vector narrower than 32 bits: a compiled MPS kernel reads a
+        half-precision view at an odd offset from the wrong element. A module steering a
+        half vector holds the whole vector and slices its slot in its forward instead, as
+        `models.steerable.Slot` does."""
+        if self.vec.element_size() < 4:
+            raise TypeError(f"a {self.vec.dtype} settings vector hands out no views; "
+                            f"slice it inside the forward (see `models.steerable.Slot`)")
+
     def view(self, name: str) -> torch.Tensor:
-        """The slice of the vector a module should hold. A view, so `commit` reaches it."""
+        """The slice of the vector a module may hold. A view, so `commit` reaches it."""
+        self._viewable()
         i = self.index[name]
         return self.vec[i:i + 1]
 
     def span(self, names) -> torch.Tensor:
         """Several adjacent settings as one view, for a module that wants them as a vector."""
+        self._viewable()
         first = self.index[names[0]]
         if [self.index[n] for n in names] != list(range(first, first + len(names))):
             raise ValueError(

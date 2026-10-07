@@ -40,7 +40,7 @@ def export(checkpoint: Path, out: Path, opset: int, noise_seed: int,
     net, cfg = load(checkpoint, "cpu")
     freeze_noise(net, seed=noise_seed)
     report = prepare_for_inference(net, cfg.nz, "cpu", half=False)
-    # The dials become a second graph input: a view into a settings tensor traces as a constant.
+    # The dials become a second graph input: a tensor held by a module traces as a constant.
     settings = steer.install(report["net"].eval(), "cpu", torch.float32)
     net = settings_as_input(report["net"], settings).eval()
     names = list(settings.names)

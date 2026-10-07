@@ -6,6 +6,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils import spectral_norm
 
@@ -74,13 +75,36 @@ class NoiseInjection(nn.Module):
         return x + self.weight * noise
 
 
+def _windows(size: int, out: int) -> torch.Tensor:
+    """`(size, out)`: column `i` averages the window an adaptive pool gives output `i`, read
+    off the kernel itself on the host, where every size is supported."""
+    return F.adaptive_avg_pool1d(torch.eye(size)[None], out)[0]
+
+
+class MatrixPool(nn.Module):
+    """`nn.AdaptiveAvgPool2d` from a known input size, as `rows @ x @ cols`.
+
+    The same windows as the kernel, and it runs on every backend: MPS pools only by whole
+    factors, and a 3:2 ladder's 4x6 base block is not one. The inputs are at most a few
+    dozen pixels a side, so the two small products cost nothing anywhere."""
+
+    def __init__(self, size: tuple[int, int], out: int) -> None:
+        super().__init__()
+        # Not persistent: derived from the architecture, so checkpoints load as they are.
+        self.register_buffer("rows", _windows(size[0], out).T.contiguous(), persistent=False)
+        self.register_buffer("cols", _windows(size[1], out), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.rows @ x @ self.cols
+
+
 class SkipLayerExcitation(nn.Module):
     """Channel-wise gate: a low-res feature map modulates a high-res one."""
 
-    def __init__(self, ch_low: int, ch_high: int) -> None:
+    def __init__(self, ch_low: int, ch_high: int, low_size: tuple[int, int]) -> None:
         super().__init__()
         self.gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(4),
+            MatrixPool(low_size, 4),
             conv(ch_low, ch_high, 4, 1, 0, bias=False),
             nn.SiLU(),  # x * sigmoid(x); "Swish" in the paper
             conv(ch_high, ch_high, 1, 1, 0, bias=False),
@@ -184,16 +208,16 @@ class Generator(nn.Module):
         self.feat_128 = up_block_comp(w[64], w[128], sub(128))
         self.feat_256 = up_block(w[128], w[256], sub(256))
 
-        self.se_64 = SkipLayerExcitation(w[4], w[64])
-        self.se_128 = SkipLayerExcitation(w[8], w[128])
-        self.se_256 = SkipLayerExcitation(w[16], w[256])
+        self.se_64 = SkipLayerExcitation(w[4], w[64], self.ladder.at(4))
+        self.se_128 = SkipLayerExcitation(w[8], w[128], self.ladder.at(8))
+        self.se_256 = SkipLayerExcitation(w[16], w[256], self.ladder.at(16))
 
         self.to_small = conv(w[128], nc, 1, 1, 0, bias=False)
         self.to_big = conv(w[im_size], nc, 3, 1, 1, bias=False)
 
         if im_size > 256:
             self.feat_512 = up_block_comp(w[256], w[512], sub(512))
-            self.se_512 = SkipLayerExcitation(w[32], w[512])
+            self.se_512 = SkipLayerExcitation(w[32], w[512], self.ladder.at(32))
         if im_size > 512:
             self.feat_1024 = up_block(w[512], w[1024], sub(1024))
         if im_size > 1024:

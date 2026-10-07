@@ -33,6 +33,7 @@ from ganlive.models.onnx_rewrite import (
     split_gated_convs,
 )
 from ganlive.pixels import levels
+from ganlive.settings import Settings
 
 #: Worst tolerable difference, in 8-bit levels. See the module note.
 IDENTICAL = 1e-3
@@ -209,12 +210,14 @@ def test_the_rewrite_refuses_to_leave_a_setting_behind():
     net = prepare_for_inference(net, 32, "cpu", half=False)["net"].eval()
     settings = K.install(net, "cpu", torch.float32)
 
-    steered = settings_as_input(net, settings)
+    # Slots read by position, so a vector the modules do not read would name other dials.
+    with pytest.raises(RuntimeError, match="another settings vector"):
+        settings_as_input(net, Settings(settings.names, "cpu", torch.float32))
 
     settings.names.append("sle.se_2048")         # a setting no module can possibly serve
     settings.index["sle.se_2048"] = len(settings.names) - 1
     with pytest.raises(RuntimeError, match="sle.se_2048"):
-        settings_as_input(steered.net, settings)
+        settings_as_input(net, settings)
 
 
 class _Echo(nn.Module):

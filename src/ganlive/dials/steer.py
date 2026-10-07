@@ -39,17 +39,17 @@ def install(net: nn.Module, device, dtype=torch.float16) -> Settings:
         for child_name, child in list(parent.named_children()):
             if isinstance(child, FoldedNoise):
                 stage = (parent_name or child_name).split(".")[0]
-                name = f"noise.{stage}"
-                if name not in settings.index:
+                index = settings.index.get(f"noise.{stage}")
+                if index is None:
                     continue
                 setattr(parent, child_name,
-                        SteerableNoise(child.coeff, child.noise, settings.view(name)))
+                        SteerableNoise(child.coeff, child.noise, settings, index))
                 sites["noise"] += 1
             elif isinstance(child, SkipLayerExcitation):
-                name = f"sle.{child_name}"
-                if name not in settings.index:
+                index = settings.index.get(f"sle.{child_name}")
+                if index is None:
                     continue
-                setattr(parent, child_name, SteerableSLE(child.gate, settings.view(name)))
+                setattr(parent, child_name, SteerableSLE(child.gate, settings, index))
                 sites["sle"] += 1
 
     if settings.names and not (sites["noise"] and sites["sle"]):

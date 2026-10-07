@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from ganlive import bank
@@ -14,7 +15,9 @@ from ganlive.dials import steer as K
 from ganlive.families import open_stylegan2
 from ganlive.frame import FrameStage
 from ganlive.models import capture as speedups
+from ganlive.models import fastgan
 from ganlive.models import stylegan2 as S2
+from ganlive.settings import Settings
 
 
 def test_half_on_a_card_and_single_on_the_cpu():
@@ -27,6 +30,51 @@ def test_the_mps_module_is_a_backend_too():
     """`synchronize` on a Mac has to wait, so the lookup must not return None there."""
     assert dev._mod("mps") is getattr(torch, "mps", None)
     assert dev._mod("cpu") is None
+
+
+@pytest.mark.parametrize("size", [(4, 6), (8, 12), (5, 7), (4, 4)])
+def test_the_matrix_pool_averages_the_windows_the_kernel_does(size):
+    """MPS refuses the 3:2 base block's 4x6 into 4x4, so a Mac plays a FastGAN through this."""
+    x = torch.randn(2, 8, *size)
+    pooled = fastgan.MatrixPool(size, 4)(x)
+    assert torch.allclose(pooled, torch.nn.AdaptiveAvgPool2d(4)(x), atol=1e-6)
+
+
+def _refuse_adaptive_pools(monkeypatch):
+    """Make this CPU answer an adaptive pool the way MPS answers a 4x6 input."""
+    def refuse(*_a, **_k):
+        raise RuntimeError("Adaptive pool MPS: input sizes must be divisible by output sizes")
+
+    monkeypatch.setattr(torch.nn.functional, "adaptive_avg_pool2d", refuse)
+
+
+def test_a_generator_plays_where_adaptive_pools_are_refused(monkeypatch):
+    """Every gate pools through `MatrixPool`, so a backend that refuses adaptive pools at
+    these sizes still draws the picture."""
+    _refuse_adaptive_pools(monkeypatch)
+    net = fastgan.Generator(ngf=8, nz=16, im_size=256, im_width=384).eval()
+    with torch.no_grad():
+        assert net(torch.randn(1, 16))[0].shape == (1, 3, 256, 384)
+
+
+def test_a_half_settings_vector_hands_out_no_views():
+    """A compiled MPS kernel reads a half view at an odd offset from the wrong element."""
+    with pytest.raises(TypeError, match="no views"):
+        Settings(["a", "b"], "cpu", torch.float16).view("b")
+    assert Settings(["a", "b"], "cpu", torch.float32).view("b").shape == (1,)
+
+
+def test_a_backend_that_refuses_area_still_shrinks_the_frame(monkeypatch, capsys):
+    stage = FrameStage(9, 15, device="cpu")
+    frame = torch.rand(1, 3, 40, 60) * 2 - 1
+    area = stage.step(frame)
+    _refuse_adaptive_pools(monkeypatch)
+    shrunk = stage.step(frame)
+    assert shrunk.shape == area.shape == (1, 3, 9, 15)
+    assert (shrunk - area).abs().mean() < 0.05, "a different filter, not a different picture"
+    assert capsys.readouterr().out.count("resize: antialiased bilinear") == 1
+    stage.step(frame)
+    assert "resize" not in capsys.readouterr().out, "said once, not every frame"
 
 
 def test_no_memory_report_where_there_is_no_allocator():
