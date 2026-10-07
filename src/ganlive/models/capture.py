@@ -20,6 +20,12 @@ from ganlive.pixels import EXACT_LEVELS, FLOOR_LEVELS, levels, pinned
 WARMUP = 3
 
 
+def reason(exc: BaseException) -> str:
+    """The first sentence of a refused fast path's message, for the line saying what ran instead."""
+    line = next((text for text in str(exc).splitlines() if text.strip()), type(exc).__name__)
+    return line.partition(". ")[0][:120]
+
+
 def compile_and_count(net, nz: int, device,
                       dtype=torch.float16) -> tuple[object, int, float]:
     """Compile a generator, warm it up, and report how many graphs came out and how long it
@@ -37,7 +43,7 @@ def compile_and_count(net, nz: int, device,
             for _ in range(WARMUP):
                 compiled(torch.zeros(1, nz, device=device, dtype=dtype))
     except Exception as exc:  # noqa: BLE001 -- Inductor's failures are not enumerable; eager answers every one
-        print(f"compile: running eager -- {str(exc).splitlines()[0][:120]}", flush=True)
+        print(f"compile: running eager -- {reason(exc)}", flush=True)
         return net, 0, time.perf_counter() - t0
     return compiled, counters["frames"]["ok"] - before, time.perf_counter() - t0
 
@@ -152,7 +158,7 @@ def capture(net, nz: int, device, dtype=torch.float16, feeds=()):
             same = levels(first_image(played(probes[0])), want)
             moved = levels(first_image(played(probes[1])), want)
     except (RuntimeError, NotImplementedError, AttributeError) as exc:
-        return net, f"not captured: {str(exc).splitlines()[0][:120]}"
+        return net, f"not captured: {reason(exc)}"
     if same > EXACT_LEVELS:
         return net, f"not captured: the replay differs from the forward by {same:.3f} 8-bit levels"
     if moved <= FLOOR_LEVELS:

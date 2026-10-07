@@ -17,6 +17,7 @@ import torch
 from torch import nn
 
 from ganlive.checkpoints import ONNX
+from ganlive.models.capture import reason
 from ganlive.models.onnx_file import weights_file
 
 #: Latent widths to try when a config does not say. In the order they are common; the probe
@@ -84,20 +85,21 @@ def _config(repo: str) -> dict:
         return {}
 
 
-def _import_code(repo: str) -> list[object]:
-    """Every Python module the repo ships, imported. This is the part that trusts."""
+def _import_code(repo: str) -> tuple[list[object], list[str]]:
+    """Every Python module the repo ships, imported, and why each one that would not import
+    did not. This is the part that trusts."""
     from huggingface_hub import snapshot_download
 
     root = Path(snapshot_download(repo, allow_patterns=["*.py", "*.json"]))
     names = sorted(f.stem for f in root.glob("*.py"))
     if not names:
-        return []
+        return [], []
 
     shadowed = {n: sys.modules[n] for n in names if n in sys.modules}
     for name in names:
         sys.modules.pop(name, None)
     sys.path.insert(0, str(root))
-    out, mine = [], []
+    out, mine, failed = [], [], []
     try:
         for name in names:
             spec = importlib.util.spec_from_file_location(name, root / f"{name}.py")
@@ -108,13 +110,14 @@ def _import_code(repo: str) -> list[object]:
                 spec.loader.exec_module(module)
                 out.append(module)
             except Exception as exc:              # noqa: BLE001  a helper may not import here
-                print(f"  {name}.py: {type(exc).__name__}: {exc}", flush=True)
+                failed.append(f"{name}.py: {type(exc).__name__}: {reason(exc)}")
+                print(f"  {failed[-1]}", flush=True)
     finally:
         sys.path.remove(str(root))
         for name in mine:
             sys.modules.pop(name, None)
         sys.modules.update(shadowed)
-    return out
+    return out, failed
 
 
 def _candidates(modules) -> list[type]:
@@ -156,8 +159,8 @@ def from_hub(repo: str, trust: bool = False) -> Fetched:
     does: every class with `from_pretrained` is loaded and handed latents."""
     if not trust:
         raise PermissionError(f"{repo}: {TRUST}")
-    modules = _import_code(repo)
-    if not modules:
+    modules, failed = _import_code(repo)
+    if not modules and not failed:
         raise RuntimeError(
             f"{repo} ships no model code, so there is nothing here that knows how to build "
             f"the network its weights belong to. Install the library it came from and export "
@@ -167,8 +170,9 @@ def from_hub(repo: str, trust: bool = False) -> Fetched:
     widths = tuple(dict.fromkeys(
         [int(config[k]) for k in WIDTH_KEYS if isinstance(config.get(k), int)] + list(WIDTHS)))
 
+    candidates = _candidates(modules)
     found = []
-    for cls in _candidates(modules):
+    for cls in candidates:
         try:
             net = cls.from_pretrained(repo)
         except Exception:                                # noqa: BLE001  most classes are not it
@@ -178,7 +182,11 @@ def from_hub(repo: str, trust: bool = False) -> Fetched:
             found.append((cls.__name__, net, got))
 
     if not found:
-        names = ", ".join(c.__name__ for c in _candidates(modules)) or "none"
+        if failed:
+            raise RuntimeError(
+                f"{repo}: its code did not all import here ({'; '.join(failed)}). Install "
+                f"what it imports and run again.")
+        names = ", ".join(c.__name__ for c in candidates) or "none"
         raise RuntimeError(
             f"{repo}: nothing in it turned a latent into a picture. Tried {names} at widths "
             f"{widths}. It may be conditional, may take a `w` rather than a `z`, or may need "

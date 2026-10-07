@@ -291,6 +291,31 @@ def test_fetching_someone_elses_code_is_refused_unless_it_was_asked_for():
         from_hub("someone/whatever")
 
 
+@pytest.mark.parametrize("beside", ["", "helper"])
+def test_code_that_does_not_import_is_named_rather_than_blamed_on_the_model(tmp_path,
+                                                                          monkeypatch, beside):
+    """A repository whose model module imports a package this machine lacks says so, instead
+    of reporting that no class turned a latent into a picture -- also when another module
+    imported and offered a class that is not the generator."""
+    hub = pytest.importorskip("huggingface_hub")
+
+    def no_config(*_args, **_kwargs):
+        raise FileNotFoundError("config.json")
+
+    (tmp_path / "models.py").write_text("import not_installed_anywhere\n")
+    if beside:
+        (tmp_path / f"{beside}.py").write_text(
+            "from torch import nn\n"
+            "class Decoder(nn.Module):\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, repo):\n"
+            "        raise OSError(repo)\n")
+    monkeypatch.setattr(hub, "snapshot_download", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(hub, "hf_hub_download", no_config)
+    with pytest.raises(RuntimeError, match=r"models\.py: ModuleNotFoundError: No module named 'not_installed_anywhere'"):
+        from_hub("someone/whatever", trust=True)
+
+
 def test_a_curve_is_the_response_it_was_measured_from():
     """A curve is any number of evenly spaced values, read piecewise-linearly."""
     points = evenly((0.001, 0.01, 0.1, 1.0))

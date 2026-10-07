@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from ganlive.device import detect_backend, streams, synchronize
+from ganlive.models.capture import reason
 from ganlive.models.common import first_image
 from ganlive.pixels import PinnedRing, to_nv12
 from ganlive.pixels import to_bgra as _eager_bgra
@@ -113,7 +114,7 @@ class FrameStage:
                     fn(staged)
             return counters["frames"]["ok"] - before
         except Exception as exc:  # noqa: BLE001 -- see `capture.compile_and_count`
-            print(f"conversions: running eager -- {str(exc).splitlines()[0][:120]}", flush=True)
+            print(f"conversions: running eager -- {reason(exc)}", flush=True)
             self.eager()
             return 0
 
@@ -206,7 +207,7 @@ class FrameStage:
                 return F.interpolate(frame, size=size, mode="area")
             except RuntimeError as exc:
                 self._refused.add(pair)
-                print(f"resize: antialiased bilinear -- {str(exc).splitlines()[0][:120]}",
+                print(f"resize: antialiased bilinear -- {reason(exc)}",
                       flush=True)
         factor = 1
         while all(side % (2 * factor) == 0 and side >= 2 * factor * want
