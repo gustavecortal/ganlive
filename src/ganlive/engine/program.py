@@ -23,10 +23,14 @@ from string import Template
 import numpy as np
 
 FORMAT = "ganlive-engine/1"
+#: One 8-bit level in the [-1, 1] range a generator draws: `ganlive.pixels.LEVEL`, which this
+#: module cannot import because `pixels` loads PyTorch.
+LEVEL = 127.5
 WG = 8                      # direct-convolution workgroups are WG x WG threads
 GEMM_MAX = 6144             # maps up to this many pixels run as a matrix product
 GEMM_TARGET = 256           # workgroups a matrix product aims to fill, by splitting its sum
 
+# w1 / w4: one / four fp16 weights at element offset `e` of the weight blob P.
 HELPERS = """
 fn w1(e: u32) -> f32 { return unpack2x16float(P[e >> 1u])[e & 1u]; }
 fn w4(e: u32) -> vec4f { let i = e >> 1u; return vec4f(unpack2x16float(P[i]), unpack2x16float(P[i + 1u])); }
@@ -56,42 +60,50 @@ class Builder:
         self.shaders: list[str] = []
         self.index: dict[str, int] = {}
         self.buffers: dict[str, dict] = {}
-        self.steps: list[dict] = []
+        self.steps: list[dict] = []          # every frame
+        self.load: list[dict] = []           # once, after the buffers are made
 
-    def buffer(self, name: str, size: int, **init) -> str:
-        self.buffers[name] = {"size": max(16, math.ceil(size / 4) * 4), **init}
+    def buffer(self, name: str, size: int, **spec) -> str:
+        self.buffers[name] = {"size": max(16, math.ceil(size / 4) * 4), **spec}
         return name
 
-    def step(self, name, code, bind, groups, plan=None) -> dict:
+    def shader(self, code: str) -> int:
         if code not in self.index:
             self.index[code] = len(self.shaders)
             self.shaders.append(code)
-        step = {"name": name, "shader": self.index[code], "bind": list(bind),
+        return self.index[code]
+
+    def step(self, name, code, bind, groups, plan=None, *, load=False) -> None:
+        step = {"name": name, "shader": self.shader(code), "bind": list(bind),
                 "groups": [int(g) for g in groups]}
         if plan:
             step["plan"] = plan
-        self.steps.append(step)
-        return step
+        (self.load if load else self.steps).append(step)
 
     def shape(self, tensor: str) -> list[int]:
         return self.m["tensors"][tensor]
 
 
-def compile_program(manifest: dict, plans: dict | None = None) -> dict:
-    """The program for `manifest`. `plans` overrides how conv layers split, by name:
-    {"gemm": True} or {"by": 2, "bx": 4, "oct": 4}."""
+def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8") -> dict:
+    """The program for `manifest`, drawing packed RGBA8 pixels for display or, with
+    `output="f32"`, float planes in [-1, 1] for checks. `plans` overrides how conv layers
+    split, by name: {"gemm": True} or {"by": 2, "bx": 4, "oct": 4}."""
     b = Builder(manifest, plans or {})
     m = manifest
     b.buffer("P", m["bytes"], init="weights")
     b.buffer("Z", m["nz"] * 4)
     b.buffer("K", len(m["settings"]) * 4, init="ones")
-    for key, (h, w) in m["patterns"].items():
-        b.buffer(f"noise.{key}", h * w * 4, init="noise", seed=noise_seed(key))
-
     convs = [op for op in m["ops"] if op["op"] == "conv"]
+    for op in convs:
+        if op.get("noise"):
+            _noise(b, op["noise"], *b.shape(op["out"])[1:])
+
     plans = {op["out"]: _plan(b, op) for op in convs}
-    scratch = max([p["S"] * _slice_bytes(b, op) for op in convs
-                   if (p := plans[op["out"]]).get("gemm")], default=0)
+    scratch = 0
+    for op in convs:
+        if plans[op["out"]].get("gemm"):        # one slice: value and gate for every pixel
+            cout, ho, wo = b.shape(op["out"])
+            scratch = max(scratch, plans[op["out"]]["S"] * ho * wo * 2 * cout * 4)
     b.buffer("scratch", scratch)
     tensors = _allocate(b)
 
@@ -105,14 +117,15 @@ def compile_program(manifest: dict, plans: dict | None = None) -> dict:
             plan = plans[op["out"]]
             (_gemm if plan.get("gemm") else _conv)(b, op, tensors, plan)
         elif kind == "rgb":
-            outputs = {fmt: _rgb(b, op, tensors, fmt) for fmt in ("rgba8", "f32")}
+            _rgb(b, op, tensors, output)
         else:
             raise ValueError(f"unknown op {kind}")
+    if "out" not in b.buffers:
+        raise ValueError("the manifest has no rgb op, so the program would draw nothing")
 
-    H, W = m["height"], m["width"]
-    return {"format": FORMAT, "nz": m["nz"], "height": H, "width": W,
-            "settings": m["settings"], "bytes": m["bytes"], "shaders": b.shaders, "buffers": b.buffers,
-            "steps": b.steps, "outputs": outputs, "noise": NOISE}
+    return {"format": FORMAT, "nz": m["nz"], "height": m["height"], "width": m["width"],
+            "settings": m["settings"], "output": output, "shaders": b.shaders,
+            "buffers": b.buffers, "load": b.load, "steps": b.steps}
 
 
 # -- planning -------------------------------------------------------------------------------
@@ -153,12 +166,6 @@ def _plan(b: Builder, op: dict) -> dict:
     raise ValueError(f"{op['out']}: no tile fits {cout} channels at {ho}x{wo}")
 
 
-def _slice_bytes(b: Builder, op: dict) -> int:
-    """One slice of a matrix product's partial sums: value and gate for every pixel."""
-    cout, ho, wo = b.shape(op["out"])
-    return ho * wo * 2 * cout * 4
-
-
 def _allocate(b: Builder) -> dict[str, str]:
     """Tensor -> buffer name. One buffer per tensor would hold every activation at once (255 MiB
     for lichen); instead a tensor takes a free buffer once its last reader has run, best fit."""
@@ -191,10 +198,7 @@ def _init(b: Builder, op: dict, tensors: dict) -> None:
     ch, h, w = b.shape(op["out"])
     cells, nz = h * w, b.m["nz"]
     n = ch // 2 * cells
-    code = wgsl("""
-@group(0) @binding(0) var<storage, read> P: array<u32>;
-@group(0) @binding(1) var<storage, read> Z: array<vec4f>;
-@group(0) @binding(2) var<storage, read_write> Y: array<u32>;
+    code = wgsl(storage([("P", "array<u32>"), ("Z", "array<vec4f>"), ("Y", "array<u32>")]) + """
 ${HELPERS}
 fn row(r: u32) -> f32 {
   var s = vec4f(0.0);
@@ -202,8 +206,8 @@ fn row(r: u32) -> f32 {
   return s.x + s.y + s.z + s.w;
 }
 fn glu(c: u32, cell: u32) -> f32 {
-  let v = row(c * ${cells}u + cell) * w1(${scale}u + c) + w1(${shift}u + c);
-  let g = row((c + ${ch}u) * ${cells}u + cell) * w1(${scale}u + c + ${ch}u) + w1(${shift}u + c + ${ch}u);
+  let v = row(c * ${cells}u + cell) + w1(${bias}u + c);
+  let g = row((c + ${ch}u) * ${cells}u + cell) + w1(${bias}u + c + ${ch}u);
   return v * sigmoid(g);
 }
 @compute @workgroup_size(64)
@@ -211,7 +215,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= ${n}u) { return; }
   let pair = id.x / ${cells}u; let cell = id.x % ${cells}u;
   Y[id.x] = pack2x16float(vec2f(glu(2u * pair, cell), glu(2u * pair + 1u, cell)));
-}""", nz4=nz // 4, nz=nz, w=op["w"], cells=cells, scale=op["scale"], shift=op["shift"], ch=ch, n=n)
+}""", nz4=nz // 4, nz=nz, w=op["w"], cells=cells, bias=op["bias"], ch=ch, n=n)
     b.step("init", code, ["P", "Z", tensors[op["out"]]], [math.ceil(n / 64), 1, 1])
 
 
@@ -221,10 +225,8 @@ def _sle(b: Builder, op: dict, tensors: dict) -> None:
     pooled = b.buffer(f"{name}.pooled", n * 4)
     hidden = b.buffer(f"{name}.hidden", ch * 4)
     scale = b.buffer(f"{name}.scale", ch * 4)
-    head = "@group(0) @binding(0) var<storage, read> P: array<u32>;\n${HELPERS}"
-    b.step(f"{name}.pool", wgsl(head + """
-@group(0) @binding(1) var<storage, read> X: array<u32>;
-@group(0) @binding(2) var<storage, read_write> Y: array<f32>;
+    b.step(f"{name}.pool", wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<f32>")]) + """
+${HELPERS}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= ${n}u) { return; }
@@ -241,9 +243,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   Y[id.x] = s;
 }""", n=n, h=h, w=w, hw=h * w, rows=op["rows"], cols=op["cols"]),
            ["P", tensors[op["low"]], pooled], [math.ceil(n / 64), 1, 1])
-    b.step(f"{name}.fc1", wgsl(head + """
-@group(0) @binding(1) var<storage, read> X: array<f32>;
-@group(0) @binding(2) var<storage, read_write> Y: array<f32>;
+    b.step(f"{name}.fc1", wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>")]) + """
+${HELPERS}
 var<workgroup> part: array<f32, 64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
@@ -258,10 +259,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   }
   if (li == 0u) { let t = part[0]; Y[wg.x] = t * sigmoid(t); }
 }""", n=n, fc1=op["fc1"], ch=ch), ["P", pooled, hidden], [ch, 1, 1])
-    b.step(f"{name}.fc2", wgsl(head + """
-@group(0) @binding(1) var<storage, read> X: array<f32>;
-@group(0) @binding(2) var<storage, read_write> Y: array<f32>;
-@group(0) @binding(3) var<storage, read> K: array<f32>;
+    b.step(f"{name}.fc2", wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>"),
+                                        ("K", "array<f32>")]) + """
+${HELPERS}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= ${ch}u) { return; }
@@ -316,10 +316,7 @@ def _gemm(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
     store = "\n".join(
         f"  {{ let row = (s * {M}u + m0 + lid.y * 4u + {i}u) * {2 * cout // 4}u + (n0 / 4u) + lid.x;\n"
         f"    Y[row] = av{i}; Y[row + {cout // 4}u] = ag{i}; }}" for i in quad)
-    code = wgsl("""
-@group(0) @binding(0) var<storage, read> P: array<u32>;
-@group(0) @binding(1) var<storage, read> X: array<u32>;
-@group(0) @binding(2) var<storage, read_write> Y: array<vec4f>;
+    code = wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<vec4f>")]) + """
 ${HELPERS}
 var<workgroup> As: array<f32, ${tkm}>;
 var<workgroup> Bv: array<vec4f, ${tkn4}>;
@@ -441,8 +438,8 @@ ${body}
            [math.ceil(wo / BX / WG), math.ceil(ho / BY / WG), cout // oct], plan)
 
 
-def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> dict:
-    """The last step, in one of two formats; a host appends the one it wants."""
+def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> None:
+    """The last step: packed RGBA8 for display, or f32 planes."""
     cin, h, w = b.shape(op["in"])
     acc = []
     for c2 in range(cin // 2):
@@ -454,14 +451,12 @@ def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> dict:
                 f"    s += n.x * vec3f(w1({e}u), w1({e + 1}u), w1({e + 2}u))\n"
                 f"       + n.y * vec3f(w1({o}u), w1({o + 1}u), w1({o + 2}u)); }}")
     if fmt == "f32":
-        out, kind, size = "out.f32", "f32", 3 * h * w * 4
+        kind, size = "f32", 3 * h * w * 4
         store = f"Y[px] = s.x; Y[{h * w}u + px] = s.y; Y[{2 * h * w}u + px] = s.z;"
     else:
-        out, kind, size = "out.rgba8", "u32", h * w * 4
+        kind, size = "u32", h * w * 4
         store = "Y[px] = pack4x8unorm(vec4f(s * 0.5 + 0.5, 1.0));"
-    code = wgsl("""@group(0) @binding(0) var<storage, read> P: array<u32>;
-@group(0) @binding(1) var<storage, read> X: array<u32>;
-@group(0) @binding(2) var<storage, read_write> Y: array<${kind}>;
+    code = wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", f"array<{kind}>")]) + """
 ${HELPERS}
 fn tap(base: u32, y: i32, x: i32) -> vec2f {
   if (y < 0 || y >= ${h} || x < 0 || x >= ${w}) { return vec2f(0.0); }
@@ -475,19 +470,26 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 ${acc}
   s = tanh(clamp(s, vec3f(-10.0), vec3f(10.0)));
   ${store}
-}""", kind=kind, h=h, w=w, WG=WG, acc="\n".join(acc), store=store)
-    if code not in b.index:
-        b.index[code] = len(b.shaders)
-        b.shaders.append(code)
-    return {"buffer": out, "size": size,
-            "step": {"name": "rgb", "shader": b.index[code], "bind": ["P", tensors[op["in"]], out],
-                     "groups": [math.ceil(w / WG), math.ceil(h / WG), 1]}}
+}""", h=h, w=w, WG=WG, acc="\n".join(acc), store=store)
+    b.buffer("out", size)
+    b.step("rgb", code, ["P", tensors[op["in"]], "out"], [math.ceil(w / WG), math.ceil(h / WG), 1])
 
 
-# Standard normal noise made on the GPU once at load (a PCG hash per element, Box-Muller),
-# so no host ships or computes noise. `${n}` and `${seed}` are filled in per buffer.
+def _noise(b: Builder, key: str, h: int, w: int) -> None:
+    """A noise layer's buffer, filled once at load by `NOISE` with the layer's own seed."""
+    n = h * w
+    b.buffer(f"noise.{key}", n * 4)
+    b.buffer(f"noise.{key}.n", 16, init="words", words=[n, noise_seed(key)])
+    groups = math.ceil(n / 256)
+    b.step(f"noise.{key}", NOISE, [f"noise.{key}", f"noise.{key}.n"],
+           [min(groups, 65535), math.ceil(groups / 65535), 1], load=True)
+
+
+# Standard normal noise made on the GPU (a PCG hash per element, Box-Muller), so no host
+# ships or computes it. U holds the element count and the seed.
 NOISE = """
 @group(0) @binding(0) var<storage, read_write> Y: array<f32>;
+@group(0) @binding(1) var<storage, read> U: array<u32>;
 fn pcg(v: u32) -> u32 {
   let s = v * 747796405u + 2891336453u;
   let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
@@ -496,9 +498,9 @@ fn pcg(v: u32) -> u32 {
 fn unit(v: u32) -> f32 { return (f32(pcg(v) >> 8u) + 0.5) / 16777216.0; }
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  let i = id.y * 16776960u + id.x;
-  if (i >= ${n}u) { return; }
-  let a = unit((2u * i) ^ ${seed}u); let b = unit((2u * i + 1u) ^ ${seed}u);
+  let i = id.y * 16776960u + id.x;          // rows of 65535 workgroups of 256
+  if (i >= U[0]) { return; }
+  let a = unit((2u * i) ^ U[1]); let b = unit((2u * i + 1u) ^ U[1]);
   Y[i] = sqrt(-2.0 * log(a)) * cos(6.2831853 * b);
 }"""
 
@@ -521,10 +523,6 @@ def seeded_noise(n: int, seed: int) -> np.ndarray:
     return (np.sqrt(np.float32(-2.0) * np.log(a)) * np.cos(np.float32(6.2831853) * b)).astype(np.float32)
 
 
-def noise_seed(layer: str) -> int:
-    return _hash(layer)
-
-
 #: A probe is the picture's mean over this grid of blocks, coarse enough that fp16 rounding
 #: averages out and fine enough that a backend drawing the wrong picture cannot match it.
 PROBE_GRID = (16, 24)
@@ -533,13 +531,24 @@ PROBE_LEVELS = 2.0
 
 
 def box_means(image: np.ndarray) -> np.ndarray:
-    """(3, H, W) in [-1, 1] -> (3, 16, 24) block means."""
-    c, h, w = image.shape
+    """Block means in [-1, 1], (3, 16, 24), of a (3, H, W) float picture or of (H, W, 4)
+    RGBA8 pixels, the latter summed as integers with no full-size float copy."""
     gh, gw = PROBE_GRID
+    if image.dtype == np.uint8:
+        h, w = image.shape[:2]
+        sums = image.reshape(gh, h // gh, gw, w // gw, 4)[..., :3].sum(axis=(1, 3), dtype=np.uint64)
+        return (sums.transpose(2, 0, 1) / (h // gh * (w // gw))) / LEVEL - 1.0
+    c, h, w = image.shape
     return image.reshape(c, gh, h // gh, gw, w // gw).mean(axis=(2, 4))
 
 
-def _hash(text: str) -> int:
+def probe_error(probe: dict, image: np.ndarray) -> float:
+    """How far a drawing of the probe's latent is from PyTorch's, in 8-bit levels averaged over
+    the blocks: what a backend must keep under PROBE_LEVELS to be used."""
+    return float(np.abs(box_means(image).ravel() - np.asarray(probe["means"])).mean() * LEVEL)
+
+
+def noise_seed(text: str) -> int:
     """FNV-1a, so each noise layer gets its own seed from its name."""
     h = 2166136261
     for ch in text:

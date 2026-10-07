@@ -27,6 +27,8 @@ class GatedPair(nn.Module):
         # A noise gain read from the settings input survives the split: both coefficient
         # halves are scaled by the same slice of it.
         self.gain = noise.value if isinstance(noise, SteerableNoise) else None
+        #: Which slot of the settings vector the noise gain reads, or None for a fixed gain.
+        self.slot = noise.index if isinstance(noise, SteerableNoise) else None
         if noise is not None:
             self.register_buffer("coeff_value", noise.coeff[:, :half].clone())
             self.register_buffer("coeff_gate", noise.coeff[:, half:].clone())

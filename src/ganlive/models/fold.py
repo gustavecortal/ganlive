@@ -44,15 +44,24 @@ def _bn_affine(bn: nn.BatchNorm2d) -> tuple[torch.Tensor, torch.Tensor]:
     return scale, bn.bias.float() - bn.running_mean.float() * scale
 
 
-def _fuse(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
-    """`conv` followed by an eval `bn`, as one convolution."""
+def _fuse(conv: nn.Conv2d | nn.ConvTranspose2d, bn: nn.BatchNorm2d) -> nn.Module:
+    """`conv` followed by an eval `bn`, as one convolution of the same kind. A transposed
+    convolution keeps its output channels on the weight's second axis."""
     scale, shift = _bn_affine(bn)
     dt = conv.weight.dtype
-    weight = (conv.weight.float() * scale.reshape(-1, 1, 1, 1)).to(dt)
+    transposed = isinstance(conv, nn.ConvTranspose2d)
+    per_channel = scale.reshape(1, -1, 1, 1) if transposed else scale.reshape(-1, 1, 1, 1)
+    weight = (conv.weight.float() * per_channel).to(dt)
     bias = (shift if conv.bias is None else conv.bias.float() * scale + shift).to(dt)
-    fused = nn.Conv2d(conv.in_channels, conv.out_channels, conv.kernel_size, conv.stride,
-                      conv.padding, conv.dilation, conv.groups, bias=True,
-                      padding_mode=conv.padding_mode, device=conv.weight.device, dtype=dt)
+    if transposed:
+        fused = nn.ConvTranspose2d(conv.in_channels, conv.out_channels, conv.kernel_size,
+                                   conv.stride, conv.padding, conv.output_padding, conv.groups,
+                                   bias=True, dilation=conv.dilation,
+                                   device=conv.weight.device, dtype=dt)
+    else:
+        fused = nn.Conv2d(conv.in_channels, conv.out_channels, conv.kernel_size, conv.stride,
+                          conv.padding, conv.dilation, conv.groups, bias=True,
+                          padding_mode=conv.padding_mode, device=conv.weight.device, dtype=dt)
     fused.weight = nn.Parameter(weight.detach(), requires_grad=False)
     fused.bias = nn.Parameter(bias.detach(), requires_grad=False)
     return fused
@@ -60,7 +69,7 @@ def _fuse(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
 
 def _norm_rule(a, b, c):
     """`conv -> bn`, and `conv -> noise -> bn`, as one folded convolution plus what is left."""
-    if isinstance(a, nn.Conv2d) and isinstance(b, nn.BatchNorm2d):
+    if isinstance(a, (nn.Conv2d, nn.ConvTranspose2d)) and isinstance(b, nn.BatchNorm2d):
         return [_fuse(a, b)], 2, "conv_bn"
     if not (isinstance(a, nn.Conv2d) and isinstance(b, NoiseInjection)
             and isinstance(c, nn.BatchNorm2d)):
