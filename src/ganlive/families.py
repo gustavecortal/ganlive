@@ -85,9 +85,14 @@ def _compiled(net, nz: int, device, dtype, options: LoadOptions):
 
 def _onnx_layout(path):
     said = onnx_file.dials_of(path)
-    # An export with no settings baked in is a plain graph with nothing to steer inside it.
-    return (table.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
-            if said["curves"] else table.adopted((), (), (), ()))
+    if said["curves"]:
+        return table.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
+    # `ganlive export-onnx` names a FastGAN's settings without measuring curves: its own dials
+    # already say what each setting takes, and the gate measures them on the graph at load.
+    if said["settings"] and set(said["settings"]) <= set(fastgan_dials.SETTINGS_WRITTEN):
+        return fastgan_dials.fastgan()
+    # A graph with no settings baked in is a plain graph with nothing to steer inside it.
+    return table.adopted((), (), (), ())
 
 
 def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
