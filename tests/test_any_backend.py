@@ -126,3 +126,18 @@ def test_the_opener_takes_the_devices_precision_when_not_told(monkeypatch):
     monkeypatch.setattr(S2, "style_bands", lambda net: [])
     open_stylegan2("x.pt", "cpu")
     assert asked == [S2.SINGLE_EVERYWHERE]
+
+
+def test_an_editors_python_is_not_taken_for_a_job_on_the_card():
+    """A linter server is a python process with no card; a ganlive run is one with one."""
+    def process(cmdline, maps=None):
+        out = SimpleNamespace(cmdline=lambda: cmdline)
+        if maps is not None:
+            out.memory_maps = lambda: [SimpleNamespace(path=p) for p in maps]
+        return out
+
+    lint = ["python", "/x/.vscode/extensions/ms-python.flake8/bundled/tool/lsp_server.py"]
+    assert not dev._holds_torch(process(lint))
+    assert dev._holds_torch(process(["python", "-m", "ganlive", "play"]))
+    assert dev._holds_torch(process(lint, maps=["/venv/lib/torch/lib/libtorch_cpu.so"]))
+    assert not dev._holds_torch(process(["python", "train.py"], maps=["/usr/lib/libc.so"]))

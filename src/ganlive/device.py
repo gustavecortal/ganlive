@@ -141,8 +141,24 @@ def prioritise_gpu_feeder() -> None:
           + (f"  ({note})" if note else ""), flush=True)
 
 
+#: Words in a command line that mark a process that drives the card, where the platform does
+#: not list a process's loaded libraries (macOS).
+TORCH_WORDS = ("ganlive", "gantrain", "torch")
+
+
+def _holds_torch(process) -> bool:
+    """Whether a python process has PyTorch loaded: read off its memory maps where the platform
+    lists them (Linux, Windows), off its command line where it does not (macOS). An editor's
+    linter server is a python process too, and holds no card."""
+    maps = getattr(process, "memory_maps", None)
+    if maps is not None:
+        return any("torch" in (m.path or "").lower() for m in maps())
+    return any(word in " ".join(process.cmdline()).lower() for word in TORCH_WORDS)
+
+
 def other_gpu_pythons() -> list[int] | None:
-    """PIDs of python processes that are not this one or one of its ancestors.
+    """PIDs of python processes with PyTorch loaded that are not this one or one of its
+    ancestors.
 
     `None` when `psutil` is not installed -- which a caller must report rather than read as
     "nothing is running". Even with it this is "none found": another user's processes are
@@ -152,18 +168,23 @@ def other_gpu_pythons() -> list[int] | None:
     except ImportError:
         return None
 
-    parents = {}
+    parents, processes = {}, {}
     for p in psutil.process_iter(["name", "ppid"]):
         # A process can exit between the listing and the read, and another user's is not ours
         # to see. Either way it is not a process we would ask about.
         with contextlib.suppress(psutil.Error):
             if (p.info["name"] or "").lower().startswith("python"):
-                parents[p.pid] = p.info["ppid"]
+                parents[p.pid], processes[p.pid] = p.info["ppid"], p
     mine, seen = os.getpid(), set()
     while mine and mine not in seen:
         seen.add(mine)
         mine = parents.get(mine, 0)
-    return sorted(set(parents) - seen)
+    holding = []
+    for pid in sorted(set(parents) - seen):
+        with contextlib.suppress(psutil.Error):
+            if _holds_torch(processes[pid]):
+                holding.append(pid)
+    return holding
 
 
 def host_ram_free_gb() -> float:

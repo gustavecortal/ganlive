@@ -14,6 +14,7 @@ import torch
 from torch import nn
 
 from ganlive.checkpoints import CACHE_SUFFIX
+from ganlive.device import synchronize
 from ganlive.models.common import first_image, latent
 from ganlive.models.onnx_file import initializers, producers, structure
 from ganlive.pixels import FLOOR_LEVELS, LEVEL, RANDOM_FLOOR
@@ -271,6 +272,10 @@ def metric(net: nn.Module, nz: int, device, dtype, into=None, slot: int = 0,
                 if rows is None:
                     rows = torch.empty(width, len(d), device=d.device, dtype=d.dtype)
                 rows[i] = d
+                # One row's passes at a time: freed memory returns to the allocator once the
+                # device has run past it, and MPS, ever behind a queue that is never waited
+                # on, grew by a gigabyte every few seconds until it ran out.
+                synchronize(str(device))
             # Widened to fp64 on the host: not every card has fp64, and the widening is exact.
             total += (rows @ rows.T).cpu().double() / (4 * eps * eps)
             del rows                                  # before the next seed's passes
