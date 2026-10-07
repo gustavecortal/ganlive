@@ -216,6 +216,19 @@ Reported measurements on a $350 Intel Arc A770 with PyTorch 2.13+xpu:
 
 These measure generation and frame preparation. With the window and controls,
 the FFHQ loop took 12.4 ms, with 13.8 ms at the 95th percentile.
+
+Reported measurements on an Apple M5 MacBook Pro with PyTorch 2.14.1 on MPS:
+
+| Model | Native resolution | Frame time | FPS |
+|---|---|---|---|
+| StyleGAN2 FFHQ | 1024×1024 | 46.4 ms | 22 |
+| FastGAN, displayed at 1472×982 | 3072×2048 | 31.0 ms | 32 |
+| FastGAN via ONNX, ONNX Runtime with CoreML | 3072×2048 | 77.5 ms | 13 |
+
+With the window and controls, the FFHQ loop took 47.7 ms, with 48.9 ms at the 95th
+percentile. On a Mac, play the `.pt` checkpoint rather than its ONNX export: compiled
+PyTorch on MPS is the faster runtime.
+
 Results depend on your model, hardware, and runtime.
 
 ## Install

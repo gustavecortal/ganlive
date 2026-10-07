@@ -135,6 +135,9 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     return out, per
 
 
+# Without gradients, as `play` runs it: a compiled generator called with them on is a second,
+# slower graph, and timing that read 31 ms frames as 41 on an M5.
+@torch.no_grad()
 def main(argv=None) -> int:
     ap = parser("latency", __doc__)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
