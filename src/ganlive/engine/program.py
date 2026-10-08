@@ -175,62 +175,82 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     b.step("init", code, ["P", "Z", tensors[op["out"]]], [math.ceil(n / 64), 1, 1])
 
 
+def _params(b: Builder, name: str, *words: int) -> str:
+    """A small buffer of a step's sizes and offsets, which a shader shared between layers reads
+    as `U`: one compile serves every layer (a browser compiles each shader in turn)."""
+    return b.buffer(name, 4 * len(words), init="words", words=[int(w) for w in words])
+
+
+# The SLE gate's four small steps, one shader each for every gate. U: see `_sle`.
+SLE_POOL = wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<f32>"),
+                         ("U", "array<u32>")]) + """
+${HELPERS}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let n = U[0]; let h = U[1]; let w = U[2]; let rows = U[3]; let cols = U[4];
+  if (id.x >= n) { return; }
+  let c = id.x / 16u; let i = (id.x % 16u) / 4u; let j = id.x % 4u;
+  var s = 0.0;
+  for (var y = 0u; y < h; y++) {
+    let r = w1(rows + i * h + y);
+    if (r == 0.0) { continue; }
+    for (var x = 0u; x < w; x++) {
+      let v = unpack2x16float(X[(c / 2u) * h * w + y * w + x])[c & 1u];
+      s += r * v * w1(cols + x * 4u + j);
+    }
+  }
+  Y[id.x] = s;
+}""")
+SLE_FC1 = wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>"),
+                        ("U", "array<u32>")]) + """
+${HELPERS}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  // Thread = output channel, so neighbouring threads read neighbouring weights. Workgroup
+  // row y sums one 256-term part of the n inputs, which the SiLU step adds up.
+  let n = U[0]; let ch = U[1]; let fc1 = U[2];
+  if (id.x >= ch) { return; }
+  var s = 0.0;
+  let end = min(n, (id.y + 1u) * 256u);
+  for (var i = id.y * 256u; i < end; i++) { s += w1(fc1 + i * ch + id.x) * X[i]; }
+  Y[id.y * ch + id.x] = s;
+}""")
+SLE_SILU = wgsl(storage([("X", "array<f32>"), ("Y", "array<f32>"), ("U", "array<u32>")]) + """
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let ch = U[1]; let parts = U[3];
+  if (id.x >= ch) { return; }
+  var t = 0.0;
+  for (var q = 0u; q < parts; q++) { t += X[q * ch + id.x]; }
+  Y[id.x] = t / (1.0 + exp(-t));
+}""")
+SLE_FC2 = wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>"),
+                        ("K", "array<f32>"), ("U", "array<u32>")]) + """
+${HELPERS}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let ch = U[1]; let fc2 = U[4]; let slot = U[5];
+  if (id.x >= ch) { return; }
+  var s = 0.0;
+  for (var i = 0u; i < ch; i++) { s += w1(fc2 + i * ch + id.x) * X[i]; }
+  Y[id.x] = 1.0 + K[slot] * (sigmoid(s) - 1.0);
+}""")
+
+
 def _sle(b: Builder, op: dict, tensors: dict) -> None:
     cl, h, w = b.shape(op["low"])
     ch, slot, n, name = op["ch"], op["slot"], cl * 16, op["name"]
     pooled = b.buffer(f"{name}.pooled", n * 4)
     scale = b.buffer(f"{name}.scale", ch * 4)
-    b.step(f"{name}.pool", wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<f32>")]) + """
-${HELPERS}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= ${n}u) { return; }
-  let c = id.x / 16u; let i = (id.x % 16u) / 4u; let j = id.x % 4u;
-  var s = 0.0;
-  for (var y = 0u; y < ${h}u; y++) {
-    let r = w1(${rows}u + i * ${h}u + y);
-    if (r == 0.0) { continue; }
-    for (var x = 0u; x < ${w}u; x++) {
-      let v = unpack2x16float(X[(c / 2u) * ${hw}u + y * ${w}u + x])[c & 1u];
-      s += r * v * w1(${cols}u + x * 4u + j);
-    }
-  }
-  Y[id.x] = s;
-}""", n=n, h=h, w=w, hw=h * w, rows=op["rows"], cols=op["cols"]),
-           ["P", tensors[op["low"]], pooled], [math.ceil(n / 64), 1, 1])
     parts = math.ceil(n / 256)
     hidden = b.buffer(f"{name}.hidden", parts * ch * 4)
-    b.step(f"{name}.fc1", wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>")]) + """
-${HELPERS}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  // Thread = output channel, so neighbouring threads read neighbouring weights. Workgroup
-  // row y sums one 256-term part of the ${n}, which the SiLU step adds up.
-  if (id.x >= ${ch}u) { return; }
-  var s = 0.0;
-  let end = min(${n}u, (id.y + 1u) * 256u);
-  for (var i = id.y * 256u; i < end; i++) { s += w1(${fc1}u + i * ${ch}u + id.x) * X[i]; }
-  Y[id.y * ${ch}u + id.x] = s;
-}""", n=n, fc1=op["fc1"], ch=ch), ["P", pooled, hidden], [math.ceil(ch / 64), parts, 1])
     silu = b.buffer(f"{name}.silu", ch * 4)
-    b.step(f"{name}.silu", wgsl(storage([("X", "array<f32>"), ("Y", "array<f32>")]) + """
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= ${ch}u) { return; }
-  var t = 0.0;
-  for (var q = 0u; q < ${parts}u; q++) { t += X[q * ${ch}u + id.x]; }
-  Y[id.x] = t / (1.0 + exp(-t));
-}""", ch=ch, parts=parts), [hidden, silu], [math.ceil(ch / 64), 1, 1])
-    b.step(f"{name}.fc2", wgsl(storage([("P", "array<u32>"), ("X", "array<f32>"), ("Y", "array<f32>"),
-                                        ("K", "array<f32>")]) + """
-${HELPERS}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= ${ch}u) { return; }
-  var s = 0.0;
-  for (var i = 0u; i < ${ch}u; i++) { s += w1(${fc2}u + i * ${ch}u + id.x) * X[i]; }
-  Y[id.x] = 1.0 + K[${slot}u] * (sigmoid(s) - 1.0);
-}""", ch=ch, fc2=op["fc2"], slot=slot), ["P", silu, scale, "K"], [math.ceil(ch / 64), 1, 1])
+    pool = _params(b, f"{name}.pool.u", n, h, w, op["rows"], op["cols"])
+    fc = _params(b, f"{name}.fc.u", n, ch, op["fc1"], parts, op["fc2"], slot)
+    b.step(f"{name}.pool", SLE_POOL, ["P", tensors[op["low"]], pooled, pool], [math.ceil(n / 64), 1, 1])
+    b.step(f"{name}.fc1", SLE_FC1, ["P", pooled, hidden, fc], [math.ceil(ch / 64), parts, 1])
+    b.step(f"{name}.silu", SLE_SILU, [hidden, silu, fc], [math.ceil(ch / 64), 1, 1])
+    b.step(f"{name}.fc2", SLE_FC2, ["P", silu, scale, "K", fc], [math.ceil(ch / 64), 1, 1])
 
 
 def _entries(op: dict, tensors: dict, source: str, kind: str = "array<u32>") -> list:
@@ -319,25 +339,17 @@ def _conv(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
             finish=lambda acc: _epilogue(op, acc["v"], acc["g"], ho * wo, "    "))
 
 
-def _parity_weights(b: Builder, op: dict, cin: int, cout: int) -> str:
-    """The weights of a nearest-2x-upsampling 3x3 conv as four 2x2 convs on its input, one
-    per output parity, made at load in f32: output (2a+i, 2b+j) reads input rows a+i-1 and
-    a+i, each through the sum of the 3x3 taps that land on it. Laid out [parity][channel
-    pair][tap][4 output channels] as four vec4f: value even, value odd, gate even, gate odd."""
-    name = f"parity.{op['out']}"
-    q4 = cout // 4
-    n = 4 * (cin // 2) * 4 * q4
-    b.buffer(name, n * 64)
-    groups, index = linear(n)
-    b.step(name, wgsl(storage([("P", "array<u32>"), ("Y", "array<vec4f>")]) + """
+# A nearest-2x-upsampling 3x3 conv's weights as four 2x2 convs, made at load (see
+# `_parity_weights`). U: n, cout / 4, cin / 2, the value and gate offsets in P.
+PARITY = wgsl(storage([("P", "array<u32>"), ("Y", "array<vec4f>"), ("U", "array<u32>")]) + """
 ${HELPERS}
-fn sum(base: u32, i: i32, j: i32, ry: i32, rx: i32) -> vec4f {
+fn sum(base: u32, cout: u32, i: i32, j: i32, ry: i32, rx: i32) -> vec4f {
   var s = vec4f(0.0);
   for (var ky = 0; ky < 3; ky++) {
     if (((i + ky - 1) >> 1u) + 1 - i != ry) { continue; }
     for (var kx = 0; kx < 3; kx++) {
       if (((j + kx - 1) >> 1u) + 1 - j != rx) { continue; }
-      s += w4(base + u32(ky * 3 + kx) * ${cout}u);
+      s += w4(base + u32(ky * 3 + kx) * cout);
     }
   }
   return s;
@@ -345,18 +357,30 @@ fn sum(base: u32, i: i32, j: i32, ry: i32, rx: i32) -> vec4f {
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let n = ${index};
-  if (n >= ${n}u) { return; }
-  let co4 = n % ${q4}u; let q = (n / ${q4}u) % 4u; let c2 = (n / ${q16}u) % ${c2s}u;
-  let p = n / ${pq}u;
+  let total = U[0]; let q4 = U[1]; let c2s = U[2]; let wv = U[3]; let wg = U[4];
+  if (n >= total) { return; }
+  let cout = 4u * q4;
+  let co4 = n % q4; let q = (n / q4) % 4u; let c2 = (n / (4u * q4)) % c2s;
+  let p = n / (c2s * 4u * q4);
   let i = i32(p >> 1u); let j = i32(p & 1u); let ry = i32(q >> 1u); let rx = i32(q & 1u);
-  let e = c2 * ${even}u + co4 * 4u;
-  Y[4u * n] = sum(${wv}u + e, i, j, ry, rx);
-  Y[4u * n + 1u] = sum(${wv}u + e + ${odd}u, i, j, ry, rx);
-  Y[4u * n + 2u] = sum(${wg}u + e, i, j, ry, rx);
-  Y[4u * n + 3u] = sum(${wg}u + e + ${odd}u, i, j, ry, rx);
-}""", index=index, n=n, q4=q4, q16=4 * q4, c2s=cin // 2, pq=(cin // 2) * 4 * q4,
-                         even=18 * cout, odd=9 * cout, cout=cout, wv=op["wv"], wg=op["wg"]),
-           ["P", name], groups, load=True)
+  let e = c2 * 18u * cout + co4 * 4u;
+  Y[4u * n] = sum(wv + e, cout, i, j, ry, rx);
+  Y[4u * n + 1u] = sum(wv + e + 9u * cout, cout, i, j, ry, rx);
+  Y[4u * n + 2u] = sum(wg + e, cout, i, j, ry, rx);
+  Y[4u * n + 3u] = sum(wg + e + 9u * cout, cout, i, j, ry, rx);
+}""", index=linear(1)[1])
+
+
+def _parity_weights(b: Builder, op: dict, cin: int, cout: int) -> str:
+    """The weights of a nearest-2x-upsampling 3x3 conv as four 2x2 convs on its input, one
+    per output parity, made at load in f32: output (2a+i, 2b+j) reads input rows a+i-1 and
+    a+i, each through the sum of the 3x3 taps that land on it. Laid out [parity][channel
+    pair][tap][4 output channels] as four vec4f: value even, value odd, gate even, gate odd."""
+    name = f"parity.{op['out']}"
+    n = 4 * (cin // 2) * 4 * (cout // 4)
+    b.buffer(name, n * 64)
+    words = _params(b, f"{name}.u", n, cout // 4, cin // 2, op["wv"], op["wg"])
+    b.step(name, PARITY, ["P", name, words], linear(n)[0], load=True)
     return name
 
 
