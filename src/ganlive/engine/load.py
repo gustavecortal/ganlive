@@ -102,6 +102,9 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
         model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))
     net = EngineGenerator(model)
     print(net.report(), flush=True)
+    if tuned_plans(manifest, model.device.adapter) is None:
+        print(f"  plans: the defaults. `ganlive tune {path}` finds this GPU's own, once "
+              f"(a few minutes), and every later load uses them", flush=True)
     layout, directions = dials_of(model.program)
     if directions is not None:
         print(f"directions: {directions.report()}", flush=True)
