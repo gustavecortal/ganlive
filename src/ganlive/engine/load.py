@@ -1,5 +1,6 @@
-"""Opening a model on the engine: an engine folder as it is, or a FastGAN checkpoint through the
-conversion beside it, converted first when it is missing or out of date (see `stamp`).
+"""Opening a model on the engine: an engine folder as it is, or a FastGAN or StyleGAN2
+checkpoint through the conversion beside it, converted first when it is missing or out of date
+(see `stamp`).
 
 PyTorch is imported only when a conversion has to run.
 """

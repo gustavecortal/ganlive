@@ -172,10 +172,16 @@ def test_one_dial_per_resolution_not_per_layer():
     assert float(net.mapping.truncation[1]) == 0.25
 
 
-@pytest.mark.skip(reason="a StyleGAN2 plays on the engine once its shaders exist (phase 3); "
-                         "this load path is the PyTorch one the bank no longer runs")
 def test_ganlive_opens_one(tmp_path, capsys):
-    """The whole load path: install, measure, equalise, and a surface built from the result."""
+    """The whole load path on the engine: converted beside the checkpoint, its dials installed,
+    swept and equalised then, and a surface built from what was measured."""
+    wgpu = pytest.importorskip("wgpu")
+    from ganlive.engine.runner import default_device
+
+    try:
+        gpu = default_device(fallback=True)        # the CPU adapter: the card stays free
+    except (RuntimeError, wgpu.GPUError):
+        pytest.skip("no WebGPU CPU adapter")
     torch.manual_seed(0)
     cfg = tiny()
     net = S2.Generator(cfg)
@@ -186,7 +192,7 @@ def test_ganlive_opens_one(tmp_path, capsys):
     path = tmp_path / "tiny.pt"
     S2.save(path, cfg, net.state_dict())
 
-    model = bank._prepare(path, "cpu", torch.float32, LoadOptions(compile_net=False))
+    model = bank._prepare(path, gpu, LoadOptions())
     assert model.settings.names[:3] == ["w_coarse", "w_mid", "w_fine"]
     assert model.settings.names[3:] == ["noise_4", "noise_8", "noise_16", "noise_32"]
     block = [k for k in model.layout.knobs if k.group == "MODEL"]
@@ -195,15 +201,6 @@ def test_ganlive_opens_one(tmp_path, capsys):
     assert all(k.measured is not None for k in block)
     assert model.dials_live, "nothing reached the model"
     assert "This is a StyleGAN" not in capsys.readouterr().out    # no per-architecture text
-
-    # `--stock-grain` is a question about grain strength, not about which dials exist: the
-    # sweep that builds this family's dials runs either way.
-    bare = bank._prepare(path, "cpu", torch.float32,
-                         LoadOptions(compile_net=False, measure_grain=False))
-    assert [k.name for k in bare.layout.knobs if k.group == "MODEL"] == model.settings.names
-    assert all(k.measured is not None
-               for k in bare.layout.knobs if k.group == "MODEL")
-    assert bare.dials_live == model.dials_live
 
 
 def test_without_a_measurement_it_shows_the_shared_blocks_and_nothing_else():

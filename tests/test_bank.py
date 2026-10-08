@@ -196,7 +196,8 @@ def test_one_record_answers_every_question_about_a_model_file():
     for family in FAMILIES:
         for field in ("owns", "config_of", "prepare"):
             assert callable(getattr(family, field)), f"{family.name}.{field}"
-    assert [f.name for f in FAMILIES if not f.capturable] == ["engine", "onnx", "fastgan"], (
+    assert [f.name for f in FAMILIES if not f.capturable] == ["engine", "onnx", "stylegan2",
+                                                              "fastgan"], (
         "the engine and ONNX run under their own runtimes, so a torch-stream recording holds "
         "nothing")
 

@@ -80,12 +80,12 @@ def _prepare(path, gpu, options: LoadOptions) -> Model:
     family = family_of(path)
     if family.name not in ENGINE_FAMILIES:
         raise ValueError(f"{label_for(path)}: a {family.name} model does not play on the engine "
-                         f"yet. A FastGAN does.")
+                         f"yet. A FastGAN or a StyleGAN2 does.")
     started = time.perf_counter()
     got = family.prepare(path, gpu, None, options)
     return Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
                  layout=got.layout, compile_s=time.perf_counter() - started,
-                 directions=got.directions,
+                 directions=got.directions, push=got.push,
                  dials_live=live_dials(got.settings, got.directions, got.layout))
 
 

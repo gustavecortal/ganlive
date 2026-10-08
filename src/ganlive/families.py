@@ -150,7 +150,7 @@ def _prepare_engine(path, device, dtype, options: LoadOptions) -> Prepared:
     net, layout, directions = open_model(path, device, options.direction_floor,
                                          options.measure_grain)
     return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=layout,
-                    directions=directions)
+                    directions=directions, push=net.push)
 
 
 def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
@@ -188,12 +188,12 @@ class Family:
 FAMILIES = (
     Family("engine", is_engine, engine_config_of, _prepare_engine, capturable=False),
     Family("onnx", is_onnx, onnx_file.config_of, _prepare_onnx, capturable=False),
-    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_stylegan2),
+    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_engine, capturable=False),
     Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_engine, capturable=False),
 )
 
 #: The families that play on the engine, which is all a bank plays on.
-ENGINE_FAMILIES = ("engine", "fastgan")
+ENGINE_FAMILIES = ("engine", "stylegan2", "fastgan")
 
 
 def family_of(path) -> Family:

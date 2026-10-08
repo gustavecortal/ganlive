@@ -1,5 +1,5 @@
-"""A converted FastGAN draws, through wgpu, the picture PyTorch draws: the promise `ganlive
-convert` makes. Runs on any adapter wgpu finds, the CPU one included."""
+"""A converted FastGAN or StyleGAN2 draws, through wgpu, the picture PyTorch draws: the
+promise `ganlive convert` makes. Runs on any adapter wgpu finds, the CPU one included."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.engine.convert import build, prepared
+from ganlive.engine.convert import build, prepared, stylegan2_manifest, stylegan2_net
 from ganlive.engine.program import LEVEL, PROBE_LEVELS
+from ganlive.engine.program_stylegan2 import compile_stylegan2
+from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import Config, Generator
+from tests.support import tiny_stylegan2
 
 wgpu = pytest.importorskip("wgpu")
 from ganlive.engine.runner import Model, default_device  # noqa: E402
@@ -74,4 +77,29 @@ def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device):
         assert (np.abs(ref) > 0.99).mean() < 0.05, "the fixture is clipped and can measure nothing"
         levels = np.abs(model.read() - ref) * LEVEL
         # fp16 weights and activations: most pixels within a level, none far off.
+        assert levels.mean() < 0.5 and np.percentile(levels, 99.9) < 4, (levels.mean(), levels.max())
+
+
+def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(device, tmp_path):
+    """Mapping, truncation, modulated and transposed convolutions, blur and the colour skip."""
+    torch.manual_seed(0)
+    cfg = tiny_stylegan2()
+    fresh = S2.Generator(cfg)
+    for layers in S2.noise_sites(fresh).values():
+        for layer in layers:
+            layer.noise_strength.data.fill_(0.3)        # trained noise is never off
+    S2.save(tmp_path / "tiny.pt", cfg, fresh.state_dict())
+    net, settings, _push = stylegan2_net(tmp_path / "tiny.pt")
+    manifest, blob = stylegan2_manifest(net, list(settings.names))
+    model = Model(device, compile_stylegan2(manifest, output="f32"), bytes(blob.data))
+    for seed, k in enumerate((np.ones(len(settings.names)), np.linspace(0.5, 1.5, len(settings.names)))):
+        z = host_latent(cfg.z_dim, seed=seed + 1)
+        settings.write[:] = k
+        settings.commit()
+        model.set_latent(z)
+        model.set_settings(k.astype(np.float32))
+        model.frame()
+        with torch.no_grad():
+            ref = net(torch.from_numpy(z))[0].numpy()
+        levels = np.abs(model.read() - ref) * LEVEL
         assert levels.mean() < 0.5 and np.percentile(levels, 99.9) < 4, (levels.mean(), levels.max())

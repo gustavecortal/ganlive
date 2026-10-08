@@ -89,12 +89,20 @@ class EngineGenerator:
         self.model = model
         self.cfg = EngineConfig.of(model.program)
         self.settings = HostSettings(model.program["settings"])
+        #: A StyleGAN2's `w` push, one row per style range, which the walk writes; None for a
+        #: model steered through its latent.
+        shape = model.program.get("push_shape")
+        self.push = None if shape is None else np.zeros(shape, np.float32)
+        self._pushed = None if shape is None else self.push.copy()
 
     def __call__(self, z) -> EngineGenerator:
         self.model.set_latent(np.asarray(z, np.float32).reshape(1, self.cfg.nz))
         if self.settings.changed:
             self.model.set_settings(self.settings.committed())
             self.settings.changed = False
+        if self.push is not None and not np.array_equal(self.push, self._pushed):
+            self.model.device.queue.write_buffer(self.model.buffers["push"], 0, self.push)
+            np.copyto(self._pushed, self.push)
         self.model.frame()
         return self
 
@@ -105,10 +113,16 @@ class EngineGenerator:
 
 
 def dials_of(program: dict) -> tuple[table.Layout, PlayedDirections | None]:
-    """The layout a converted FastGAN offers, with each MODEL dial's measured travel, and its
+    """The layout a converted model offers, with each MODEL dial's measured travel, and its
     directions. A program converted without dials offers the stock tables, unmeasured."""
     dials = program.get("dials") or {}
-    layout = fastgan_dials.fastgan(noise_gains=dials.get("noise_gains"))
+    if dials.get("kind") == "stylegan2":
+        swept = dials["swept"]
+        layout = table.stylegan2(swept["names"], swept["rests"],
+                                 [tuple(c) for c in swept["curves"]], swept["levels"],
+                                 tuple(tuple(r) for r in swept["ranges"]))
+    else:
+        layout = fastgan_dials.fastgan(noise_gains=dials.get("noise_gains"))
     measured = dials.get("measured", {})
     layout = table.Layout(tuple(replace(k, measured=measured.get(k.name, k.measured))
                                 for k in layout.knobs))

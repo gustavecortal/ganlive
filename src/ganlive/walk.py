@@ -190,7 +190,10 @@ class SlerpWalk:
         into = self.cfg.push_into
         if self._pushed is not None and self._pushed[0] is offset and self._pushed[1] is into:
             return
-        if into.device.type == "cpu":
+        if isinstance(into, np.ndarray):
+            # An engine model's push, which it uploads when it changes.
+            into.reshape(-1)[:] = 0.0 if offset is None else offset.reshape(-1)
+        elif into.device.type == "cpu":
             # A captured generator reads the push from this host buffer: a numpy write, with
             # no torch small-tensor overhead and nothing issued to the card.
             view = into.numpy().reshape(-1)
