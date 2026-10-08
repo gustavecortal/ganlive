@@ -10,6 +10,13 @@ FORMAT = "ganlive-engine/1"
 
 WG = 8                      # direct-convolution workgroups are WG x WG threads
 
+#: The most workgroup memory, in 32-bit words, one shader of a desktop program declares, and
+#: of a browser program. Firefox zero-fills a workgroup array in one statement its compiler
+#: expands word by word, so its compile time climbs with the words: at 1296 rather than 2592,
+#: lichen loads in 4.8 s there rather than 7.0, and its frame is 10.0 ms rather than 10.7.
+SHARED_WORDS = 3072
+BROWSER_SHARED_WORDS = 1296
+
 # w1 / w4: one / four fp16 weights at element offset `e` of the weight blob P.
 HELPERS = """
 fn w1(e: u32) -> f32 { return unpack2x16float(P[e >> 1u])[e & 1u]; }
@@ -51,6 +58,8 @@ class Builder:
         self.overrides = plans
         #: Whether the program is for a browser, whose defaults differ (see `program._plan`).
         self.browser = browser
+        #: The workgroup memory one shader may declare, in words.
+        self.shared = BROWSER_SHARED_WORDS if browser else SHARED_WORDS
         self.shaders: list[str] = []
         self.index: dict[str, int] = {}
         self.buffers: dict[str, dict] = {}

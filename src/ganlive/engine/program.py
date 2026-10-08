@@ -22,7 +22,7 @@ import math
 from ganlive.engine import direct
 from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, bindings, linear, storage, wgsl
 from ganlive.engine.direct import conv3x3
-from ganlive.engine.gemm import GEMM_MAX, matmul, split, sum_slices
+from ganlive.engine.gemm import GEMM_MAX, depth, matmul, split, sum_slices
 from ganlive.engine.noise import NOISE, noise_seed
 
 
@@ -77,7 +77,7 @@ def compile_program(manifest: dict, plans: dict | None = None, output: str = "rg
 def _plan(b: Builder, op: dict) -> dict:
     """How a conv layer runs. An upsampling layer always runs as four 2x2 convs on its input,
     one per output parity (`_parity_weights`). A layer whose input (for upsampling) or output
-    has at most GEMM_MAX pixels runs as a matrix product: {"gemm": True, "rm", "rn", "S"};
+    has at most GEMM_MAX pixels runs as a matrix product: {"gemm": True, "rm", "rn", "S", "tk"};
     a larger one directly, each thread a tile of pixels: {"by", "bx", "oct"}, and for a plain
     conv optionally "f32" (weights made f32 at load) and "slm" (inputs through workgroup
     memory). The defaults were measured on an Arc A770, and `plans` overrides them by layer.
@@ -89,15 +89,17 @@ def _plan(b: Builder, op: dict) -> dict:
     cin = b.shape(op["in"])[0]
     up = op["up"]
     rows = ho * wo // 4 if up else ho * wo
-    steps = cin * (4 if up else 9) // 16          # a matrix product's sum, in steps of 16
     gemm_fits = cout % 32 == 0 and cin % 16 == 0
 
     forced = b.overrides.get(op["out"])
     if (forced or {}).get("gemm") or (not forced and rows <= GEMM_MAX and gemm_fits):
         forced = forced or {}               # `matmul` refuses what does not tile
         rm, rn = forced.get("rm", 4), forced.get("rn", 1)
+        tk = forced.get("tk") or depth(b.shared, rm, rn, 2)
         tiles = math.ceil(rows / (8 * rm)) * (cout // (32 * rn)) * (4 if up else 1)
-        return {"gemm": True, "rm": rm, "rn": rn, "S": forced.get("S") or split(tiles, steps)}
+        steps = cin * (4 if up else 9) // tk
+        return {"gemm": True, "rm": rm, "rn": rn, "tk": tk,
+                "S": forced.get("S") or split(tiles, steps)}
     if up:                                  # a thread tiles input pixels
         return direct.check(dict(forced or {"by": 1, "bx": 2, "oct": 4}), op["out"], cout,
                             ho // 2, wo // 2, keys=("by", "bx", "oct"))
@@ -346,7 +348,7 @@ def _gemm(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
                   f"v0[{i}] = x.x; v1[{i}] = x.y; }} }}"
                   for i in range(4)))
     product = dict(M=M, N=cout, K=cin * taps, S=S, rm=plan["rm"], rn=plan["rn"], mats=("v", "g"),
-                   gather=gather, bload=bload, parts=4 if parity else 1)
+                   gather=gather, bload=bload, parts=4 if parity else 1, tk=plan["tk"])
     if S == 1:                  # one slice: the product finishes the layer itself
         decl, bufs = bindings(_entries(op, tensors, tensors[op["in"]]) + weights[parity - 1:])
         code, groups = matmul(**product, decl=decl + HELPERS, finish=lambda acc: (
@@ -475,16 +477,33 @@ ${body}
 
 def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> None:
     """The last step: packed RGBA8 for display, or f32 planes. A workgroup draws a 16x16
-    block, reading the 18x18 block of features it needs into workgroup memory once."""
+    block, reading the 18x18 block of features it needs into workgroup memory, as many
+    channel pairs at a time as the program's workgroup memory holds."""
     cin, h, w = b.shape(op["in"])
     T, R = 16, 18
-    acc = []
+    pairs = max(1, min(cin // 2, b.shared // (R * R)))
+    while (cin // 2) % pairs:
+        pairs -= 1
+    tile = pairs * R * R
+    body = []
     for c2 in range(cin // 2):
+        if c2 % pairs == 0:     # every thread fills F, so none returns before the last fill
+            body += (["  workgroupBarrier();"] if c2 else []) + [
+                f"  for (var e = li; e < {tile}u; e += {T * T}u) {{",
+                f"    let c2 = {c2}u + e / {R * R}u; let r = (e % {R * R}u) / {R}u; let c = e % {R}u;",
+                "    let y = y0 + i32(r); let x = x0 + i32(c);",
+                "    var v = 0u;",
+                f"    if (y >= 0 && y < {h} && x >= 0 && x < {w}) {{ v = X[c2 * {h * w}u + u32(y) * {w}u + u32(x)]; }}",
+                "    F[e] = v;",
+                "  }",
+                "  workgroupBarrier();"]
+            if c2 + pairs == cin // 2:
+                body.append(f"  if (oy >= {h}u || ox >= {w}u) {{ return; }}")
         for t in range(9):
             e = op["w"] + (2 * c2 * 9 + t) * 3
             o = e + 27
-            acc.append(
-                f"  {{ let n = unpack2x16float(F[{c2 * R * R}u + (ly + {t // 3}u) * {R}u + lx + {t % 3}u]);\n"
+            body.append(
+                f"  {{ let n = unpack2x16float(F[{c2 % pairs * R * R}u + (ly + {t // 3}u) * {R}u + lx + {t % 3}u]);\n"
                 f"    s += n.x * vec3f(w1({e}u), w1({e + 1}u), w1({e + 2}u))\n"
                 f"       + n.y * vec3f(w1({o}u), w1({o + 1}u), w1({o + 2}u)); }}")
     if fmt == "f32":
@@ -501,24 +520,14 @@ var<workgroup> F: array<u32, ${tile}>;
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) lid: vec3u,
         @builtin(local_invocation_index) li: u32) {
   let y0 = i32(wg.y * ${T}u) - 1; let x0 = i32(wg.x * ${T}u) - 1;
-  for (var e = li; e < ${tile}u; e += ${TT}u) {
-    let c2 = e / ${RR}u; let r = (e % ${RR}u) / ${R}u; let c = e % ${R}u;
-    let y = y0 + i32(r); let x = x0 + i32(c);
-    var v = 0u;
-    if (y >= 0 && y < ${h} && x >= 0 && x < ${w}) { v = X[c2 * ${hw}u + u32(y) * ${w}u + u32(x)]; }
-    F[e] = v;
-  }
-  workgroupBarrier();
   let ly = lid.y; let lx = lid.x;
   let oy = wg.y * ${T}u + ly; let ox = wg.x * ${T}u + lx;
-  if (oy >= ${h}u || ox >= ${w}u) { return; }
-  let px = oy * ${w}u + ox;
   var s = vec3f(0.0);
-${acc}
+${body}
+  let px = oy * ${w}u + ox;
   s = tanh(clamp(s, vec3f(-10.0), vec3f(10.0)));
   ${store}
-}""", h=h, w=w, hw=h * w, T=T, R=R, RR=R * R, TT=T * T, tile=cin // 2 * R * R,
-                acc="\n".join(acc), store=store)
+}""", h=h, w=w, T=T, tile=tile, body="\n".join(body), store=store)
     b.buffer("out", size)
     b.step("rgb", code, ["P", tensors[op["in"]], "out"], [math.ceil(w / T), math.ceil(h / T), 1])
 

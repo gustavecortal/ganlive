@@ -4,7 +4,9 @@ memory, the sum split into S slices so that even a small map fills the GPU. A se
 the caller's, adds the slices and finishes the layer.
 
 Each workgroup is 8x8 threads, and each thread holds `rm` rows by 4 * `rn` columns of every
-B, reading 4 rows of A and 4 columns of a B per workgroup-memory read.
+B, reading 4 rows of A and 4 columns of a B per workgroup-memory read. The sum advances TK rows
+of B at a time, or fewer where the tiles would take more workgroup memory than a program
+allows (`depth`).
 """
 
 from __future__ import annotations
@@ -18,9 +20,18 @@ GEMM_MAX = 6144             # maps up to this many pixels run as a product by de
 GEMM_TARGET = 256           # workgroups a product aims to fill, by splitting its sum
 
 
+def depth(words: int, rm: int, rn: int, mats: int) -> int:
+    """How many rows of B the sum advances at a time: TK, halved until the tiles of A and of
+    `mats` Bs fit in `words` of workgroup memory."""
+    tk = TK
+    while tk > 4 and tk * (8 * rm + 32 * rn * mats) > words:
+        tk //= 2
+    return tk
+
+
 def split(tiles: int, steps: int) -> int:
     """How many slices a product's sum is split into, so that `tiles` workgroups fill the GPU:
-    doubling while that leaves at least 4 of the `steps` of 16 in each slice."""
+    doubling while that leaves at least 4 of the sum's `steps` in each slice."""
     S = 1
     while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
         S *= 2
@@ -28,7 +39,7 @@ def split(tiles: int, steps: int) -> int:
 
 
 def matmul(*, M: int, N: int, K: int, S: int, rm: int, rn: int, mats: tuple[str, ...], decl: str,
-           gather: str, bload: str, parts: int = 1, finish=None) -> tuple[str, list[int]]:
+           gather: str, bload: str, parts: int = 1, finish=None, tk: int = TK) -> tuple[str, list[int]]:
     """The shader and workgroups of one product.
 
     `decl` declares the bindings and helpers, Y being the partial sums (array<vec4f>).
@@ -41,7 +52,7 @@ def matmul(*, M: int, N: int, K: int, S: int, rm: int, rn: int, mats: tuple[str,
     slice, `finish` may instead be given each B's sum of row `m`, columns `c` .. `c` + 3, and
     return the WGSL that finishes the layer there, so that no second pass is needed."""
     TM, TN = 8 * rm, 32 * rn
-    if N % TN or K % (TK * S) or rm % 4:
+    if N % TN or K % (tk * S) or rm % 4:
         raise ValueError(f"a {M}x{K} by {K}x{N} product does not tile as {TM}x{TN} in {S} slices")
     rows = [(r, i) for r in range(rm // 4) for i in range(4)]
     cols = range(rn)
@@ -59,7 +70,9 @@ def matmul(*, M: int, N: int, K: int, S: int, rm: int, rn: int, mats: tuple[str,
 
     store = "\n".join(f"  {{ let m = m0 + (lid.y + {8 * r}u) * 4u + {i}u; if (m < {M}u) {{\n"
                       + stored(r, i, c) + " } }" for r, i in rows for c in cols)
-    shared = "\n".join(f"var<workgroup> B{x}: array<vec4f, {TK * TN // 4}>;" for x in mats)
+    shared = "\n".join(f"var<workgroup> B{x}: array<vec4f, {tk * TN // 4}>;" for x in mats)
+    aloads, askip = _loads(tk * TM // 8)
+    bloads, bskip = _loads(tk * TN // 4)
     code = wgsl(decl + """
 var<workgroup> As: array<vec4f, ${tkm4}>;
 ${shared}
@@ -70,14 +83,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   ${accs}
   for (var k0 = s * ${KS}u; k0 < (s + 1u) * ${KS}u; k0 += ${TK}u) {
     for (var r = 0u; r < ${aloads}u; r++) {         // A, 4 rows by 2 columns at a time
-      let e = li + r * 64u; let kk = 2u * (e / ${tm4}u); let k = k0 + kk;
+      let e = li + r * 64u; ${askip}let kk = 2u * (e / ${tm4}u); let k = k0 + kk;
       let m4 = m0 + (e % ${tm4}u) * 4u;
       var v0 = vec4f(0.0); var v1 = vec4f(0.0);
 ${gather}
       As[kk * ${tm4}u + e % ${tm4}u] = v0; As[(kk + 1u) * ${tm4}u + e % ${tm4}u] = v1;
     }
     for (var r = 0u; r < ${bloads}u; r++) {
-      let e = li + r * 64u; let k = k0 + e / ${tn4}u; let nn = n0 + (e % ${tn4}u) * 4u;
+      let e = li + r * 64u; ${bskip}let k = k0 + e / ${tn4}u; let nn = n0 + (e % ${tn4}u) * 4u;
 ${bload}
     }
     workgroupBarrier();
@@ -88,10 +101,16 @@ ${bload}
     workgroupBarrier();
   }
 ${store}
-}""", tkm4=TK * TM // 4, shared=shared, TM=TM, TN=TN, TK=TK, S=S, KS=K // S, accs=accs,
-                aloads=TK * TM // 8 // 64, tm4=TM // 4, gather=gather, bloads=TK * TN // 4 // 64,
-                tn4=TN // 4, bload=bload, reads=reads, fma=fma, store=store)
+}""", tkm4=tk * TM // 4, shared=shared, TM=TM, TN=TN, TK=tk, S=S, KS=K // S, accs=accs,
+                aloads=aloads, askip=askip, tm4=TM // 4, gather=gather, bloads=bloads,
+                bskip=bskip, tn4=TN // 4, bload=bload, reads=reads, fma=fma, store=store)
     return code, [math.ceil(M / TM), N // TN, S * parts]
+
+
+def _loads(n: int) -> tuple[int, str]:
+    """`(rounds, guard)` for `n` loads shared by a workgroup's 64 threads: past `n`, a thread's
+    load `e` is skipped when they do not divide evenly."""
+    return math.ceil(n / 64), "" if n % 64 == 0 else f"if (e >= {n}u) {{ continue; }} "
 
 
 def sum_slices(*, rows: int, M: int, N: int, S: int, mats: tuple[str, ...], decl: str, where: str,

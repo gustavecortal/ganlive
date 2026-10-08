@@ -44,7 +44,7 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
         return f"n{r + 1}_{c + 1}"
 
     RY, RX = WG * BY + 2, WG * BX + 2
-    CH = max(1, min(cin // 2, 3072 // (RY * RX)))      # channel pairs a tiled block holds
+    CH = max(1, min(cin // 2, b.shared // (RY * RX)))  # channel pairs a tiled block holds
     while (cin // 2) % CH:
         CH -= 1
     body = [f"  let oy = id.y * {BY}u; let ox = id.x * {BX}u;"]
