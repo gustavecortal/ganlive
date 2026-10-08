@@ -163,9 +163,6 @@ def main(argv=None) -> int:
                          "than at the recorder's `nv12_bytes`. The window thread's work lands "
                          "on the frame thread, so only this loop shows its cost. Needs a "
                          "screen.")
-    ap.add_argument("--no-capture", dest="capture", action="store_false",
-                    help="load without recording each compiled forward as one device graph, "
-                         "to measure what the capture saves")
     args = ap.parse_args(argv)
 
     take = MachineSim(bpm=130.0, seed=1).render(bars=8)
@@ -175,7 +172,7 @@ def main(argv=None) -> int:
 
     r = bank.build(args.checkpoint, args.device, height=args.height,
                    screen=screen_size(),
-                   options=LoadOptions(capture=args.capture))
+                   options=LoadOptions())
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)
@@ -183,7 +180,7 @@ def main(argv=None) -> int:
     results: dict = {"fps": args.fps, "height": r.height, "width": r.width,
                      "channels": pcm.shape[0], "blocksize": args.blocksize,
                      "preset": "worst-case", "native": [r.cfg.ladder.width, r.cfg.ladder.height],
-                     "bank": [m.name for m in r.models], "capture": args.capture}
+                     "bank": [m.name for m in r.models]}
 
     model = r.current
     z_fixed = latent_for(model, r)

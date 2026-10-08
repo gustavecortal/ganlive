@@ -2,7 +2,7 @@
 
 Spectral norm baked into the weight, BatchNorm folded into the convolution feeding it, and the
 frozen noise precomputed: each measures 0.00000 8-bit levels against the net it replaces.
-`onnx_rewrite.py` holds the rewrites made only on the way out to ONNX.
+`rewrite.py` holds the rewrites made only on the way to the engine.
 """
 
 from __future__ import annotations

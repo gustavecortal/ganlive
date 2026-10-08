@@ -26,7 +26,7 @@ from ganlive.levels import EXACT_LEVELS, RANDOM_FLOOR
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
-from ganlive.models.onnx_rewrite import (
+from ganlive.models.rewrite import (
     GatedPair,
     equivalent,
     settings_as_input,

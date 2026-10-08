@@ -1,5 +1,5 @@
-"""The kinds of generator file -- engine model, exported ONNX graph, converted StyleGAN2, this
-project's FastGAN -- and how each is opened and made ready to play.
+"""The kinds of generator file -- engine model, converted StyleGAN2, this project's FastGAN --
+and how each is opened and made ready to play.
 
 A FastGAN plays on the engine: its checkpoint is converted, at its first load, into the engine
 model beside it (`lichen.pt` -> `lichen.engine/`), which later loads read directly.
@@ -11,12 +11,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ganlive.checkpoints import MANIFEST, is_engine, is_onnx
+from ganlive.checkpoints import MANIFEST, is_engine
 from ganlive.device import playback_dtype
 from ganlive.dials import steer
 from ganlive.engine.load import open_model
 from ganlive.engine.player import EngineConfig
-from ganlive.models import fastgan, onnx_file
+from ganlive.models import fastgan
 from ganlive.models import stylegan2 as S2
 from ganlive.pixels import RANDOM_FLOOR
 
@@ -28,15 +28,9 @@ class LoadOptions:
     Carried on the `Bank`, so a model the shelf loads mid-session is prepared exactly like
     the ones loaded at launch."""
 
-    compile_net: bool = True
-    #: Record the compiled forward as one device graph and replay it, instead of launching a
-    #: hundred-odd kernels a frame from Python. Exact, and worth ~1-3 ms a frame.
-    capture: bool = True
     #: Measure each model's grain gains at load rather than using a stock table. The dial
     #: sweep and the dial gate run either way.
     measure_grain: bool = True
-    #: Run a converted StyleGAN2 in the precision its own file declares.
-    exact: bool = False
     #: How many times a random direction's effect a derived direction must beat to earn a
     #: dial. See `pixels.RANDOM_FLOOR`.
     direction_floor: float = RANDOM_FLOOR
@@ -62,7 +56,7 @@ class Prepared:
 
 def is_stylegan2(path) -> bool:
     """Whether this is a converted StyleGAN2. It shares the `.pt` suffix with FastGAN."""
-    return not is_onnx(path) and S2.is_stylegan2(path)
+    return S2.is_stylegan2(path)
 
 
 def open_stylegan2(path, device, exact: bool = False, dtype=None):
@@ -101,21 +95,14 @@ class Family:
     config_of: Callable
     #: `(path, device, dtype, LoadOptions) -> Prepared`.
     prepare: Callable
-    #: Whether its forward can be recorded as one device graph. An ONNX graph runs under its
-    #: own runtime, so a recording of the torch stream would hold none of its work.
-    capturable: bool = True
 
 
-#: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
+#: Order matters: an engine folder first, then the file's own format tag, then what is left.
 FAMILIES = (
-    Family("engine", is_engine, engine_config_of, _prepare_engine, capturable=False),
-    Family("onnx", is_onnx, onnx_file.config_of, _prepare_engine, capturable=False),
-    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_engine, capturable=False),
-    Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_engine, capturable=False),
+    Family("engine", is_engine, engine_config_of, _prepare_engine),
+    Family("stylegan2", is_stylegan2, S2.config_of, _prepare_engine),
+    Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_engine),
 )
-
-#: The families that play on the engine, which is all a bank plays on.
-ENGINE_FAMILIES = ("engine", "stylegan2", "fastgan")
 
 
 def family_of(path) -> Family:

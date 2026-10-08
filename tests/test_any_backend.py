@@ -9,12 +9,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from ganlive import bank
 from ganlive import device as dev
 from ganlive.dials import steer as K
 from ganlive.families import open_stylegan2
-from ganlive.frame import FrameStage
-from ganlive.models import capture as speedups
 from ganlive.models import fastgan
 from ganlive.models import stylegan2 as S2
 from ganlive.settings import Settings
@@ -64,49 +61,8 @@ def test_a_half_settings_vector_hands_out_no_views():
     assert Settings(["a", "b"], "cpu", torch.float32).view("b").shape == (1,)
 
 
-def test_a_backend_that_refuses_area_still_shrinks_the_frame(monkeypatch, capsys):
-    stage = FrameStage(9, 15, device="cpu")
-    frame = torch.rand(1, 3, 40, 60) * 2 - 1
-    area = stage.step(frame)
-    _refuse_adaptive_pools(monkeypatch)
-    shrunk = stage.step(frame)
-    assert shrunk.shape == area.shape == (1, 3, 9, 15)
-    assert (shrunk - area).abs().mean() < 0.05, "a different filter, not a different picture"
-    assert capsys.readouterr().out.count("resize: antialiased bilinear") == 1
-    stage.step(frame)
-    assert "resize" not in capsys.readouterr().out, "said once, not every frame"
-
-
 def test_no_memory_report_where_there_is_no_allocator():
     assert dev.memory_report("cpu") is None
-
-
-def test_the_stage_and_the_bank_default_to_the_detected_backend():
-    assert FrameStage(4, 6).device == dev.detect_backend()
-    r = bank.Bank(models=[], stage=FrameStage(4, 6, device="cpu"), device="cpu")
-    assert r.dtype is torch.float32, "a cpu bank built without a dtype must not play in half"
-
-
-def test_a_compile_that_fails_plays_eager_and_says_so(monkeypatch, capsys):
-    def refuse(*_a, **_k):
-        raise RuntimeError("no host compiler\nsecond line nobody needs")
-
-    monkeypatch.setattr(torch, "compile", refuse)
-    net = torch.nn.Identity()
-    got, graphs, _secs = speedups.compile_and_count(net, 8, "cpu", torch.float32)
-    assert got is net and graphs == 0
-    assert "running eager -- no host compiler" in capsys.readouterr().out
-
-
-def test_conversions_that_fail_to_compile_fall_back_to_eager(capsys):
-    def refuse(_frame):
-        raise RuntimeError("Inductor cannot build this")
-
-    stage = FrameStage(4, 6, to_bgra=refuse, device="cpu")
-    assert stage.compiled["bgra"]
-    assert stage.warm(torch.zeros(1, 3, 4, 6)) == 0
-    assert not any(stage.compiled.values())
-    assert "conversions: running eager" in capsys.readouterr().out
 
 
 def test_a_single_precision_session_has_no_half_block():

@@ -4,7 +4,7 @@ Each reads its slot of the settings vector out of a holder, never a float: `torc
 guards on scalar values and would rebuild the graph every time a dial moved. Nor a view of the
 slot: a compiled MPS kernel reads a half-precision view at an odd offset from the wrong element,
 so the slot is sliced inside the forward, which every backend compiles correctly. The holder is
-the live `Settings` in play, and the export's second graph input on the way out to ONNX.
+the live `Settings`, or the converter's second input (`rewrite.settings_as_input`).
 """
 
 from __future__ import annotations

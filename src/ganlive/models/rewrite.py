@@ -1,8 +1,8 @@
-"""Rewrites made to a FastGAN on its way out to ONNX, and nowhere else.
+"""Rewrites made to a FastGAN on its way to the engine (`engine.convert_fastgan`).
 
-`split_gated_convs` replaces each `conv -> GLU` with two half-width convolutions, so the
-runtime never copies a tensor to split it. `settings_as_input` turns the live settings into a
-second graph input, `forward(z, k)`, because a tensor a module holds would trace as a constant.
+`split_gated_convs` replaces each `conv -> GLU` with the value and gate convolutions the
+engine runs. `settings_as_input` makes the live settings a second input, `forward(z, k)`, so
+that the converter can drive every dial through one vector.
 """
 from __future__ import annotations
 
@@ -131,6 +131,6 @@ def settings_as_input(net: nn.Module, settings) -> Steerable:
     if missing:
         raise RuntimeError(
             f"{', '.join(missing)} reached no module, so {len(missing)} of "
-            f"{len(settings.names)} settings would export as constants and the exported model "
+            f"{len(settings.names)} settings would stay constant and the converted model "
             f"would have dials that do nothing")
     return Steerable(net, vector)

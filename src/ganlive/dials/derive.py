@@ -1,6 +1,6 @@
 """Latent directions for the direction dials: derived, then measured.
 
-A basis is proposed from the weights (`sefa`, `sefa_banded`, `sefa_onnx`) or from the whole
+A basis is proposed from the weights (`sefa`, `sefa_banded`) or from the whole
 generator's Jacobian (`active_banded`), then `shortlist`, `equalise` and `rank` measure it on
 the model that plays and keep only rows that move the picture more than a random direction.
 A `z` basis is added to the latent; a `w` basis is written to a StyleGAN2's push buffer.
@@ -16,7 +16,6 @@ from torch import nn
 from ganlive.checkpoints import CACHE_SUFFIX
 from ganlive.device import synchronize
 from ganlive.models.common import first_image, latent
-from ganlive.models.onnx_file import initializers, producers, structure
 from ganlive.pixels import FLOOR_LEVELS, LEVEL, RANDOM_FLOOR
 
 #: The layer types that can be the first thing a latent meets.
@@ -172,7 +171,7 @@ def _rows(w: torch.Tensor, transposed: bool) -> torch.Tensor:
 
 
 def _factorise(rows: torch.Tensor, name: str, shape, count) -> Directions:
-    """The factorisation itself, shared by the torch and the ONNX readers."""
+    """The factorisation itself."""
     # `eigh` on the small `(nz, nz)` Gram rather than an SVD of the wide weight: same vectors.
     rows = rows.float().cpu()
     # Columns to unit length first, as the original implementation does, so every output
@@ -365,87 +364,6 @@ def saved(checkpoint, z_dim: int, push_shape, net: nn.Module) -> Directions | No
               f"Run `ganlive dials` again if this checkpoint has been retrained.", flush=True)
         return None
     return back
-
-
-#: Ops that move a latent about without mixing its dimensions. Walking through them is what
-#: lets the reader start at the graph input and still find the first real consumer.
-PASSTHROUGH = ("Reshape", "Squeeze", "Unsqueeze", "Identity", "Flatten", "Cast")
-
-#: Ops that scale a weight without changing what it spans, such as spectral norm's
-#: `weight / sigma` in an export.
-RESCALE = ("Div", "Mul")
-
-#: Ops the latent may pass through on its way to the first layer with a weight.
-NORMALISE = ("Pow", "Sqrt", "ReduceMean", "ReduceSum", "ReduceL2", "Add", "Sub", "Div", "Mul",
-             "Reciprocal", "Neg", "Expand", "Constant", "ConstantOfShape", "Shape",
-             "LpNormalization", "InstanceNormalization", "MeanVarianceNormalization")
-
-
-def sefa_onnx(path, nz: int, count: int | None = None) -> Directions:
-    """The same factorisation, read off an ONNX file with no torch model anywhere."""
-    import onnx
-
-    # The structure, then the one tensor needed, rather than every weight in the file.
-    graph = structure(path).graph
-    name, weight, op = _first_onnx_consumer(graph, initializers(graph), producers(graph))
-    if weight.HasField("data_location") and weight.data_location == onnx.TensorProto.EXTERNAL:
-        onnx.external_data_helper.load_external_data_for_tensor(
-            weight, str(pathlib.Path(path).parent))
-        weight.data_location = onnx.TensorProto.DEFAULT   # or `to_array` looks it up again
-
-    w = torch.from_numpy(onnx.numpy_helper.to_array(weight).copy())
-    if op in ("Conv", "ConvTranspose"):
-        rows = _rows(w, transposed=op == "ConvTranspose")
-    else:
-        # Gemm and MatMul are two-dimensional; the latent axis is whichever one is `nz`.
-        rows = w if w.shape[0] == nz else w.T
-    if rows.shape[0] != nz:
-        raise ValueError(f"{name} is a {op} of shape {tuple(w.shape)}, whose latent axis is "
-                         f"not {nz} wide; refusing to factorise the wrong matrix")
-    return _factorise(rows, name, tuple(w.shape), count)
-
-
-#: The four ops that can be the first affine consumer of a latent, in any exported generator.
-AFFINE = ("Conv", "ConvTranspose", "Gemm", "MatMul")
-
-
-def _first_onnx_consumer(graph, initial, producer):
-    """`(name, weight initializer, op type)` for the first node that really consumes `z`.
-    The latent's axis of the weight is checked by `sefa_onnx`."""
-    live = {graph.input[0].name}
-    for node in graph.node:
-        if not live.intersection(node.input):
-            continue
-        if node.op_type in PASSTHROUGH + NORMALISE:
-            live.update(node.output)
-            continue
-        if node.op_type not in AFFINE:
-            raise ValueError(
-                f"the latent reaches a {node.op_type} before it reaches anything with a "
-                f"weight, so there is no first consumer to factorise")
-        for name in node.input:
-            if name in live:
-                continue
-            found = _initializer(graph, name, initial, producer)
-            if found is not None:
-                return node.name or node.op_type, found, node.op_type
-        raise ValueError(f"{node.op_type} consumes the latent but none of its other inputs "
-                         f"resolve to a stored weight")
-    raise ValueError(f"nothing in this graph consumes {graph.input[0].name}")
-
-
-def _initializer(graph, name: str, initial, producer, depth: int = 8):
-    """The stored weight behind a name, seeing through the scaling spectral norm leaves."""
-    for _ in range(depth):
-        if name in initial:
-            return initial[name]
-        if name not in producer:
-            return None
-        node = graph.node[producer[name]]
-        if node.op_type not in RESCALE + PASSTHROUGH + ("Transpose",):
-            return None
-        name = node.input[0]
-    return None
 
 
 def split(count: int, bands: int) -> tuple[int, ...]:

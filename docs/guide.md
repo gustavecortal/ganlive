@@ -43,33 +43,11 @@ hf download gustavecortal/ganlive-lichen --local-dir runs/lichen
 ganlive play --checkpoint runs/lichen --console
 ```
 
-### Other generators
-
-Install the `onnx` extra and import a compatible ONNX generator:
-
-```bash
-ganlive adopt model.onnx --out runs/onnx/model.onnx
-ganlive play --checkpoint runs/onnx/model.onnx --console
-```
-
-For a Hugging Face repository, install `hub` and use:
-
-```bash
-ganlive adopt hf:owner/repo --out runs/onnx/model.onnx
-```
-
-If the repository requires its own Python code, add `--trust-remote-code` only for code
-you trust. Import needs a generator that accepts a latent and returns an image.
-Models with extra inputs or unsupported operations may need a custom ONNX export.
-
-Import creates and calibrates controls, then saves them with the graph for later use.
-
 ### Additional tools
 
 | Command | Use |
 |---|---|
 | `ganlive dials runs/stylegan2/model.pt` | Find directions using the whole generator and save them for later launches |
-| `ganlive export-onnx --checkpoint runs/my-run` | Export a FastGAN checkpoint with its controls |
 
 ## The interface
 
@@ -212,7 +190,6 @@ Reported measurements on a $350 Intel Arc A770 with PyTorch 2.13+xpu:
 |---|---|---|---|
 | StyleGAN2 FFHQ | 1024×1024 | 10.7 ms | 94 |
 | FastGAN, displayed at 1620×1080 | 3072×2048 | 8.8 ms | 114 |
-| StyleGAN2 FFHQ via ONNX, OpenVINO FP16 | 1024×1024 | 14.3 ms | 70 |
 
 These measure generation and frame preparation. With the window and controls,
 the FFHQ loop took 12.4 ms, with 13.8 ms at the 95th percentile.
@@ -223,11 +200,9 @@ Reported measurements on an Apple M5 MacBook Pro with PyTorch 2.14.1 on MPS:
 |---|---|---|---|
 | StyleGAN2 FFHQ | 1024×1024 | 46.4 ms | 22 |
 | FastGAN, displayed at 1472×982 | 3072×2048 | 31.0 ms | 32 |
-| FastGAN via ONNX, ONNX Runtime with CoreML | 3072×2048 | 77.5 ms | 13 |
 
 With the window and controls, the FFHQ loop took 47.7 ms, with 48.9 ms at the 95th
-percentile. On a Mac, play the `.pt` checkpoint rather than its ONNX export: compiled
-PyTorch on MPS is the faster runtime.
+percentile.
 
 Results depend on your model, hardware, and runtime.
 
@@ -245,10 +220,7 @@ Add optional features with `uv pip install -e ".[EXTRA]"`:
 |---|---|
 | `audio` | Audio input and recording guide tracks |
 | `record` | Video recording |
-| `onnx` | ONNX import and playback |
-| `onnx-intel` | ONNX through OpenVINO for Intel GPUs |
-| `hub` | Hugging Face imports, including ONNX dependencies |
-| `all` | All features except `onnx-intel` |
+| `all` | All features |
 | `dev` | Development dependencies |
 
 Combine extras as `".[audio,record]"`.

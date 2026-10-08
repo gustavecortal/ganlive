@@ -191,15 +191,6 @@ def _parser():
                      help="`fast` pins to the performance cores of a hybrid CPU, which is worth "
                           "roughly a third of the frame rate because the loop is submission "
                           "bound. `all` leaves the scheduler alone")
-    how.add_argument("--no-compile-net", dest="compile_net", action="store_false",
-                     help="skip the ~45 s per-model compile. Slower frames; do not quote timings")
-    how.add_argument("--no-capture", dest="capture", action="store_false",
-                     help="do not record the forward as one device graph. The capture is exact "
-                          "and is checked against the forward at every load")
-    how.add_argument("--exact", action="store_true",
-                     help="run a converted StyleGAN2 in the precision its own file describes, "
-                          "rather than half wherever NVIDIA's rule allows. ~13%% slower, for "
-                          "when a frame is being compared against the original")
     how.add_argument("--no-pipeline", dest="pipeline", action="store_false",
                      help="finish every frame before starting the next. By default a frame that "
                           "has missed its slot leaves its download running behind the next "
@@ -639,9 +630,7 @@ def main(argv=None) -> int:
     floor = {} if args.direction_floor is None else {"direction_floor": args.direction_floor}
     r = bank.build(args.checkpoint, args.device,
                    height=args.height, screen=screen,
-                   options=LoadOptions(compile_net=args.compile_net, capture=args.capture,
-                                       measure_grain=args.measure_grain, exact=args.exact,
-                                       **floor))
+                   options=LoadOptions(measure_grain=args.measure_grain, **floor))
     print(f"generator: {r.report()}", flush=True)
     if args.height is None and r.height < r.cfg.ladder.height:
         print(f"  fitted to the {screen[0]}x{screen[1]} screen -- a take will be this size too; "

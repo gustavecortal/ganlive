@@ -33,7 +33,7 @@ LAYERS = {
     "ganlive.engine": 3,
     # What plays the dials: the walk, the rules, the controllers, the recorders.
     "ganlive.walk": 4, "ganlive.presets": 4, "ganlive.control": 4, "ganlive.record": 4,
-    "ganlive.frame": 5, "ganlive.families": 5,
+    "ganlive.families": 5,
     "ganlive.strip": 6, "ganlive.window": 6,
     "ganlive.bank": 7,
     "ganlive.tools": 8, "ganlive.cli": 8,
@@ -41,14 +41,10 @@ LAYERS = {
 
 #: Optional or heavy third-party packages that may be imported inside a function, so that a
 #: machine without them still runs everything that does not need them.
-DEFERRABLE = {"onnx", "onnxruntime", "openvino", "sounddevice", "av", "huggingface_hub",
-              "psutil", "pygame"}
+DEFERRABLE = {"sounddevice", "av", "psutil", "pygame"}
 
 #: Every other import made inside a function, and why it is not at the top.
 DEFERRED = {
-    # Loading the compiler costs start-up time; only a compile needs it.
-    ("ganlive.frame", "torch._dynamo.utils"): "torch",
-    ("ganlive.models.capture", "torch._dynamo.utils"): "torch",
     # `play` answers `--help` and a bad argument without loading torch.
     ("ganlive.tools.play", "torch"): "torch",
     ("ganlive.tools.convert", "ganlive.engine.convert"): "torch",

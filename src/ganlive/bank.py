@@ -15,7 +15,6 @@ import numpy as np
 import torch
 
 from ganlive.checkpoints import (
-    ONNX,
     admit,
     checkpoint_for,
     checkpoints_in,
@@ -27,7 +26,7 @@ from ganlive.checkpoints import (
 from ganlive.clock import WalkConfig
 from ganlive.dials.table import live_dials
 from ganlive.engine.screen import EngineStage
-from ganlive.families import ENGINE_FAMILIES, LoadOptions, config_of, family_of
+from ganlive.families import LoadOptions, config_of, family_of
 from ganlive.walk import SlerpWalk
 from ganlive.window import fit_height
 
@@ -78,9 +77,6 @@ def _prepare(path, gpu, options: LoadOptions) -> Model:
     on this machine's fastest for it when the bank has none yet. Its dials were measured when
     it was converted, so which of them are live is read off the program, not measured."""
     family = family_of(path)
-    if family.name not in ENGINE_FAMILIES:
-        raise ValueError(f"{label_for(path)}: a {family.name} model does not play on the engine "
-                         f"yet. A FastGAN or a StyleGAN2 does.")
     started = time.perf_counter()
     got = family.prepare(path, gpu, None, options)
     return Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
@@ -265,8 +261,6 @@ class Shelf:
             why, note = "", ""
             if path in here:
                 pass
-            elif family_of(path).name not in ENGINE_FAMILIES:
-                why = "not on the engine yet"
             else:
                 try:
                     cfg = self._config(path)
@@ -281,9 +275,8 @@ class Shelf:
         return sorted(out, key=lambda s: (not s.loaded, -s.path.stat().st_mtime))
 
     def _models(self) -> list[Path]:
-        """Every model file under `root`: each engine model, exported graph, the newest
-        checkpoint of each training run, and every file of a flat folder. Empty when there is
-        no `root`."""
+        """Every model under `root`: each engine model, the newest checkpoint of each training
+        run, and every checkpoint of a flat folder. Empty when there is no `root`."""
         if not self.root.is_dir():
             return []
         found: list[Path] = []
@@ -294,7 +287,6 @@ class Shelf:
                 continue
             # Inside `runs/engine/`. A checkpoint's own conversion is listed as the checkpoint.
             found += sorted(p for p in folder.iterdir() if is_published_engine(p))
-            found += sorted(folder.glob(f"*{ONNX}"))
             history = folder / "checkpoints"
             found += checkpoints_in(history)[-1:] if history.is_dir() else checkpoints_in(folder)
         return found

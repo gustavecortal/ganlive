@@ -27,6 +27,6 @@ def latent(nz: int, seed: int, device, dtype) -> torch.Tensor:
 
 
 def host_latent(nz: int, seed: int = 0) -> np.ndarray:
-    """One seeded latent as a `(1, nz)` float32 numpy array, for a model run off the host:
-    an ONNX graph, or a check against another implementation."""
+    """One seeded latent as a `(1, nz)` float32 numpy array, for a model run off the host or
+    a check against another implementation."""
     return np.random.default_rng(seed).standard_normal((1, nz)).astype(np.float32)
