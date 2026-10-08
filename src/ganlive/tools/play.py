@@ -194,10 +194,10 @@ def _parser():
                           "roughly a third of the frame rate because the loop is submission "
                           "bound. `all` leaves the scheduler alone")
     how.add_argument("--no-pipeline", dest="pipeline", action="store_false",
-                     help="finish every frame before starting the next. By default a frame that "
-                          "has missed its slot leaves its download running behind the next "
-                          "frame's generation and is shown once that is under way; a frame on "
-                          "time is shown at once either way")
+                     help="while recording, finish every frame's download before starting the "
+                          "next. By default a frame that has missed its slot leaves its download "
+                          "running behind the next frame's generation; a frame on time is taped "
+                          "at once either way")
     how.add_argument("--headless", action="store_true",
                      help="no window: run the loop and report the timing")
     how.add_argument("--console", action="store_true",
@@ -724,41 +724,30 @@ def main(argv=None) -> int:
                 actions["model"] = requests.ask_model
             panel = DialPanel(runner, actions=actions, extractor=extractor, bank=r, shelf=shelf,
                               encoders=encoders)
-        display = Display((r.height, r.width), title=f"ganlive - {preset.name}",
-                          overlay=panel, fullscreen=not args.console, device=r.gpu)
-        if display.note:
-            print(f"window: drawn through the host, as wgpu cannot draw it ({display.note})",
-                  flush=True)
+        display = Display((r.height, r.width), r.gpu, title=f"ganlive - {preset.name}",
+                          overlay=panel, fullscreen=not args.console)
         print("window open. Esc or Q to stop.", flush=True)
 
-    # A window the GPU draws is given the model's own frame, presented as it is made. Any
-    # other takes the frame's bytes, downloaded behind the next frame (`land`).
-    on_gpu = display is not None and display.on_gpu
-    to_window = r.stage.bgra_bytes
-
+    # The window is given the model's own frame, presented as it is made.
     made = r.current.net(walk.latent(0.0))
     first = r.stage.step(made)
-    if on_gpu:
+    if display is not None:
         display.publish(Stepped.native(made))
-    else:
-        to_window(first)
     r.sync()
 
     rec = None
     stills: list = []
-    #: The last frame's `(ticket, shown, taped)` while its downloads are still running behind
-    #: the next frame's generation. None once it has been put up.
+    #: The last frame's `(ticket, taped)` while its take's download is still running behind
+    #: the next frame's generation. None once it has been handed to the recorder.
     in_flight = None
 
     def land():
-        """Show and tape the frame left in flight, once its downloads have finished."""
+        """Tape the frame left in flight, once its download has finished."""
         nonlocal in_flight
         if in_flight is None:
             return
-        (ticket, shown, taped), in_flight = in_flight, None
+        (ticket, taped), in_flight = in_flight, None
         ticket.wait()
-        if shown is not None:
-            display.publish(shown)
         if taped is not None and rec is not None:
             rec.offer(taped)
 
@@ -840,31 +829,28 @@ def main(argv=None) -> int:
             ticked = t0
             guide.mark(clock.beats)
             out = model.net(walk.latent(clock.beats))
-            if on_gpu:
+            if display is not None:
                 display.publish(Stepped.native(out))
-            # At the size shown, for the window's bytes, a take or a still.
-            frame = None if on_gpu else r.stage.step(out)
             if requests.take("record"):
                 toggle_take(t0)
-            if frame is None and rec is not None:
-                frame = r.stage.step(out)
+            # At the take's size, for a take or a still.
+            frame = None
             with r.stage.handoff() as sent:
-                shown = (to_window(frame)
-                         if display is not None and not on_gpu and display.wants else None)
                 taped = None
                 if rec is not None:
                     if rec.wants:
+                        frame = r.stage.step(out)
                         taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
                     else:
                         rec.skip()
-            # The last frame's, whose downloads ran while this one was being generated.
+            # The last frame's, whose download ran while this one was being generated.
             land()
-            in_flight = (sent.ticket, shown, taped)
+            in_flight = (sent.ticket, taped)
             if requests.take("still"):
                 shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
                 stills.append(video.save_still(shot, r.stage.rgb_still(frame or r.stage.step(out))))
                 print(f"still: {shot}", flush=True)
-            # A frame on time goes up now. Overlapping its download with the next frame
+            # A frame on time is taped now. Overlapping its download with the next frame
             # costs a frame of lag, worth paying only on a frame that missed its slot.
             if not args.pipeline or time.perf_counter() < start + (frames + 1) * period:
                 land()

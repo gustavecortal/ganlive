@@ -381,32 +381,16 @@ def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
     assert "se_128" in narrow, "the kick is still inside the channel range"
 
 
-def test_the_window_actually_opens_with_the_strip_beside_it():
-    """A real window opens, takes a frame, and its thread ends when it is closed."""
-
+def test_a_window_wgpu_cannot_draw_says_so_and_leaves_no_thread():
+    """The GPU draws the window. Where a window offers it no native handle, as SDL's dummy
+    driver does, opening fails with the way to play without one, on either thread."""
     threads = threading.active_count()
     with dummy_display():
-
-        panel = _panel(DIALS, levels=(100.0, 50.0))
-        display = window.Display((64, 96), title="test", overlay=panel,
-                                         fullscreen=False)
-        display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
-        display.close()
-    assert threading.active_count() <= threads + 1, "the window thread outlived the window"
-
-
-def test_the_window_can_draw_on_the_callers_own_thread():
-    """macOS keeps a window and its events on the main thread, so there the window draws each
-    frame as it is published; a frame it cannot draw stops the session as the thread does."""
-    with dummy_display():
-        display = window.Display((64, 96), title="inline", overlay=_panel(DIALS),
-                                 fullscreen=False, threaded=False)
-        assert display.wants, "an inline window is always ready for a frame"
-        display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
-        assert not display.stopped
-        display.publish(np.zeros((3, 5, 1), dtype=np.uint8))      # no picture at all
-        assert display.stopped, "a frame that cannot be drawn must stop the session"
-        display.close()
+        for threaded in (True, False):
+            with pytest.raises(RuntimeError, match="--headless"):
+                window.Display((64, 96), object(), title="test", overlay=_panel(DIALS),
+                               fullscreen=False, threaded=threaded)
+    assert threading.active_count() <= threads, "the window thread outlived the window"
 
 
 def test_every_routing_column_label_fits_the_column_it_names():

@@ -84,20 +84,11 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
 
     The recorded loop ends at `nv12_bytes`, with no window on screen. A played frame ends
     with a `publish`, which presents the frame and wakes the window thread to paint the strip
-    and take the events (or, where SDL draws the window, `bgra_bytes` first and the upload
-    on that thread) -- work that holds the GIL and lands on this thread's next frame, so it
-    has to be measured with the window really open."""
+    and take the events -- work that holds the GIL and lands on this thread's next frame, so
+    it has to be measured with the window really open."""
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
-    display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
-                      fullscreen=False, device=r.gpu)
-    print(f"window: drawn by {'the GPU' if display.on_gpu else 'SDL, ' + display.note}", flush=True)
-
-    def shown():
-        """What the window is given: the model's frame on the GPU, else the bytes shown."""
-        if display.on_gpu:
-            return Stepped.native(model.net)
-        return r.stage.bgra_bytes(r.stage.step(model.net))
-
+    display = Display((r.height, r.width), r.gpu, title="ganlive - latency", overlay=panel,
+                      fullscreen=False)
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
                               "issue": [], "window": [], "publish": []}
     total_ms: list[float] = []
@@ -108,7 +99,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     try:
         for _ in range(8):                                  # the window's first texture
             model.net(walk.latent(0.0))
-            display.publish(shown())
+            display.publish(Stepped.native(model.net))
         r.sync()
         for f in range(int(args.seconds * args.fps)):
             t0 = time.perf_counter()
@@ -120,7 +111,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
             t3 = time.perf_counter()
             model.net(z)
             t4 = time.perf_counter()
-            frame = shown()
+            frame = Stepped.native(model.net)
             t5 = time.perf_counter()
             display.publish(frame)
             t6 = time.perf_counter()
@@ -164,7 +155,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/latency.json"))
     ap.add_argument("--window", action="store_true",
                     help="also time the played loop: the real window open and the real strip "
-                         "drawn beside it, finishing at `bgra_bytes` and `publish` rather "
+                         "drawn beside it, finishing at `publish` rather "
                          "than at the recorder's `nv12_bytes`. The window thread's work lands "
                          "on the frame thread, so only this loop shows its cost. Needs a "
                          "screen.")

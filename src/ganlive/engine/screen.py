@@ -1,5 +1,5 @@
-"""After an engine model: the frame resized to the size being shown, as the bytes a window, an
-encoder or a still wants, and their downloads. `FrameStage`'s interface, in WGSL.
+"""After an engine model: the frame resized to the take's size, as the bytes an encoder or a
+still wants, and their downloads. `FrameStage`'s interface, in WGSL.
 
 A conversion reads the model's output buffer and is queued behind the frame that wrote it and
 ahead of the next one, so nothing waits between them. A download copies into a mappable buffer
@@ -130,7 +130,7 @@ class _Handoff:
 
 class EngineStage:
     """What comes after an engine model's frame: `step` it to the size shown, then
-    `bgra_bytes`, `nv12_bytes` or `rgb_still`, with `handoff` to read the downloads behind the
+    `nv12_bytes` or `rgb_still`, with `handoff` to read the downloads behind the
     next frame. Everything a frame asks of it is recorded into one command buffer."""
 
     def __init__(self, device, height: int, width: int) -> None:
@@ -248,12 +248,6 @@ class EngineStage:
         else:
             self._jobs.append(job)
         return array
-
-    def bgra_bytes(self, frame: Stepped) -> np.ndarray:
-        """`(h, w, 4)` BGRA8, the bytes an SDL texture is. Four in the ring: one downloading
-        behind the next frame, one published, one the window thread may still be uploading."""
-        return self._take("bgra", frame.buffer, frame.height * frame.width * 4,
-                          (frame.height, frame.width, 4), depth=4)
 
     def nv12_bytes(self, frame: Stepped, dest: str = "yuv", depth: int = 3) -> np.ndarray:
         """The `(h*3/2, w)` uint8 plane stack an encoder wants."""
