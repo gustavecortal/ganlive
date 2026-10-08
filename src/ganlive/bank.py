@@ -8,20 +8,20 @@ from __future__ import annotations
 
 import functools
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from ganlive.checkpoints import (
-    ENGINE_SUFFIX,
     ONNX,
     admit,
     checkpoint_for,
     checkpoints_in,
     index_of,
     is_engine,
+    is_published_engine,
     label_for,
 )
 from ganlive.clock import WalkConfig
@@ -263,9 +263,11 @@ class Shelf:
         out = []
         for path in self._models():
             why, note = "", ""
-            if path not in here and family_of(path).name not in ENGINE_FAMILIES:
+            if path in here:
+                pass
+            elif family_of(path).name not in ENGINE_FAMILIES:
                 why = "not on the engine yet"
-            elif path not in here:
+            else:
                 try:
                     cfg = self._config(path)
                 except ValueError:
@@ -287,12 +289,11 @@ class Shelf:
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
             if is_engine(folder):
-                if not folder.name.endswith(ENGINE_SUFFIX):     # a checkpoint's own conversion
+                if is_published_engine(folder):
                     found.append(folder)
                 continue
-            # `runs/engine/<model>`; a `.engine` folder beside a checkpoint is that checkpoint's.
-            found += sorted(p for p in folder.iterdir()
-                            if is_engine(p) and not p.name.endswith(ENGINE_SUFFIX))
+            # Inside `runs/engine/`. A checkpoint's own conversion is listed as the checkpoint.
+            found += sorted(p for p in folder.iterdir() if is_published_engine(p))
             found += sorted(folder.glob(f"*{ONNX}"))
             history = folder / "checkpoints"
             found += checkpoints_in(history)[-1:] if history.is_dir() else checkpoints_in(folder)
@@ -323,21 +324,17 @@ def build(checkpoints: list, device: str | None = None, height: int | None = 0, 
           screen=None, options: LoadOptions | None = None) -> Bank:
     """Load and prepare every checkpoint on the engine, warm the stage at each one's size, and
     return the bank playing the first. The first model picks the wgpu device (its fastest
-    backend here) and the others join it. `device` is where a checkpoint converted at load has
-    its dials measured. `dtype` is unused, since the engine plays in fp16. `height` is as
-    `window.parse_height` returns."""
+    backend here) and the others join it. `device` and `dtype` are unused: the engine chooses its
+    own backend and plays in fp16. `height` is as `window.parse_height` returns."""
     options = options or LoadOptions()
-    if device:
-        options = replace(options, measure_on=device)
     paths = [checkpoint_for(Path(t)) for t in checkpoints]
 
-    models: list[Model] = []
     t_all = time.perf_counter()
-    gpu = None
-    for path in paths:
+    models = [_prepare(paths[0], None, options)]
+    gpu = models[0].net.model.device
+    for path in paths[1:]:
         admit(models, path)
         models.append(_prepare(path, gpu, options))
-        gpu = models[0].net.model.device
 
     out_height, out_width = frame_size(models[0].cfg, height, screen)
     stage = EngineStage(gpu, out_height, out_width)

@@ -15,22 +15,20 @@ Weight layouts (fp16, little-endian; every array starts on a 4-byte boundary):
 from __future__ import annotations
 
 import copy
-import hashlib
 import os
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from ganlive import levels
+from ganlive.checkpoints import PROGRAM, WEIGHTS
 from ganlive.device import detect_backend
-from ganlive.dials import derive, fastgan_dials, gate, steer, table
+from ganlive.dials import fastgan_dials, steer
 from ganlive.dials.gate import directions_for, measure_dials
-from ganlive.engine import program as _program
+from ganlive.engine import stamp as stamps
 from ganlive.engine.program import box_means, compile_program, noise_seed, seeded_noise
 from ganlive.files import write_json
-from ganlive.models import fastgan, fold, onnx_rewrite
-from ganlive.models import steerable as steerable_modules
+from ganlive.levels import EXACT_LEVELS, RANDOM_FLOOR
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
@@ -41,15 +39,7 @@ from ganlive.models.onnx_rewrite import (
     split_gated_convs,
 )
 from ganlive.models.steerable import SteerableSLE
-from ganlive.pixels import EXACT_LEVELS
 from ganlive.settings import Settings
-
-#: What a converted model was made by, stamped into it: every module that shapes its weights,
-#: shaders or measured dials. A change to any of them converts every checkpoint again at its
-#: next load, so an improvement reaches models converted before it.
-MADE_BY = hashlib.sha1(b"".join(Path(m.__file__).read_bytes() for m in (
-    _program, derive, fastgan, fastgan_dials, fold, gate, levels, onnx_rewrite, steer,
-    steerable_modules, table)) + Path(__file__).read_bytes()).hexdigest()[:12]
 
 
 class Blob:
@@ -200,7 +190,7 @@ class Driven(torch.nn.Module):
 
 
 def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None, *,
-                   floor: float = levels.RANDOM_FLOOR, grain: bool = True) -> dict:
+                   floor: float = RANDOM_FLOOR, grain: bool = True) -> dict:
     """The dials of this net, measured once here so that playing measures nothing: the noise
     gains each band needs (the stock ones without `grain`), the latent directions that beat a
     random one `floor` times over (ranked), and how far each MODEL dial moves the picture,
@@ -232,24 +222,22 @@ def build(steerable, cfg, names: list[str], output: str = "rgba8", dials=None) -
     return program, blob
 
 
-def convert(checkpoint, out: Path, device=None, *, floor: float = levels.RANDOM_FLOOR,
+def convert(checkpoint, out: Path, device=None, *, floor: float = RANDOM_FLOOR,
             grain: bool = True, stamp: dict | None = None) -> dict:
     """Write the engine model for `checkpoint`, its dials measured on `device` (see
-    `measured_dials` for `floor` and `grain`), into the folder `out`. Returns the program.
-    `stamp` records what it was made from, for a later load to tell whether it is current."""
+    `measured_dials` for `floor` and `grain`), into the folder `out`. Returns the program,
+    stamped with what it was made from (`stamp.stamp_for`) so a load can tell it is current."""
     steerable, cfg, names = prepared(checkpoint)
     dials = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint,
                            floor=floor, grain=grain)
     program, blob = build(steerable, cfg, names, dials=dials)
-    program["made_by"] = MADE_BY
-    if stamp is not None:
-        program["stamp"] = stamp
+    program["stamp"] = stamp or stamps.stamp_for(checkpoint, floor, grain)
     # The weights first and the program last, each renamed into place whole: a conversion cut
     # short leaves no program that a load would take for a finished one.
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "weights.bin.part").write_bytes(blob.data)
-    os.replace(out / "weights.bin.part", out / "weights.bin")
-    write_json(out / "program.json.part", program, indent=None)
-    os.replace(out / "program.json.part", out / "program.json")
+    (out / f"{WEIGHTS}.part").write_bytes(blob.data)
+    os.replace(out / f"{WEIGHTS}.part", out / WEIGHTS)
+    write_json(out / f"{PROGRAM}.part", program, indent=None)
+    os.replace(out / f"{PROGRAM}.part", out / PROGRAM)
     return program

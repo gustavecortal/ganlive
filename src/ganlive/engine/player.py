@@ -13,12 +13,7 @@ import numpy as np
 
 from ganlive.dials import fastgan_dials, table
 from ganlive.engine.runner import Model
-
-
-@dataclass(frozen=True)
-class Ladder:
-    height: int
-    width: int
+from ganlive.ladder import Ladder
 
 
 @dataclass(frozen=True)
@@ -28,11 +23,15 @@ class EngineConfig:
     nz: int
     ladder: Ladder
 
+    @classmethod
+    def of(cls, program: dict) -> EngineConfig:
+        return cls(program["nz"], Ladder(program["height"], program["width"]))
+
 
 class HostSettings:
     """The settings vector on the host, with `ganlive.settings.Settings`' interface: values are
     written (`set`), then `commit`ted, and the engine uploads what was committed when it
-    changed. Every setting is a multiplier whose neutral is 1.0."""
+    changed (`changed`). Every setting is a multiplier whose neutral is 1.0."""
 
     pinned = False
 
@@ -41,7 +40,8 @@ class HostSettings:
         self.index = {n: i for i, n in enumerate(self.names)}
         self.write = np.ones(len(self.names), np.float32)
         self._sent = np.ones(len(self.names), np.float32)
-        self.skipped = 0
+        #: Committed and not yet uploaded. True at first, so the first frame uploads.
+        self.changed = True
 
     def set(self, name: str, value: float) -> None:
         """Write one setting. A name this model does not have is accepted and dropped."""
@@ -54,10 +54,9 @@ class HostSettings:
         self.commit()
 
     def commit(self) -> None:
-        if np.array_equal(self.write, self._sent):
-            self.skipped += 1
-            return
-        np.copyto(self._sent, self.write)
+        if not np.array_equal(self.write, self._sent):
+            np.copyto(self._sent, self.write)
+            self.changed = True
 
     def committed(self) -> np.ndarray:
         return self._sent
@@ -66,9 +65,6 @@ class HostSettings:
 class PlayedDirections:
     """A model's latent directions as measured at conversion: the rows the walk adds, and what
     each moves, for the strip."""
-
-    space = "z"
-    ranges = None
 
     def __init__(self, found: dict) -> None:
         self.basis = np.asarray(found["basis"], np.float32)
@@ -83,7 +79,7 @@ class PlayedDirections:
 
 
 class EngineGenerator:
-    """One engine model, called once per frame. Returns itself as the frame: the picture is in
+    """One engine model, called once per frame. Returns itself: the picture is in
     `model.output` on the GPU until the next call, and `screen.EngineStage` reads it there."""
 
     #: The walk hands over its host view, which is what the engine uploads.
@@ -91,22 +87,15 @@ class EngineGenerator:
 
     def __init__(self, model: Model) -> None:
         self.model = model
-        program = model.program
-        self.cfg = EngineConfig(program["nz"], Ladder(program["height"], program["width"]))
-        self.nz = self.cfg.nz
-        self.settings = HostSettings(program["settings"])
-        self._uploaded: np.ndarray | None = None
+        self.cfg = EngineConfig.of(model.program)
+        self.settings = HostSettings(model.program["settings"])
 
-    def __call__(self, z) -> list[EngineGenerator]:
-        self.model.set_latent(np.asarray(z, np.float32).reshape(1, self.nz))
-        k = self.settings.committed()
-        if self._uploaded is None or not np.array_equal(k, self._uploaded):
-            self.model.set_settings(k)
-            self._uploaded = k.copy()
+    def __call__(self, z) -> EngineGenerator:
+        self.model.set_latent(np.asarray(z, np.float32).reshape(1, self.cfg.nz))
+        if self.settings.changed:
+            self.model.set_settings(self.settings.committed())
+            self.settings.changed = False
         self.model.frame()
-        return [self]
-
-    def eval(self) -> EngineGenerator:
         return self
 
     def report(self) -> str:

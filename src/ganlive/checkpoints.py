@@ -10,8 +10,9 @@ from pathlib import Path
 ONNX = ".onnx"
 #: The suffix of the derived directions saved beside a checkpoint (`dials.derive.cache_path`).
 CACHE_SUFFIX = ".directions.pt"
-#: The file that makes a folder an engine model (`ganlive convert`).
+#: The file that makes a folder an engine model (`ganlive convert`), and its weights.
 PROGRAM = "program.json"
+WEIGHTS = "weights.bin"
 #: The suffix of the engine model a checkpoint is converted into, beside it, at load.
 ENGINE_SUFFIX = ".engine"
 
@@ -23,6 +24,12 @@ def is_onnx(path) -> bool:
 def is_engine(path) -> bool:
     """Whether this is an engine model: a folder holding a program."""
     return (Path(path) / PROGRAM).is_file()
+
+
+def is_published_engine(path) -> bool:
+    """An engine model of its own, as `ganlive convert` writes one, rather than the conversion
+    a checkpoint keeps beside itself."""
+    return is_engine(path) and not Path(path).name.endswith(ENGINE_SUFFIX)
 
 
 def run_step(path) -> tuple[str, str]:

@@ -925,7 +925,4 @@ def main(argv=None) -> int:
     report_clock(clock, reader, args, pressure, encoders, runner, machine)
     if reactive:
         report_drums(extractor, tracks, kind, fix, hears, heard0, wall)
-    peak = dev.peak_memory_gb()
-    if peak:
-        print(f"  memory      {peak:.2f} GB peak")
     return 0

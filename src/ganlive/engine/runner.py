@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import wgpu
 
+from ganlive.checkpoints import PROGRAM, WEIGHTS
 from ganlive.engine.program import FORMAT, PROBE_LEVELS, probe_error
 from ganlive.files import remember
 
@@ -81,11 +82,12 @@ class Model:
 
     @classmethod
     def load(cls, folder, device=None, **options) -> Model:
-        """The model in `folder`, on `device`, or else on the fastest backend (`fastest`)."""
+        """The model in `folder`, checked against its probe, on `device`, or else on the
+        fastest backend (`fastest`)."""
         program, weights = read_folder(folder)
         if device is None:
             return fastest(program, weights, **options)[0]
-        return cls(device, program, weights)
+        return checked(device, program, weights, own_device=False)
 
     def destroy(self) -> None:
         """Free this model's buffers. Its device may be shared, so it stays."""
@@ -139,8 +141,8 @@ class Model:
 
 def read_folder(folder) -> tuple[dict, bytes]:
     folder = Path(folder)
-    program = json.loads((folder / "program.json").read_text(encoding="utf-8"))
-    return program, (folder / "weights.bin").read_bytes()
+    program = json.loads((folder / PROGRAM).read_text(encoding="utf-8"))
+    return program, (folder / WEIGHTS).read_bytes()
 
 
 def cache_dir() -> Path:
@@ -216,16 +218,22 @@ def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames
     return built[best], report
 
 
-def _checked(adapter, program, weights) -> Model:
-    """A model built on `adapter`, refused if it does not draw the program's probe."""
-    model = Model(_device(adapter), program, weights)
-    if "probe" in program:
-        off = model.strays()
-        if off > PROBE_LEVELS:
-            model.destroy()
-            model.device.destroy()
-            raise RuntimeError(f"draws the probe {off:.1f} levels off")
+def checked(device, program, weights, *, own_device: bool) -> Model:
+    """A model built on `device`, refused if it does not draw the program's probe. A device the
+    model owns goes with it, and a shared one stays."""
+    model = Model(device, program, weights)
+    off = model.strays() if "probe" in program else 0.0
+    if off > PROBE_LEVELS:
+        model.destroy()
+        if own_device:
+            device.destroy()
+        raise RuntimeError(f"draws the probe {off:.1f} levels off on "
+                           f"{device.adapter.info['backend_type']}")
     return model
+
+
+def _checked(adapter, program, weights) -> Model:
+    return checked(_device(adapter), program, weights, own_device=True)
 
 
 def _gpus(backend: str | None) -> list:

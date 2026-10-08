@@ -8,7 +8,6 @@ of a ring and is read back when its ticket is waited on, behind the next frame's
 
 from __future__ import annotations
 
-import contextlib
 import math
 
 import numpy as np
@@ -17,7 +16,7 @@ import wgpu
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
 # The model's RGBA8 frame -> the size shown, as BGRA8 (what an SDL texture is). Shrinking
-# averages the same windows as torch's `area` (adaptive average pooling); growing is bilinear.
+# averages the same windows as torch's `area` (adaptive average pooling). Growing is bilinear.
 RESIZE = """
 @group(0) @binding(0) var<storage, read> X: array<u32>;
 @group(0) @binding(1) var<storage, read_write> Y: array<u32>;
@@ -103,29 +102,28 @@ class Ticket:
         self._jobs = []
 
 
-class _Deferred:
-    """A block inside which a stage's downloads are not read at once: on exit they are read
-    together, or, for a `handoff`, left to the block's `ticket`."""
+class _Handoff:
+    """A block whose downloads are submitted together on exit and read at its `ticket`."""
 
-    def __init__(self, stage: EngineStage, keep: bool) -> None:
-        self._stage, self._keep = stage, keep
+    def __init__(self, stage: EngineStage) -> None:
+        self._stage = stage
         self.ticket = Ticket()
 
-    def __enter__(self) -> _Deferred:
+    def __enter__(self) -> _Handoff:
         self._stage._jobs = []
         return self
 
     def __exit__(self, *_exc) -> bool:
         jobs, self._stage._jobs = self._stage._jobs, None
+        self._stage.flush()
         self.ticket = Ticket(jobs)
-        if not self._keep:
-            self.ticket.wait()
         return False
 
 
 class EngineStage:
-    """`frame.FrameStage` for engine models: `step`, then `bgra_bytes`, `nv12_bytes` or
-    `rgb_still`, with `handoff` to read the downloads behind the next frame."""
+    """What comes after an engine model's frame: `step` it to the size shown, then
+    `bgra_bytes`, `nv12_bytes` or `rgb_still`, with `handoff` to read the downloads behind the
+    next frame. Everything a frame asks of it is recorded into one command buffer."""
 
     def __init__(self, device, height: int, width: int) -> None:
         self.device = device
@@ -135,7 +133,10 @@ class EngineStage:
         self._nv12 = self._pipeline(NV12)
         self._buffers: dict = {}
         self._rings: dict = {}
-        #: The downloads of the open `deferred`/`handoff` block, or None outside one.
+        self._binds: dict = {}
+        self._written: dict = {}
+        self._encoder = None
+        #: The downloads of the open `handoff` block, or None outside one.
         self._jobs: list | None = None
 
     def _pipeline(self, code: str):
@@ -149,30 +150,44 @@ class EngineStage:
         got = self._buffers.get(name)
         if got is None or got.size < size:
             got = self._buffers[name] = self.device.create_buffer(size=size, usage=usage)
+            self._binds.clear()                  # they may hold the buffer this replaces
         return got
 
+    def _encode(self):
+        if self._encoder is None:
+            self._encoder = self.device.create_command_encoder()
+        return self._encoder
+
+    def flush(self) -> None:
+        """Submit what this frame recorded."""
+        if self._encoder is not None:
+            self.device.queue.submit([self._encoder.finish()])
+            self._encoder = None
+
     def _run(self, pipeline, buffers, groups) -> None:
-        encoder = self.device.create_command_encoder()
-        compute = encoder.begin_compute_pass()
+        key = (id(pipeline), *(id(b) for b in buffers))
+        bind = self._binds.get(key)
+        if bind is None:
+            bind = self._binds[key] = self.device.create_bind_group(
+                layout=pipeline.get_bind_group_layout(0),
+                entries=[{"binding": i, "resource": {"buffer": b, "offset": 0, "size": b.size}}
+                         for i, b in enumerate(buffers)])
+        compute = self._encode().begin_compute_pass()
         compute.set_pipeline(pipeline)
-        compute.set_bind_group(0, self.device.create_bind_group(
-            layout=pipeline.get_bind_group_layout(0),
-            entries=[{"binding": i, "resource": {"buffer": b, "offset": 0, "size": b.size}}
-                     for i, b in enumerate(buffers)]))
+        compute.set_bind_group(0, bind)
         compute.dispatch_workgroups(*groups)
         compute.end()
-        self.device.queue.submit([encoder.finish()])
 
     def _words(self, name: str, *values: int):
+        """A small parameter buffer, written only when its values change."""
         buf = self._buffer(name, 16)
-        self.device.queue.write_buffer(buf, 0, np.array([*values, 0, 0, 0, 0][:4], np.uint32))
+        if self._written.get(name) != (buf, values):
+            self.device.queue.write_buffer(buf, 0, np.array([*values, 0, 0, 0, 0][:4], np.uint32))
+            self._written[name] = (buf, values)
         return buf
 
     def resize(self, height: int, width: int) -> None:
         self.height, self.width = int(height), int(width)
-
-    def eager(self) -> None:
-        """Nothing to fall back to: the conversions are shaders."""
 
     def warm(self, staged) -> int:
         """Nothing is left to build: the conversions compiled when the stage was made."""
@@ -181,26 +196,20 @@ class EngineStage:
     def sync(self) -> None:
         """Wait for everything queued: a read waits for the work before it. (wgpu-py 0.32's
         `on_submitted_work_done_sync` fails on a callback signature.)"""
+        self.flush()
         self.device.queue.read_buffer(self._buffer("sync", 16), 0, 4)
 
     def release(self) -> None:
         """Nothing to wait for: a conversion is queued before the next frame's generation."""
 
-    def deferred(self) -> _Deferred:
-        return _Deferred(self, keep=False)
-
-    def handoff(self) -> _Deferred:
-        return _Deferred(self, keep=True)
-
-    def aside(self):
-        return contextlib.nullcontext()
+    def handoff(self) -> _Handoff:
+        return _Handoff(self)
 
     def pinned(self) -> dict[str, bool]:
         return {name: True for name, _shape in self._rings}
 
-    def step(self, outs) -> Stepped:
+    def step(self, net) -> Stepped:
         """The model's frame at the size shown, as BGRA8."""
-        net = outs[0] if isinstance(outs, (list, tuple)) else outs
         H, W = net.cfg.ladder.height, net.cfg.ladder.width
         h, w = self.height, self.width
         out = self._buffer("shown", h * w * 4)
@@ -211,7 +220,7 @@ class EngineStage:
     def _take(self, name: str, source, size: int, shape, depth: int = 3) -> np.ndarray:
         """Copy `size` bytes of `source` to the host through this destination's ring, one per
         shape, so that switching models reuses rings. The array holds them once the copy is
-        read, now or at the block's ticket."""
+        read: now, or at the `handoff` block's ticket."""
         padded = math.ceil(size / 4) * 4
         ring = self._rings.get((name, tuple(shape)))
         if ring is None:
@@ -221,11 +230,10 @@ class EngineStage:
                  np.zeros(shape, np.uint8)) for _ in range(max(2, depth))]}
         staging, array = ring["slots"][ring["n"] % len(ring["slots"])]
         ring["n"] += 1
-        encoder = self.device.create_command_encoder()
-        encoder.copy_buffer_to_buffer(source, 0, staging, 0, padded)
-        self.device.queue.submit([encoder.finish()])
+        self._encode().copy_buffer_to_buffer(source, 0, staging, 0, padded)
         job = (staging, array, size)
         if self._jobs is None:
+            self.flush()
             Ticket([job]).wait()
         else:
             self._jobs.append(job)
@@ -242,17 +250,17 @@ class EngineStage:
         h, w = frame.height, frame.width
         size = h * w * 3 // 2
         out = self._buffer(f"nv12.{dest}", size)
-        words = math.ceil(size / 4)
-        groups = math.ceil(words / 256)
+        groups = math.ceil(math.ceil(size / 4) / 256)
         self._run(self._nv12, [frame.buffer, out, self._words("nv12", h, w)],
                   (min(groups, 65535), math.ceil(groups / 65535), 1))
         return self._take(dest, out, size, (h * 3 // 2, w), depth)
 
     def rgb_still(self, frame: Stepped) -> np.ndarray:
-        """`(h, w, 3)` RGB, its own array, outside the rings."""
-        bgra = self._take("still", frame.buffer, frame.height * frame.width * 4,
-                          (frame.height, frame.width, 4), depth=2)
-        if self._jobs is not None:
-            self._jobs, jobs = [j for j in self._jobs if j[1] is not bgra], self._jobs
-            Ticket([j for j in jobs if j[1] is bgra]).wait()
+        """`(h, w, 3)` RGB, its own array, read now even inside a `handoff` block."""
+        jobs, self._jobs = self._jobs, None
+        try:
+            bgra = self._take("still", frame.buffer, frame.height * frame.width * 4,
+                              (frame.height, frame.width, 4), depth=2)
+        finally:
+            self._jobs = jobs
         return bgra[..., 2::-1].copy()

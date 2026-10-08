@@ -17,7 +17,6 @@ from pathlib import Path
 import torch
 
 from ganlive import bank
-from ganlive import device as dev
 from ganlive.control.features import FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.control.simulate import MachineSim, StemFeeder
@@ -288,11 +287,6 @@ def main(argv=None) -> int:
             print(f"   {name:34} {s['size'][0]:5d}x{s['size'][1]:<5d} {s['median']:8.2f} "
                   f"{s['p95']:8.2f} {1000.0 / s['median']:6.1f}")
 
-    vram = dev.memory_report(r.device)
-    if vram:
-        results["vram"] = vram
-        print(f"\n   memory: {vram.get('max_allocated_gb', float('nan')):.2f} GB peak in use, "
-              f"{vram.get('max_reserved_gb', float('nan')):.2f} GB peak held")
 
     at = results["audio_thread"]
     print(f"\n   sound callback: {at['push_median_ms']:.3f} ms median, "

@@ -23,6 +23,7 @@ REPO = SRC.parents[1]
 LAYERS = {
     # Torch-free basics, and the device calls everything else asks.
     "ganlive": 0, "ganlive.curves": 0, "ganlive.clock": 0, "ganlive.files": 0, "ganlive.levels": 0,
+    "ganlive.ladder": 0,
     "ganlive.timing": 0, "ganlive.device": 0, "ganlive.checkpoints": 0,
     # Frames off the card, and the settings vector on it.
     "ganlive.pixels": 1, "ganlive.settings": 1,
@@ -51,6 +52,8 @@ DEFERRED = {
     # `play` answers `--help` and a bad argument without loading torch.
     ("ganlive.tools.play", "torch"): "torch",
     ("ganlive.tools.convert", "ganlive.engine.convert"): "torch",
+    # An engine model that is already converted plays without PyTorch.
+    ("ganlive.engine.load", "ganlive.engine.convert"): "torch",
     ("ganlive.tools.play", "ganlive.bank"): "torch",
     ("ganlive.tools.play", "ganlive.device"): "torch",
     ("ganlive.tools.play", "ganlive.families"): "torch",
