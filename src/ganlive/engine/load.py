@@ -12,9 +12,8 @@ from pathlib import Path
 
 from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, WEIGHTS, is_engine, slug_for
 from ganlive.engine import stamp
-from ganlive.engine.compile import compile_manifest
 from ganlive.engine.player import EngineGenerator, PlayedDirections, dials_of
-from ganlive.engine.runner import cache_dir, checked, fastest
+from ganlive.engine.runner import cache_dir, checked, fastest, program_for
 from ganlive.levels import RANDOM_FLOOR
 
 
@@ -42,22 +41,22 @@ def converted(checkpoint, floor: float = RANDOM_FLOOR, grain: bool = True) -> tu
 def open_model(path, gpu=None, floor: float = RANDOM_FLOOR,
                grain: bool = True) -> tuple[EngineGenerator, object, PlayedDirections | None]:
     """The model at `path` ready to play, with its dial layout and directions: on the wgpu
-    device `gpu`, or else on this machine's fastest backend for it."""
+    device `gpu`, or else on this machine's fastest backend for it, with the plans tuned for
+    that device (`ganlive tune`)."""
     if is_engine(path):
         folder = Path(path)
         manifest = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
     else:
         folder, manifest = converted(path, floor, grain)
-    program = compile_manifest(manifest)
     weights = (folder / WEIGHTS).read_bytes()
     if gpu is None:
-        model, report = fastest(program, weights)
+        model, report = fastest(manifest, weights)
         print(f"engine: {report['best']}", flush=True)
     else:
-        model = checked(gpu, program, weights, own_device=False)
+        model = checked(gpu, program_for(manifest, gpu.adapter), weights, own_device=False)
     net = EngineGenerator(model)
     print(net.report(), flush=True)
-    layout, directions = dials_of(program)
+    layout, directions = dials_of(model.program)
     if directions is not None:
         print(f"directions: {directions.report()}", flush=True)
     return net, layout, directions

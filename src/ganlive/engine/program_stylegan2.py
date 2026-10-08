@@ -279,6 +279,29 @@ def _as_product(b: Builder, op: dict) -> bool:
     return _tiles(op, M) and (M <= GEMM_MAX if forced is None else forced)
 
 
+def plan_choices(manifest: dict) -> dict[str, list[dict]]:
+    """Each step's plans worth trying on a new machine: for a matrix product (by its name), rows
+    and columns a thread and splits; for a direct conv (by its layer's name), the tiles that
+    do not spill registers, with f32 weights and workgroup memory or without."""
+    b = Builder(manifest, {})
+    out = {}
+    for op in manifest["ops"]:
+        if op["op"] != "conv":
+            continue
+        if op["up"]:
+            products = _parities(op) if _tiles(op, 1) else []
+        else:
+            products = [_plain(op)] if _as_product(b, op) else []
+        for g in products:
+            out[g["name"]] = [{"rn": 2}, {"rm": 8}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}, {"S": 4},
+                              {"rn": 2, "S": 2}]
+        if not op["up"] and not products:
+            out[op["name"]] = [{"by": by, "bx": bx, "oct": oct, **extra}
+                               for by, bx, oct in ((2, 2, 8), (2, 2, 4), (1, 2, 8), (1, 4, 4), (2, 4, 4))
+                               for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
+    return out
+
+
 def _scratch(b: Builder, op: dict) -> int:
     """The partial sums the largest matrix product of this layer keeps."""
     if op["up"]:
@@ -524,7 +547,7 @@ def _out(b: Builder, img: str, output: str) -> None:
     else:
         b.buffer("out", plane * 4)
         store = (f"let s = clamp(vec3f(I[px], I[{plane}u + px], I[{2 * plane}u + px]), vec3f(-1.0), vec3f(1.0));\n"
-                 f"  Y[px] = pack4x8unorm(vec4f(s * 0.5 + 0.5, 1.0));")
+                 f"  Y[px] = pack4x8unorm(vec4f({'s.zyx' if output == 'bgra8' else 's'} * 0.5 + 0.5, 1.0));")
         kind = "u32"
     groups, index = linear(plane, 256)
     b.step("out", wgsl(storage([("I", "array<f32>"), ("Y", f"array<{kind}>")]) + """

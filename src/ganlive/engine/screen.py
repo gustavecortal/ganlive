@@ -17,13 +17,13 @@ from ganlive.engine.codegen import linear
 
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
-# The model's RGBA8 frame -> the size shown, as BGRA8 (what an SDL texture is). Shrinking
+# The model's BGRA8 frame -> the size shown, as BGRA8 (what an SDL texture is). Shrinking
 # averages the same windows as torch's `area` (adaptive average pooling). Growing is bilinear.
 RESIZE = """
 @group(0) @binding(0) var<storage, read> X: array<u32>;
 @group(0) @binding(1) var<storage, read_write> Y: array<u32>;
 @group(0) @binding(2) var<storage, read> U: array<u32>;      // H, W, h, w
-fn px(y: u32, x: u32) -> vec4f { return unpack4x8unorm(X[y * U[1] + x]); }
+fn px(y: u32, x: u32) -> vec4f { return unpack4x8unorm(X[y * U[1] + x]); }   // BGRA
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let H = U[0]; let W = U[1]; let h = U[2]; let w = U[3];
@@ -42,7 +42,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let fy = sy - f32(y0); let fx = sx - f32(x0);
     c = mix(mix(px(y0, x0), px(y0, x1), fx), mix(px(y1, x0), px(y1, x1), fx), fy);
   }
-  Y[id.y * w + id.x] = pack4x8unorm(vec4f(c.b, c.g, c.r, 1.0));
+  Y[id.y * w + id.x] = pack4x8unorm(vec4f(c.xyz, 1.0));
 }
 """
 
@@ -140,6 +140,8 @@ class EngineStage:
         self._encoder = None
         #: The downloads of the open `handoff` block, or None outside one.
         self._jobs: list | None = None
+        #: Whether a conversion may write straight into the buffer the host maps.
+        self._mappable = "mappable-primary-buffers" in device.features
 
     def _pipeline(self, code: str):
         return self.device.create_compute_pipeline(
@@ -211,28 +213,39 @@ class EngineStage:
         return {name: True for name, _shape in self._rings}
 
     def step(self, net) -> Stepped:
-        """The model's frame at the size shown, as BGRA8."""
+        """The model's frame at the size shown, as BGRA8: the model's own buffer when it is
+        shown at its size."""
         H, W = net.cfg.ladder.height, net.cfg.ladder.width
         h, w = self.height, self.width
+        if (H, W) == (h, w):
+            return Stepped(net.model.output, h, w)
         out = self._buffer("shown", h * w * 4)
         self._run(self._resize, [net.model.output, out, self._words("resize", H, W, h, w)],
                   (math.ceil(w / 8), math.ceil(h / 8), 1))
         return Stepped(out, h, w)
 
-    def _take(self, name: str, source, size: int, shape, depth: int = 3) -> np.ndarray:
-        """Copy `size` bytes of `source` to the host through this destination's ring, one per
-        shape, so that switching models reuses rings. The array holds them once the copy is
-        read: now, or at the `handoff` block's ticket."""
+    def _take(self, name: str, source, size: int, shape, depth: int = 3, write=None) -> np.ndarray:
+        """Bring `size` bytes to the host through this destination's ring, one per shape, so
+        that switching models reuses rings: copied from `source`, or, where the device allows,
+        written by `write(buffer)` straight into the buffer the host maps. The array holds them
+        once the download is read: now, or at the `handoff` block's ticket."""
         padded = math.ceil(size / 4) * 4
+        direct = write is not None and self._mappable
+        usage = wgpu.BufferUsage.MAP_READ | (wgpu.BufferUsage.STORAGE if direct else wgpu.BufferUsage.COPY_DST)
         ring = self._rings.get((name, tuple(shape)))
         if ring is None:
             ring = self._rings[(name, tuple(shape))] = {"n": 0, "slots": [
-                (self.device.create_buffer(size=padded, usage=wgpu.BufferUsage.MAP_READ
-                                           | wgpu.BufferUsage.COPY_DST),
-                 np.zeros(shape, np.uint8)) for _ in range(max(2, depth))]}
+                (self.device.create_buffer(size=padded, usage=usage), np.zeros(shape, np.uint8))
+                for _ in range(max(2, depth))]}
         staging, array = ring["slots"][ring["n"] % len(ring["slots"])]
         ring["n"] += 1
-        self._encode().copy_buffer_to_buffer(source, 0, staging, 0, padded)
+        if direct:
+            write(staging)
+        else:
+            if write is not None:
+                source = self._buffer(f"{name}.out", padded)
+                write(source)
+            self._encode().copy_buffer_to_buffer(source, 0, staging, 0, padded)
         job = (staging, array, size)
         if self._jobs is None:
             self.flush()
@@ -251,10 +264,11 @@ class EngineStage:
         """The `(h*3/2, w)` uint8 plane stack an encoder wants."""
         h, w = frame.height, frame.width
         size = h * w * 3 // 2
-        out = self._buffer(f"nv12.{dest}", size)
-        self._run(self._nv12, [frame.buffer, out, self._words("nv12", h, w)],
-                  linear(math.ceil(size / 4), 256)[0])
-        return self._take(dest, out, size, (h * 3 // 2, w), depth)
+
+        def write(out):
+            self._run(self._nv12, [frame.buffer, out, self._words("nv12", h, w)],
+                      linear(math.ceil(size / 4), 256)[0])
+        return self._take(dest, None, size, (h * 3 // 2, w), depth, write=write)
 
     def rgb_still(self, frame: Stepped) -> np.ndarray:
         """`(h, w, 3)` RGB, its own array, read now even inside a `handoff` block."""

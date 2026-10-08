@@ -28,8 +28,8 @@ GEMM_MAX = 6144             # maps up to this many pixels run as a matrix produc
 
 
 def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8") -> dict:
-    """The program for `manifest`, drawing packed RGBA8 pixels for display or, with
-    `output="f32"`, float planes in [-1, 1] for checks. `plans` overrides how conv layers
+    """The program for `manifest`, drawing packed RGBA8 pixels for a browser canvas, BGRA8
+    (`output="bgra8"`) for the desktop app, or float planes in [-1, 1] (`"f32"`) for checks. `plans` overrides how conv layers
     split, by name: {"gemm": True} or {"by": 2, "bx": 4, "oct": 4}."""
     b = Builder(manifest, plans or {})
     m = manifest
@@ -105,6 +105,32 @@ def _plan(b: Builder, op: dict) -> dict:
             or (not up and (ho % plan["by"] or wo % plan["bx"]))):
         raise ValueError(f"{op['out']}: {plan} does not fit {cout} channels at {ho}x{wo}")
     return plan
+
+
+def plan_choices(manifest: dict) -> dict[str, list[dict]]:
+    """Each conv's plans worth trying on a new machine (see `_plan`; `tune` keeps those that fit
+    and help): as a matrix product of 4 or 8 rows a thread and various splits where the layer
+    tiles and is small enough, and directly at the tiles that do not spill registers."""
+    out = {}
+    for op in manifest["ops"]:
+        if op["op"] != "conv":
+            continue
+        cout, ho, wo = manifest["tensors"][op["out"]]
+        cin = manifest["tensors"][op["in"]][0]
+        rows = ho * wo // 4 if op["up"] else ho * wo
+        options = []
+        if cout % 32 == 0 and cin % 16 == 0 and rows <= 4 * GEMM_MAX:
+            options += [{"gemm": True, "rm": rm, "rn": 1, **({"S": S} if S else {})}
+                        for rm in (4, 8) for S in (None, 1, 2, 4, 8, 16)]
+        if op["up"]:
+            options += [{"by": by, "bx": bx, "oct": oct} for by, bx, oct in
+                        ((1, 2, 4), (1, 4, 4), (2, 2, 4), (1, 2, 8), (2, 1, 4), (1, 1, 8))]
+        else:
+            options += [{"by": by, "bx": bx, "oct": oct, **extra}
+                        for by, bx, oct in ((2, 2, 8), (2, 2, 4), (1, 2, 8), (1, 4, 4), (2, 4, 4))
+                        for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
+        out[op["out"]] = options
+    return out
 
 
 def _allocate(b: Builder) -> dict[str, str]:
@@ -456,7 +482,8 @@ def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> None:
         store = f"Y[px] = s.x; Y[{h * w}u + px] = s.y; Y[{2 * h * w}u + px] = s.z;"
     else:
         kind, size = "u32", h * w * 4
-        store = "Y[px] = pack4x8unorm(vec4f(s * 0.5 + 0.5, 1.0));"
+        rgb = "s.zyx" if fmt == "bgra8" else "s"
+        store = f"Y[px] = pack4x8unorm(vec4f({rgb} * 0.5 + 0.5, 1.0));"
     code = wgsl(storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", f"array<{kind}>")]) + """
 ${HELPERS}
 var<workgroup> F: array<u32, ${tile}>;

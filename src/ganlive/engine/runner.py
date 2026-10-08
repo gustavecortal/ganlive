@@ -1,7 +1,7 @@
 """Run a ganlive engine program (from `ganlive convert`) through wgpu-py: the same shaders and
 dispatches `runner.mjs` runs in a browser, on Vulkan, Metal or DX12.
 
-    model = Model.load("runs/engine/lichen")   # on this machine's fastest backend
+    model = Model.load("runs/engine/lichen")   # on this machine's fastest backend and plans
     model.set_latent(z); model.set_settings(k)
     model.frame()                              # submits one frame
     pixels = model.read()                      # (H, W, 4) uint8, or (3, H, W) float32 for f32
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import sys
@@ -27,6 +28,10 @@ from ganlive.engine.probe import PROBE_LEVELS, probe_error
 from ganlive.files import remember
 
 USAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
+#: Lets a shader write straight into a buffer the host maps (`EngineStage.nv12_bytes`). wgpu
+#: warns that every buffer might then live in host memory; only those created mappable do.
+MAPPABLE = "mappable-primary-buffers"
+logging.getLogger("wgpu").addFilter(lambda record: "MAPPABLE_PRIMARY_BUFFERS" not in record.getMessage())
 
 
 def default_device(fallback: bool = False):
@@ -35,10 +40,19 @@ def default_device(fallback: bool = False):
                                                  force_fallback_adapter=fallback))
 
 
-class Model:
-    """One loaded program: its buffers, compiled pipelines and the steps of a frame."""
+class BuildTimeout(RuntimeError):
+    """A backend compiles this program slower than the time it was given."""
 
-    def __init__(self, device, program: dict, weights: bytes) -> None:
+
+class Model:
+    """One loaded program: its buffers, compiled pipelines and the steps of a frame.
+
+    `pipelines` (shader code -> pipeline) shares compiled pipelines between models on one
+    device; a build still compiling at `deadline` (a `time.perf_counter()` value) stops with
+    `BuildTimeout`."""
+
+    def __init__(self, device, program: dict, weights: bytes, *, pipelines: dict | None = None,
+                 deadline: float | None = None) -> None:
         if program.get("format") != FORMAT:
             raise ValueError(f"a {program.get('format')!r} program; this ganlive plays {FORMAT!r}")
         if len(weights) != program["buffers"]["P"]["size"]:
@@ -61,16 +75,17 @@ class Model:
             elif init == "words":
                 device.queue.write_buffer(buf, 0, np.array(spec["words"], np.uint32))
         self.output = self.buffers["out"]
-
-        pipelines: dict[int, object] = {}
+        pipelines = {} if pipelines is None else pipelines
 
         def compiled(spec):
-            index = spec["shader"]
-            if index not in pipelines:
-                module = device.create_shader_module(code=program["shaders"][index])
-                pipelines[index] = device.create_compute_pipeline(
-                    layout="auto", compute={"module": module, "entry_point": "main"})
-            pipeline = pipelines[index]
+            code = program["shaders"][spec["shader"]]
+            if code not in pipelines:
+                if deadline is not None and time.perf_counter() > deadline:
+                    self.destroy()
+                    raise BuildTimeout(f"{device.adapter.info['backend_type']} compiles too slowly")
+                pipelines[code] = device.create_compute_pipeline(layout="auto", compute={
+                    "module": device.create_shader_module(code=code), "entry_point": "main"})
+            pipeline = pipelines[code]
             bind = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=[
                 {"binding": i, "resource": {"buffer": self.buffers[n], "offset": 0,
                                             "size": self.buffers[n].size}}
@@ -85,11 +100,11 @@ class Model:
     @classmethod
     def load(cls, folder, device=None, **options) -> Model:
         """The model in `folder`, checked against its probe, on `device`, or else on the
-        fastest backend (`fastest`)."""
-        program, weights = read_folder(folder)
+        fastest backend (`fastest`), each with the plans tuned for it (`ganlive tune`)."""
+        manifest, weights = read_folder(folder)
         if device is None:
-            return fastest(program, weights, **options)[0]
-        return checked(device, program, weights, own_device=False)
+            return fastest(manifest, weights, **options)[0]
+        return checked(device, program_for(manifest, device.adapter), weights, own_device=False)
 
     def destroy(self) -> None:
         """Free this model's buffers. Its device may be shared, so it stays."""
@@ -112,11 +127,13 @@ class Model:
         self.device.queue.submit([encoder.finish()])
 
     def read(self) -> np.ndarray:
-        """The last frame, waited for: (H, W, 4) uint8 RGBA, or (3, H, W) float32 in [-1, 1]."""
+        """The last frame, waited for: (H, W, 4) uint8 RGBA (whichever order the program
+        draws), or (3, H, W) float32 in [-1, 1]."""
         data = self.device.queue.read_buffer(self.output)
         if self.program["output"] == "f32":
             return np.frombuffer(data, np.float32).reshape(3, self.height, self.width)
-        return np.frombuffer(data, np.uint8).reshape(self.height, self.width, 4)
+        pixels = np.frombuffer(data, np.uint8).reshape(self.height, self.width, 4)
+        return pixels[..., [2, 1, 0, 3]] if self.program["output"] == "bgra8" else pixels
 
     def wait(self) -> None:
         """Until the frames submitted so far are drawn."""
@@ -142,10 +159,9 @@ class Model:
 
 
 def read_folder(folder) -> tuple[dict, bytes]:
-    """The program and weights of the engine model in `folder`."""
+    """The manifest and weights of the engine model in `folder`."""
     folder = Path(folder)
-    manifest = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
-    return compile_manifest(manifest), (folder / WEIGHTS).read_bytes()
+    return json.loads((folder / MANIFEST).read_text(encoding="utf-8")), (folder / WEIGHTS).read_bytes()
 
 
 def cache_dir() -> Path:
@@ -157,34 +173,64 @@ def cache_dir() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ganlive"
 
 
-def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
-            choices: Path | None = None) -> tuple[Model, dict]:
+#: Backends whose compilers are fast are built first, so that they set the bar the others
+#: must build within (wgpu's D3D12 compiles with FXC, minutes for a large StyleGAN2).
+FIRST = ("Vulkan", "Metal")
+#: Seconds another backend may take to build a program while `fastest` measures it.
+BUDGET = 20.0
+#: What a desktop program draws: the BGRA8 an SDL texture and `EngineStage` take.
+OUTPUT = "bgra8"
+
+
+def model_key(manifest: dict) -> str:
+    """What `choices` keeps a model's measurements under: its default program's shaders, so
+    that a change to the model or to the shader generator measures again."""
+    return hashlib.sha1("\n".join(compile_manifest(manifest)["shaders"]).encode()).hexdigest()[:12]
+
+
+def program_for(manifest: dict, adapter, choices: Path | None = None) -> dict:
+    """`manifest` compiled with the plans tuned for `adapter`, if it has been (`ganlive tune`)."""
+    saved = _choices(choices or cache_dir() / "backends.json").get(model_key(manifest), {})
+    return compile_manifest(manifest, saved.get("plans", {}).get(_names([adapter])[0]), OUTPUT)
+
+
+def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
+            choices: Path | None = None, budget: float = BUDGET) -> tuple[Model, dict]:
     """The model built on whichever GPU backend draws it right and fastest here, and what was
     measured.
 
-    One card can differ between backends (on an Arc A770, wgpu-py's DX12 runs amber in 8.1 ms
-    and its Vulkan in 9.4; DX12 compiled with DXC runs it in 114), and the order depends on
-    the GPU and driver, so each backend that draws the program's probe is timed and the
-    winner remembered in `choices`. `backend` ("vulkan", "d3d12", "metal", ...) uses that
+    One card can differ between backends (on an Arc A770, wgpu-py's DX12 ran amber in 8.1 ms
+    and its Vulkan in 9.4; DX12 compiled with DXC ran it in 114), and the order depends on the
+    GPU and driver, so each backend that draws the program's probe is timed and the winner
+    remembered in `choices`. The first backend in `FIRST` order builds without a limit, the
+    others within `budget` seconds. `backend` ("vulkan", "d3d12", "metal", ...) uses that
     backend without measuring."""
     choices = choices or cache_dir() / "backends.json"
-    adapters = _gpus(backend)
+    adapters = sorted(_gpus(backend), key=lambda a: a.info["backend_type"] not in FIRST)
     names = _names(adapters)
-    if backend or len(adapters) == 1:
-        return _checked(adapters[0], program, weights), {"best": names[0]}
-    key = hashlib.sha1("\n".join(program["shaders"]).encode()).hexdigest()[:12]
+    key = model_key(manifest)
     saved = _choices(choices)
     known = saved.get(key, {})
+    plans = known.get("plans", {})
+
+    def build(name, adapter, deadline=None):
+        return _checked(adapter, compile_manifest(manifest, plans.get(name), OUTPUT), weights, deadline)
+
+    if backend or len(adapters) == 1:
+        return build(names[0], adapters[0]), {"best": names[0]}
     if sorted(known.get("measured", ())) == sorted(names) and known.get("best") in names:
         try:
-            return _checked(adapters[names.index(known["best"])], program, weights), known
+            return build(known["best"], adapters[names.index(known["best"])]), known
         except (RuntimeError, ValueError, wgpu.GPUError):
             pass                            # the remembered backend fails today: measure again
 
-    measured, built = {}, {}
+    measured, built, slow = {}, {}, set()
     for name, adapter in zip(names, adapters, strict=True):
         try:
-            built[name] = _checked(adapter, program, weights)
+            built[name] = build(name, adapter, time.perf_counter() + budget if built else None)
+        except BuildTimeout:
+            measured[name] = {"error": f"builds in over {budget:.0f} s"}
+            slow.add(name)
         except (RuntimeError, ValueError, wgpu.GPUError) as exc:
             measured[name] = {"error": str(exc)[:200]}
     # Rounds alternate between backends and each keeps its best, so a moment when something
@@ -214,17 +260,24 @@ def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames
             model.destroy()
             model.device.destroy()
     report = {"best": best, "measured": measured}
-    # A failure may be passing (memory held elsewhere): only a clean measurement is kept.
-    if len(best_ms) == len(names):
-        saved[key] = report
+    # A failure may be passing (memory held elsewhere), so only a clean measurement is kept;
+    # a slow compiler stays slow, and is not waited for again.
+    if len(best_ms) + len(slow) == len(names):
+        saved[key] = {**known, **report}
         remember(choices, json.dumps(saved, indent=2))
     return built[best], report
 
 
-def checked(device, program, weights, *, own_device: bool) -> Model:
+def checked(device, program, weights, *, own_device: bool, deadline: float | None = None,
+            pipelines: dict | None = None) -> Model:
     """A model built on `device`, refused if it does not draw the program's probe. A device the
     model owns goes with it, and a shared one stays."""
-    model = Model(device, program, weights)
+    try:
+        model = Model(device, program, weights, deadline=deadline, pipelines=pipelines)
+    except BuildTimeout:
+        if own_device:
+            device.destroy()
+        raise
     off = model.strays() if "probe" in program else 0.0
     if off > PROBE_LEVELS:
         model.destroy()
@@ -235,8 +288,8 @@ def checked(device, program, weights, *, own_device: bool) -> Model:
     return model
 
 
-def _checked(adapter, program, weights) -> Model:
-    return checked(_device(adapter), program, weights, own_device=True)
+def _checked(adapter, program, weights, deadline=None) -> Model:
+    return checked(_device(adapter), program, weights, own_device=True, deadline=deadline)
 
 
 def _gpus(backend: str | None) -> list:
@@ -272,4 +325,5 @@ def _device(adapter):
     """A device with the adapter's largest buffers: a 3072x2048 layer is over the defaults."""
     limits = {k: adapter.limits[k] for k in (
         "max-buffer-size", "max-storage-buffer-binding-size", "max-storage-buffers-per-shader-stage")}
-    return adapter.request_device_sync(required_limits=limits)
+    features = [MAPPABLE] if MAPPABLE in adapter.features else []
+    return adapter.request_device_sync(required_limits=limits, required_features=features)

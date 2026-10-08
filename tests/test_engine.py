@@ -15,10 +15,13 @@ from ganlive.levels import LEVEL
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import Config, Generator
+from ganlive.pixels import to_bgra, to_nv12
 from tests.support import tiny_stylegan2
 
 wgpu = pytest.importorskip("wgpu")
+from ganlive.engine.player import EngineGenerator  # noqa: E402
 from ganlive.engine.runner import Model, default_device  # noqa: E402
+from ganlive.engine.screen import EngineStage  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -117,3 +120,18 @@ def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(device,
             ref = net(torch.from_numpy(z))[0].numpy()
         levels = np.abs(model.read() - ref) * LEVEL
         assert levels.mean() < 0.5 and np.percentile(levels, 99.9) < 4, (levels.mean(), levels.max())
+
+
+def test_a_frame_reaches_the_window_and_the_recorder_as_the_model_drew_it(device):
+    """The BGRA the window shows and the NV12 a recording encodes are the bytes `pixels` makes
+    from the model's own picture."""
+    steerable, cfg, names = _prepared()
+    manifest, blob = manifest_of(steerable, cfg, names)
+    model = Model(device, compile_manifest(manifest, output="bgra8"), bytes(blob.data))
+    net = EngineGenerator(model)
+    stage = EngineStage(device, model.height, model.width)
+    frame = stage.step(net(host_latent(cfg.nz, seed=3)))
+    picture = torch.from_numpy(model.read()[..., :3].astype(np.float32) / 127.5 - 1.0)
+    picture = picture.permute(2, 0, 1)[None]
+    assert np.array_equal(stage.bgra_bytes(frame), to_bgra(picture).numpy())
+    assert np.array_equal(stage.nv12_bytes(frame), to_nv12(picture).numpy())

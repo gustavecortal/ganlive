@@ -11,7 +11,8 @@ COMMANDS = {
     "doctor": ("doctor", "what this machine's audio and MIDI actually offer"),
     "dials": ("dials", "derive a checkpoint's latent directions and save them beside it"),
     "import-stylegan2": ("import_stylegan2", "convert an NVIDIA StyleGAN2 pickle to a playable checkpoint"),
-    "convert": ("convert", "convert a FastGAN checkpoint to an engine model that plays on any GPU"),
+    "convert": ("convert", "convert a FastGAN or StyleGAN2 checkpoint to an engine model that plays on any GPU"),
+    "tune": ("tune", "find how each layer of a model runs fastest on this GPU, and remember it"),
     "export-onnx": ("export_onnx", "export a checkpoint as an ONNX graph with its dials as inputs"),
     "adopt": ("adopt", "make any ONNX graph or Hub model playable: dial it, prove it, save it"),
 }
