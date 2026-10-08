@@ -11,26 +11,13 @@ import torch
 import torch.nn.functional as F
 
 from ganlive.device import synchronize
+from ganlive.levels import EXACT_LEVELS, FLOOR_LEVELS, LEVEL, RANDOM_FLOOR
+
+__all__ = ["EXACT_LEVELS", "FLOOR_LEVELS", "LEVEL", "RANDOM_FLOOR"]
 
 #: BT.709 luma coefficients.
 _KR, _KB = 0.2126, 0.0722
 _KG = 1 - _KR - _KB
-
-#: One 8-bit level is 1/127.5 of a generator's [-1, 1] output range.
-LEVEL = 127.5
-
-#: The most a rewrite that should be exact may move the picture, in 8-bit levels. Loose
-#: enough for a driver that reassociates a sum, tight enough that a frozen picture fails.
-EXACT_LEVELS = 0.5
-
-#: A dial or a direction moving less than this many 8-bit levels at full travel is not a
-#: control.
-FLOOR_LEVELS = 1.0
-
-#: How many times what a random direction of the same length moves, on the same latents, a
-#: direction must move to be a control rather than a walk. Relative, because some
-#: checkpoints move hard along every direction.
-RANDOM_FLOOR = 2.0
 
 
 def levels(a, b) -> float:

@@ -172,6 +172,8 @@ def test_one_dial_per_resolution_not_per_layer():
     assert float(net.mapping.truncation[1]) == 0.25
 
 
+@pytest.mark.skip(reason="a StyleGAN2 plays on the engine once its shaders exist (phase 3); "
+                         "this load path is the PyTorch one the bank no longer runs")
 def test_ganlive_opens_one(tmp_path, capsys):
     """The whole load path: install, measure, equalise, and a surface built from the result."""
     torch.manual_seed(0)

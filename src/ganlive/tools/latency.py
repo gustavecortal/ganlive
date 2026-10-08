@@ -102,7 +102,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     try:
         for _ in range(8):                                  # the window's first texture
             display.publish(to_window(r.stage.step(model.net(walk.latent(0.0)))))
-        dev.synchronize()
+        r.sync()
         for f in range(int(args.seconds * args.fps)):
             t0 = time.perf_counter()
             runner.observe(ex.drain())
@@ -189,7 +189,7 @@ def main(argv=None) -> int:
     model = r.current
     z_fixed = latent_for(model, r)
     r.stage.nv12_bytes(r.stage.step(model.net(z_fixed)))
-    dev.synchronize()
+    r.sync()
 
     ex = FeatureExtractor(pcm.shape[0], take.samplerate)
     runner = PresetRunner(worst_case(model.layout), INDEX, float(args.fps),
@@ -277,7 +277,7 @@ def main(argv=None) -> int:
 
             for _ in range(8):                          # the first frames after a switch
                 step()
-            dev.synchronize()
+            r.sync()
             per[m.name] = stat_ms(_time_frames(total, step), period_ms)
             per[m.name]["size"] = [r.width, r.height]
         r.use(was)

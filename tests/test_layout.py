@@ -22,7 +22,7 @@ REPO = SRC.parents[1]
 #: one, so a reader can learn the package bottom up. A package's entry covers its modules.
 LAYERS = {
     # Torch-free basics, and the device calls everything else asks.
-    "ganlive": 0, "ganlive.curves": 0, "ganlive.clock": 0, "ganlive.files": 0,
+    "ganlive": 0, "ganlive.curves": 0, "ganlive.clock": 0, "ganlive.files": 0, "ganlive.levels": 0,
     "ganlive.timing": 0, "ganlive.device": 0, "ganlive.checkpoints": 0,
     # Frames off the card, and the settings vector on it.
     "ganlive.pixels": 1, "ganlive.settings": 1,

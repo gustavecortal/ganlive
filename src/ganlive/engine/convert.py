@@ -15,12 +15,16 @@ Weight layouts (fp16, little-endian; every array starts on a 4-byte boundary):
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from ganlive.dials import steer
+from ganlive.device import detect_backend
+from ganlive.dials import fastgan_dials, steer
+from ganlive.dials.gate import directions_for, measure_dials
+from ganlive.engine import program as _program
 from ganlive.engine.program import box_means, compile_program, noise_seed, seeded_noise
 from ganlive.files import write_json
 from ganlive.models.common import host_latent
@@ -34,6 +38,12 @@ from ganlive.models.onnx_rewrite import (
 )
 from ganlive.models.steerable import SteerableSLE
 from ganlive.pixels import EXACT_LEVELS
+from ganlive.settings import Settings
+
+#: What a converted model was made by, stamped into it: a change to the converter or the shader
+#: generator converts every checkpoint again at its next load, so an improvement reaches
+#: models converted before it.
+MADE_BY = hashlib.sha1(Path(__file__).read_bytes() + Path(_program.__file__).read_bytes()).hexdigest()[:12]
 
 
 class Blob:
@@ -171,17 +181,55 @@ def probe(steerable, cfg, names: list[str]) -> dict:
     return {"z": z[0].tolist(), "means": np.round(box_means(image), 5).ravel().tolist()}
 
 
-def build(steerable, cfg, names: list[str], output: str = "rgba8") -> tuple[dict, Blob]:
-    """The program, probe included, and the weights, for a prepared net."""
+class Driven(torch.nn.Module):
+    """The steerable net as ganlive's dial measurements drive a played FastGAN: `net(z)`, its
+    settings read from the `Settings` they write."""
+
+    def __init__(self, steerable, settings: Settings) -> None:
+        super().__init__()
+        self.steerable, self.settings = steerable, settings
+
+    def forward(self, z):
+        return self.steerable(z, self.settings.vec)
+
+
+def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None) -> dict:
+    """The dials of this net, measured once here so that playing measures nothing: the noise
+    gains each band needs, the latent directions that beat a random one (ranked), and how far
+    each MODEL dial moves the picture, which decides which dials are live. On `device`, the
+    fastest PyTorch has here unless given, with the engine's own noise."""
+    device = device or detect_backend()
+    net = Driven(copy.deepcopy(steerable).to(device),
+                 Settings(names, device, torch.float32)).eval()
+    with torch.no_grad():
+        gains = steer.calibrate_noise(net, net.settings, cfg.nz, device, torch.float32)
+        layout = fastgan_dials.fastgan(noise_gains=gains)
+        found = directions_for(net, cfg.nz, device, torch.float32, path=checkpoint)
+        layout = measure_dials(net, net.settings, layout, cfg.nz, device, torch.float32)
+    directions = None if found is None else {
+        "basis": np.round(found.basis.float().cpu().numpy(), 6).tolist(),
+        "levels": [round(v, 2) for v in found.levels or ()], "report": found.report()}
+    return {"noise_gains": gains, "directions": directions,
+            "measured": {k.name: k.measured for k in layout.knobs if k.measured is not None}}
+
+
+def build(steerable, cfg, names: list[str], output: str = "rgba8", dials=None) -> tuple[dict, Blob]:
+    """The program, probe and `dials` (from `measured_dials`) included, and the weights."""
     manifest, blob = manifest_of(steerable, cfg, names)
     program = compile_program(manifest, output=output)
     program["probe"] = probe(steerable, cfg, names)
+    if dials is not None:
+        program["dials"] = dials
     return program, blob
 
 
-def convert(checkpoint, out: Path) -> dict:
-    """Write the engine model for `checkpoint` into the folder `out`. Returns the program."""
-    program, blob = build(*prepared(checkpoint))
+def convert(checkpoint, out: Path, device=None) -> dict:
+    """Write the engine model for `checkpoint`, its dials measured on `device`, into the folder
+    `out`. Returns the program."""
+    steerable, cfg, names = prepared(checkpoint)
+    dials = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint)
+    program, blob = build(steerable, cfg, names, dials=dials)
+    program["made_by"] = MADE_BY
     write_json(Path(out) / "program.json", program, indent=None)
     (Path(out) / "weights.bin").write_bytes(blob.data)
     return program

@@ -186,8 +186,9 @@ def test_a_bank_may_mix_latent_widths_and_aspect_ratios_and_refuses_only_a_dupli
 def test_one_record_answers_every_question_about_a_model_file():
     """The config reader, the loader, the capture gate, the layout and the shelf all ask the
     same `Family`, so a new format is one entry and no two places can disagree."""
-    assert [f.name for f in FAMILIES] == ["onnx", "stylegan2", "fastgan"], (
-        "order is load-bearing: suffix, then the file's own tag, then whatever is left")
+    assert [f.name for f in FAMILIES] == ["engine", "onnx", "stylegan2", "fastgan"], (
+        "order is load-bearing: a program folder, the suffix, the file's own tag, then whatever "
+        "is left")
     assert family_of(pathlib.Path("anything.onnx")).name == "onnx"
     assert family_of(pathlib.Path("no-such-file.pt")).name == "fastgan", (
         "the tail takes anything, so this never returns None")
@@ -195,8 +196,9 @@ def test_one_record_answers_every_question_about_a_model_file():
     for family in FAMILIES:
         for field in ("owns", "config_of", "prepare"):
             assert callable(getattr(family, field)), f"{family.name}.{field}"
-    assert [f.name for f in FAMILIES if not f.capturable] == ["onnx"], (
-        "an ONNX graph runs under its own runtime, so a torch-stream recording holds nothing")
+    assert [f.name for f in FAMILIES if not f.capturable] == ["engine", "onnx", "fastgan"], (
+        "the engine and ONNX run under their own runtimes, so a torch-stream recording holds "
+        "nothing")
 
 
 def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():
@@ -220,16 +222,31 @@ def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():
 
 
 def test_ganlive_opens_a_fastgan_checkpoint(tmp_path):
-    """The whole FastGAN load path, from a `.pt` on disk to a playable `Model`: rebuild,
-    freeze the noise, install, measure, lay out."""
+    """The whole FastGAN load path, from a `.pt` on disk to a `Model` playing on the engine:
+    converted beside the checkpoint once, its dials measured then, and loaded from there."""
+    wgpu = pytest.importorskip("wgpu")
+    from ganlive.engine.runner import default_device
+
+    try:
+        gpu = default_device(fallback=True)        # the CPU adapter: the card stays free
+    except (RuntimeError, wgpu.GPUError):
+        pytest.skip("no WebGPU CPU adapter")
     torch.manual_seed(0)          # the dial gate measures the picture; random weights vary
     cfg = dict(nz=16, ngf=8, im_size=256, im_width=None)
     net = Generator(**cfg)
+    # Statistics from a few batches, as training leaves them: untrained ones let activations
+    # outgrow fp16, and the engine is right to refuse a model it cannot draw.
+    for module in net.modules():
+        if isinstance(module, torch.nn.BatchNorm2d):
+            module.momentum = None
+    with torch.no_grad():
+        for _ in range(4):
+            net(torch.randn(8, 16))
     path = tmp_path / "tiny.pt"
     torch.save({"g_ema": net.state_dict(), "config": cfg}, path)
 
-    model = R._prepare(path, "cpu", torch.float32,
-                       LoadOptions(compile_net=False, capture=False, measure_grain=False))
+    model = R._prepare(path, gpu, LoadOptions())
+    assert (tmp_path / "tiny.engine" / "program.json").is_file(), "converted beside it"
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
     assert model.settings.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and

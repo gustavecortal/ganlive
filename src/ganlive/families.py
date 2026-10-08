@@ -1,17 +1,26 @@
-"""The three kinds of generator file -- exported ONNX graph, converted StyleGAN2, this project's
-FastGAN -- and how each is opened and made ready to play.
+"""The kinds of generator file -- engine model, exported ONNX graph, converted StyleGAN2, this
+project's FastGAN -- and how each is opened and made ready to play.
+
+A FastGAN plays on the engine: its checkpoint is converted, at its first load, into the engine
+model beside it (`lichen.pt` -> `lichen.engine/`), which later loads read directly.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
-from ganlive.checkpoints import is_onnx
+from ganlive.checkpoints import ENGINE_SUFFIX, PROGRAM, is_engine, is_onnx
 from ganlive.device import playback_dtype
 from ganlive.dials import derive, fastgan_dials, steer, table
 from ganlive.dials.gate import directions_for
+from ganlive.engine import convert as engine_convert
+from ganlive.engine.player import EngineConfig, EngineGenerator, Ladder, dials_of
+from ganlive.engine.program import PROBE_LEVELS
+from ganlive.engine.runner import Model, fastest, read_folder
 from ganlive.models import calibrate, fastgan, onnx_file
 from ganlive.models import stylegan2 as S2
 from ganlive.models.capture import compile_and_count
@@ -133,6 +142,51 @@ def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
                     graphs=graphs, compile_s=secs, push=push)
 
 
+def engine_config_of(path) -> EngineConfig:
+    program = json.loads((Path(path) / PROGRAM).read_text(encoding="utf-8"))
+    return EngineConfig(program["nz"], Ladder(program["height"], program["width"]))
+
+
+def converted(checkpoint, device=None) -> Path:
+    """The engine model beside `checkpoint`, converted now unless it is there and current."""
+    checkpoint = Path(checkpoint)
+    folder = checkpoint.with_suffix(ENGINE_SUFFIX)
+    try:
+        program = json.loads((folder / PROGRAM).read_text(encoding="utf-8"))
+        if (program.get("made_by") == engine_convert.MADE_BY and (folder / PROGRAM).stat().st_mtime
+                >= checkpoint.stat().st_mtime):
+            return folder
+    except (OSError, ValueError):
+        pass
+    print(f"converting {checkpoint.name} for the engine (once) -> {folder}", flush=True)
+    engine_convert.convert(checkpoint, folder, device)
+    return folder
+
+
+def _prepare_engine(path, device, dtype, options: LoadOptions) -> Prepared:
+    """An engine model made ready to play: on `device`, a wgpu device the bank already plays
+    on, or else on this machine's fastest backend for it (see `engine.runner.fastest`).
+    A FastGAN checkpoint is converted first; `dtype` is unused, the engine is fp16."""
+    folder = Path(path) if is_engine(path) else converted(path)
+    program, weights = read_folder(folder)
+    if device is None:
+        model, report = fastest(program, weights)
+        print(f"engine: {report['best']}", flush=True)
+    else:
+        model = Model(device, program, weights)
+        off = model.strays() if "probe" in program else 0.0
+        if off > PROBE_LEVELS:
+            model.destroy()
+            raise RuntimeError(f"{Path(path).name} draws {off:.1f} levels off on this device")
+    net = EngineGenerator(model)
+    print(net.report(), flush=True)
+    layout, directions = dials_of(program)
+    if directions is not None:
+        print(f"directions: {directions.report()}", flush=True)
+    return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=layout,
+                    directions=directions)
+
+
 def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
     """This project's own generator made ready to play."""
     net, cfg = fastgan.load(path, device)
@@ -166,10 +220,14 @@ class Family:
 
 #: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
 FAMILIES = (
+    Family("engine", is_engine, engine_config_of, _prepare_engine, capturable=False),
     Family("onnx", is_onnx, onnx_file.config_of, _prepare_onnx, capturable=False),
     Family("stylegan2", is_stylegan2, S2.config_of, _prepare_stylegan2),
-    Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_fastgan),
+    Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_engine, capturable=False),
 )
+
+#: The families that play on the engine, which is all a bank plays on.
+ENGINE_FAMILIES = ("engine", "fastgan")
 
 
 def family_of(path) -> Family:

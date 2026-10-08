@@ -10,6 +10,7 @@ import collections
 from dataclasses import dataclass, replace
 
 from ganlive.curves import at, clamp01, evenly
+from ganlive.levels import FLOOR_LEVELS
 
 #: How many latent directions to expose: one page of eight encoders on the drum machine.
 DIRECTIONS = 8
@@ -351,3 +352,23 @@ def per_model(layout) -> tuple[str, ...]:
     """The dials whose meaning belongs to one model: its MODEL block and its directions."""
     return tuple(k.name for k in layout.knobs
                  if k.group == "MODEL" or direction_index(k.name) is not None)
+
+
+def live_dials(settings, directions, layout) -> frozenset:
+    """The names of the dials that reach this model and, where measured, move its picture."""
+    have = set(getattr(settings, "index", ()) or ())
+    count = 0 if directions is None else len(directions)
+    live = set()
+    for knob in layout.knobs:
+        index = direction_index(knob.name)
+        if index is not None:
+            if index < count:
+                live.add(knob.name)
+            continue
+        # `any`, not `all`: a dial that reaches three of its four bands is still a dial. And
+        # reaching the model is not moving the picture: a modulated convolution divides a
+        # constant gain straight back out, so a measurement below the floor is dark too.
+        reaches = not knob.writes or any(write.setting in have for write in knob.writes)
+        if reaches and (knob.measured is None or knob.measured >= FLOOR_LEVELS):
+            live.add(knob.name)
+    return frozenset(live)

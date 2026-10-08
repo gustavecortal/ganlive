@@ -1,7 +1,8 @@
 """A bank of loaded models, one playing at a time, and the shelf of models on disk that can join it.
 
-`build` turns checkpoint paths into a `Bank`. How each kind of file is opened is in
-`families`, the dial gate is in `dials.gate`, and file naming is in `checkpoints`.
+`build` turns checkpoint paths into a `Bank`. Every model plays on the engine, all on one wgpu
+device, the first model's fastest; how each kind of file becomes an engine model is in
+`families`, and file naming is in `checkpoints`.
 """
 from __future__ import annotations
 
@@ -10,16 +11,23 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import torch
 
-from ganlive.checkpoints import ONNX, admit, checkpoint_for, checkpoints_in, index_of, label_for
+from ganlive.checkpoints import (
+    ENGINE_SUFFIX,
+    ONNX,
+    admit,
+    checkpoint_for,
+    checkpoints_in,
+    index_of,
+    is_engine,
+    label_for,
+)
 from ganlive.clock import WalkConfig
-from ganlive.device import detect_backend, playback_dtype
-from ganlive.dials.gate import verified
-from ganlive.families import LoadOptions, config_of, family_of
-from ganlive.frame import FrameStage
-from ganlive.models.capture import Replay, capture
-from ganlive.pixels import compiled_conversions
+from ganlive.dials.table import live_dials
+from ganlive.engine.screen import EngineStage
+from ganlive.families import ENGINE_FAMILIES, LoadOptions, config_of, family_of
 from ganlive.walk import SlerpWalk
 from ganlive.window import fit_height
 
@@ -57,7 +65,7 @@ class Model:
 
     def __post_init__(self) -> None:
         if self.rows is None and self.directions is not None:
-            self.rows = self.directions.basis.numpy()
+            self.rows = np.asarray(self.directions.basis, np.float32)
 
     @functools.cached_property
     def name(self) -> str:
@@ -65,35 +73,27 @@ class Model:
         return label_for(self.path)
 
 
-def _prepare(path, device, dtype, options: LoadOptions) -> Model:
-    """One model made ready to play: opened by its family, captured, and its dials verified."""
+def _prepare(path, gpu, options: LoadOptions) -> Model:
+    """One model made ready to play on the engine, on the wgpu device `gpu` (the bank's), or
+    on this machine's fastest for it when the bank has none yet. Its dials were measured when
+    it was converted, so which of them are live is read off the program, not measured."""
     family = family_of(path)
-    got = family.prepare(path, device, dtype, options)
-    # Captured after every sweep above, which read the module tree or hold two frames side by
-    # side, and before the gate, so the gate measures the graph that will actually play.
-    if options.capture and family.capturable:
-        feeds = [got.settings.vec] + ([got.push] if got.push is not None else [])
-        got.net, said = capture(got.net, got.cfg.nz, device, dtype, feeds=feeds)
-        print(f"graph: {said}", flush=True)
-        if isinstance(got.net, Replay):
-            # The graph reads its settings and push from host buffers of its own, so a dial
-            # write and a walk step become host writes into those; see `Replay`.
-            got.settings.feed_from(got.net.host_buffer(got.settings.vec))
-            if got.push is not None:
-                got.push = got.net.host_buffer(got.push)
-    model = Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
-                  layout=got.layout, graphs=got.graphs, compile_s=got.compile_s,
-                  directions=got.directions, push=got.push)
-    return verified(model, device, dtype)
+    if family.name not in ENGINE_FAMILIES:
+        raise ValueError(f"{label_for(path)}: a {family.name} model does not play on the engine "
+                         f"yet; a FastGAN does, converted with `ganlive convert`")
+    started = time.perf_counter()
+    got = family.prepare(path, gpu, None, options)
+    return Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
+                 layout=got.layout, compile_s=time.perf_counter() - started,
+                 directions=got.directions,
+                 dials_live=live_dials(got.settings, got.directions, got.layout))
 
 
-def _warm(stage: FrameStage, model: Model, device, dtype, size) -> int:
-    """One warm-up frame through the whole after-generator path, at the size it will play.
-    Returns graphs built. A smaller dummy would build a second graph on the first real frame."""
+def _warm(stage: EngineStage, model: Model, size) -> int:
+    """One warm-up frame through the whole after-generator path, at the size it will play."""
     stage.resize(*size)
-    with torch.no_grad():
-        probe = model.net(torch.zeros(1, model.cfg.nz, device=device, dtype=dtype))
-        return stage.warm(stage.step(probe))
+    probe = model.net(np.zeros((1, model.cfg.nz), np.float32))
+    return stage.warm(stage.step(probe))
 
 
 @dataclass
@@ -101,7 +101,8 @@ class Bank:
     """The models, the work that happens after any of them, and which one is playing."""
 
     models: list[Model]
-    stage: FrameStage
+    stage: EngineStage
+    #: Where the walk keeps its latent: the host, which is where the engine reads it.
     device: str
     index: int = 0
     #: How every model in this bank was prepared, including the ones added later.
@@ -118,7 +119,16 @@ class Bank:
 
     def __post_init__(self) -> None:
         if self.dtype is None:
-            self.dtype = playback_dtype(self.device)
+            self.dtype = torch.float32
+
+    @property
+    def gpu(self):
+        """The wgpu device every model of this bank plays on."""
+        return self.stage.device
+
+    def sync(self) -> None:
+        """Wait until everything queued for the card is done."""
+        self.stage.sync()
 
     @property
     def current(self) -> Model:
@@ -175,9 +185,9 @@ class Bank:
         path = checkpoint_for(Path(target))
         admit(self.models, path)
         playing = (self.height, self.width)
-        model = _prepare(path, self.device, self.dtype, self.options)
+        model = _prepare(path, self.gpu, self.options)
         try:
-            warmed = _warm(self.stage, model, self.device, self.dtype, self.size_of(model))
+            warmed = _warm(self.stage, model, self.size_of(model))
         finally:
             self.stage.resize(*playing)
         # Joined only once it has run, so a model whose warm-up raised is not left in the bank.
@@ -267,12 +277,19 @@ class Shelf:
         return sorted(out, key=lambda s: (not s.loaded, -s.path.stat().st_mtime))
 
     def _models(self) -> list[Path]:
-        """Every model file under `root`: each exported graph, the newest checkpoint of each
-        training run, and every file of a flat folder. Empty when there is no `root`."""
+        """Every model file under `root`: each engine model, exported graph, the newest
+        checkpoint of each training run, and every file of a flat folder. Empty when there is
+        no `root`."""
         if not self.root.is_dir():
             return []
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            if is_engine(folder):
+                found.append(folder)
+                continue
+            # `runs/engine/<model>`; a `.engine` folder beside a checkpoint is that checkpoint's.
+            found += sorted(p for p in folder.iterdir()
+                            if is_engine(p) and not p.name.endswith(ENGINE_SUFFIX))
             found += sorted(folder.glob(f"*{ONNX}"))
             history = folder / "checkpoints"
             found += checkpoints_in(history)[-1:] if history.is_dir() else checkpoints_in(folder)
@@ -301,33 +318,29 @@ class Shelf:
 
 def build(checkpoints: list, device: str | None = None, height: int | None = 0, dtype=None,
           screen=None, options: LoadOptions | None = None) -> Bank:
-    """Load and prepare every checkpoint, warm the stage at each one's size, and return the
-    bank playing the first.
-
-    `device` and `dtype` default to this machine's accelerator and the precision it plays
-    fastest in; see `device.playback_dtype`. `height` is as `window.parse_height` returns."""
-    device = device or detect_backend()
-    dtype = dtype or playback_dtype(device)
+    """Load and prepare every checkpoint on the engine, warm the stage at each one's size, and
+    return the bank playing the first. The first model picks the wgpu device (its fastest
+    backend here) and the others join it. `device` and `dtype` are unused: the engine chooses
+    its own backend and plays in fp16. `height` is as `window.parse_height` returns."""
     options = options or LoadOptions()
     paths = [checkpoint_for(Path(t)) for t in checkpoints]
 
     models: list[Model] = []
     t_all = time.perf_counter()
+    gpu = None
     for path in paths:
         admit(models, path)
-        models.append(_prepare(path, device, dtype, options))
+        models.append(_prepare(path, gpu, options))
+        gpu = models[0].net.model.device
 
     out_height, out_width = frame_size(models[0].cfg, height, screen)
-    to_yuv, to_rgb, to_bgra = compiled_conversions()
-    stage = FrameStage(out_height, out_width, to_yuv, to_rgb=to_rgb, to_bgra=to_bgra,
-                       device=device)
+    stage = EngineStage(gpu, out_height, out_width)
 
     # Each at its own size, `models[0]` last, so the stage is left at the size that plays.
-    warmed = sum(_warm(stage, m, device, dtype, frame_size(m.cfg, height, screen))
-                 for m in reversed(models))
+    warmed = sum(_warm(stage, m, frame_size(m.cfg, height, screen)) for m in reversed(models))
     stage.resize(out_height, out_width)
 
-    return Bank(models=models, stage=stage, device=device,
+    return Bank(models=models, stage=stage, device="cpu",
                 graphs=sum(m.graphs for m in models) + warmed,
-                compile_s=time.perf_counter() - t_all, dtype=dtype,
+                compile_s=time.perf_counter() - t_all, dtype=torch.float32,
                 height_want=height, screen=screen, options=options)

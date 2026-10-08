@@ -744,7 +744,7 @@ def main(argv=None) -> int:
 
     first = r.stage.step(r.current.net(walk.latent(0.0)))
     to_window(first)
-    dev.synchronize()
+    r.sync()
 
     rec = None
     stills: list = []
@@ -780,7 +780,7 @@ def main(argv=None) -> int:
                                  realtime=True, depth=TAKE_DEPTH).start()
             # The card idle while the encoder opens: see `Recorder.wait_open`. The picture
             # holds for that long, about a second and a half on a hardware encoder.
-            dev.synchronize()
+            r.sync()
             if not rec.wait_open():
                 print("  the encoder is still opening after 30 s; carrying on", flush=True)
             print(f"recording {r.width}x{r.height} to {path} with {args.codec}", flush=True)

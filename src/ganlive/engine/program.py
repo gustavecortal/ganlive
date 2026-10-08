@@ -22,10 +22,10 @@ from string import Template
 
 import numpy as np
 
+from ganlive.levels import LEVEL
+
 FORMAT = "ganlive-engine/1"
-#: One 8-bit level in the [-1, 1] range a generator draws: `ganlive.pixels.LEVEL`, which this
-#: module cannot import because `pixels` loads PyTorch.
-LEVEL = 127.5
+
 WG = 8                      # direct-convolution workgroups are WG x WG threads
 GEMM_MAX = 6144             # maps up to this many pixels run as a matrix product
 GEMM_TARGET = 256           # workgroups a matrix product aims to fill, by splitting its sum
@@ -534,12 +534,17 @@ def box_means(image: np.ndarray) -> np.ndarray:
     """Block means in [-1, 1], (3, 16, 24), of a (3, H, W) float picture or of (H, W, 4)
     RGBA8 pixels, the latter summed as integers with no full-size float copy."""
     gh, gw = PROBE_GRID
-    if image.dtype == np.uint8:
-        h, w = image.shape[:2]
-        sums = image.reshape(gh, h // gh, gw, w // gw, 4)[..., :3].sum(axis=(1, 3), dtype=np.uint64)
-        return (sums.transpose(2, 0, 1) / (h // gh * (w // gw))) / LEVEL - 1.0
-    c, h, w = image.shape
-    return image.reshape(c, gh, h // gh, gw, w // gw).mean(axis=(2, 4))
+    pixels = image.dtype == np.uint8
+    h, w = image.shape[:2] if pixels else image.shape[1:]
+    # Block i spans rows [i*h/gh, (i+1)*h/gh), so any size divides into the grid.
+    rows, cols = (np.arange(n) * size // n for n, size in ((gh, h), (gw, w)))
+    area = np.outer(np.diff(rows, append=h), np.diff(cols, append=w))
+    if pixels:
+        sums = np.add.reduceat(np.add.reduceat(image[..., :3], rows, axis=0, dtype=np.uint64),
+                               cols, axis=1)
+        return (sums.transpose(2, 0, 1) / area) / LEVEL - 1.0
+    sums = np.add.reduceat(np.add.reduceat(image, rows, axis=1, dtype=np.float64), cols, axis=2)
+    return sums / area
 
 
 def probe_error(probe: dict, image: np.ndarray) -> float:

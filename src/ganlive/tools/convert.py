@@ -4,8 +4,8 @@ a browser, without PyTorch.
     ganlive convert runs/lichen/lichen.pt            ->  runs/engine/lichen/
 
 The folder holds `weights.bin` (fp16) and `program.json`: every compute shader of a frame, the
-buffers they use, and a probe of the picture PyTorch draws, which a backend must match before
-it is trusted. Converting needs PyTorch, on the CPU.
+buffers they use, the model's dials (measured here, on `--device`), and a probe of the picture
+PyTorch draws, which a backend must match before it is trusted. Converting needs PyTorch.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ganlive.checkpoints import checkpoint_for, slug_for
 from ganlive.files import size_mb
-from ganlive.tools import parser
+from ganlive.tools import add_device, parser
 
 
 def main(argv=None) -> int:
@@ -23,6 +23,7 @@ def main(argv=None) -> int:
     ap.add_argument("checkpoint", type=Path, help="a FastGAN checkpoint, or a run folder for its newest")
     ap.add_argument("--out", type=Path, default=None,
                     help="destination folder. Default: runs/engine/<model>")
+    add_device(ap, help="where the dials are measured. Default: whichever accelerator is there")
     args = ap.parse_args(argv)
     try:
         checkpoint = checkpoint_for(args.checkpoint)
@@ -34,11 +35,12 @@ def main(argv=None) -> int:
     out = args.out or Path("runs/engine") / slug_for(checkpoint)
     started = time.perf_counter()
     try:
-        program = convert(checkpoint, out)
+        program = convert(checkpoint, out, args.device)
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
     print(f"{checkpoint.name} -> {out}: {program['width']}x{program['height']}, "
           f"{len(program['steps'])} steps, {size_mb(out / 'weights.bin'):.1f} MB of weights, "
+          f"{len((program['dials']['directions'] or {}).get('basis', []))} directions, "
           f"in {time.perf_counter() - started:.1f} s")
     return 0

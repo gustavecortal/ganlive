@@ -10,16 +10,28 @@ from pathlib import Path
 ONNX = ".onnx"
 #: The suffix of the derived directions saved beside a checkpoint (`dials.derive.cache_path`).
 CACHE_SUFFIX = ".directions.pt"
+#: The file that makes a folder an engine model (`ganlive convert`).
+PROGRAM = "program.json"
+#: The suffix of the engine model a checkpoint is converted into, beside it, at load.
+ENGINE_SUFFIX = ".engine"
 
 
 def is_onnx(path) -> bool:
     return Path(path).suffix.lower() == ONNX
 
 
+def is_engine(path) -> bool:
+    """Whether this is an engine model: a folder holding a program."""
+    return (Path(path) / PROGRAM).is_file()
+
+
 def run_step(path) -> tuple[str, str]:
     """A checkpoint's identity as the pair `(run, step)`. A file named after its run, as a
     published model is (`lichen/lichen.pt`), has no step: its run says everything."""
     path = Path(path)
+    if is_engine(path):
+        # `runs/engine/lichen`, or the `lichen.engine` converted beside `lichen.pt`.
+        return path.name.removesuffix(ENGINE_SUFFIX), ""
     if is_onnx(path):
         # Exports sit in one flat folder as `<run>-<step>.onnx`, so the parent says nothing;
         # a graph with no step in its name (`lichen.onnx`, an adopted one) is its stem.
@@ -66,7 +78,7 @@ def checkpoint_for(target) -> Path:
     """The one model a path means: a file; a run, whose last checkpoint by name is wanted; or a
     folder of exported graphs, whose last by name is wanted the same way."""
     target = Path(target)
-    if target.is_file():
+    if target.is_file() or is_engine(target):
         return target
     inner = target / "checkpoints"
     folder = inner if inner.is_dir() else target
