@@ -16,6 +16,12 @@ COMMANDS = {
 }
 
 
+#: What a missing PyTorch says: playing a converted model needs none, converting does.
+NEEDS_TORCH = ("this needs PyTorch, which converts checkpoints and reads unconverted ones: install "
+               "PyTorch for your GPU (https://pytorch.org/get-started/locally/), or "
+               "`pip install 'ganlive[convert]'`")
+
+
 def usage() -> str:
     width = max(len(name) for name in COMMANDS)
     lines = [f"  {name:<{width}}  {help_}" for name, (_, help_) in COMMANDS.items()]
@@ -32,8 +38,14 @@ def main(argv=None) -> int:
     if name not in COMMANDS:
         print(f"ganlive: no command {name!r}\n\n{usage()}", file=sys.stderr)
         return 2
-    module = importlib.import_module(f"ganlive.tools.{COMMANDS[name][0]}")
-    return module.main(argv[1:])
+    try:
+        module = importlib.import_module(f"ganlive.tools.{COMMANDS[name][0]}")
+        return module.main(argv[1:])
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch":
+            raise
+        print(f"ganlive {name}: {NEEDS_TORCH}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

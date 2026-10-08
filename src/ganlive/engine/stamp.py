@@ -10,10 +10,7 @@ from __future__ import annotations
 import ast
 import functools
 import hashlib
-import json
 from pathlib import Path
-
-from ganlive.checkpoints import MANIFEST
 
 PACKAGE = Path(__file__).resolve().parents[1]           # src/ganlive
 
@@ -78,11 +75,3 @@ def same(a: dict | None, b: dict) -> bool:
     """Whether two stamps describe the same conversion. Size and time only speed the check."""
     keys = ("made_by", "checkpoint", "floor", "grain")
     return a is not None and all(a.get(k) == b[k] for k in keys)
-
-
-def manifest_stamp(folder) -> dict | None:
-    """The stamp of the engine model in `folder`, or None if there is none to read."""
-    try:
-        return json.loads((Path(folder) / MANIFEST).read_text(encoding="utf-8")).get("stamp")
-    except (OSError, ValueError):
-        return None

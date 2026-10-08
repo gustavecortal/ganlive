@@ -24,6 +24,7 @@ from ganlive.checkpoints import (
 )
 from ganlive.clock import WalkConfig
 from ganlive.dials.table import live_dials
+from ganlive.engine.load import open_model
 from ganlive.engine.screen import EngineStage
 from ganlive.families import LoadOptions, config_of, family_of
 from ganlive.walk import SlerpWalk
@@ -75,13 +76,14 @@ def _prepare(path, gpu, options: LoadOptions) -> Model:
     """One model made ready to play on the engine, on the wgpu device `gpu` (the bank's), or
     on this machine's fastest for it when the bank has none yet. Its dials were measured when
     it was converted, so which of them are live is read off the program, not measured."""
-    family = family_of(path)
     started = time.perf_counter()
-    got = family.prepare(path, gpu, options)
-    return Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
-                 layout=got.layout, load_s=time.perf_counter() - started,
-                 directions=got.directions, push=got.push,
-                 dials_live=live_dials(got.settings, got.directions, got.layout))
+    # Grain is a FastGAN question: a StyleGAN2's conversion is stamped without it.
+    grain = options.measure_grain if family_of(path) == "fastgan" else True
+    net, layout, directions = open_model(path, gpu, options.direction_floor, grain,
+                                         backend=options.backend)
+    return Model(path=Path(path), net=net, cfg=net.cfg, settings=net.settings, layout=layout,
+                 load_s=time.perf_counter() - started, directions=directions, push=net.push,
+                 dials_live=live_dials(net.settings, directions, layout))
 
 
 def _warm(stage: EngineStage, model: Model, size) -> None:
@@ -314,7 +316,6 @@ def build(checkpoints: list, height: int | None = 0, screen=None,
     # Each at its own size, `models[0]` last, so the stage is left at the size that plays.
     for m in reversed(models):
         _warm(stage, m, frame_size(m.cfg, height, screen))
-    stage.resize(out_height, out_width)
 
     return Bank(models=models, stage=stage, load_s=time.perf_counter() - t_all,
                 height_want=height, screen=screen, options=options)

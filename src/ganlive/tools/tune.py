@@ -17,14 +17,13 @@ from ganlive.checkpoints import is_engine
 from ganlive.engine.load import converted
 from ganlive.engine.runner import fastest, read_folder
 from ganlive.engine.tune import tune
-from ganlive.tools import parser
+from ganlive.tools import add_backend, parser
 
 
 def main(argv=None) -> int:
     ap = parser("tune", __doc__)
     ap.add_argument("model", type=Path, help="an engine model folder or a checkpoint")
-    ap.add_argument("--backend", default=None, metavar="vulkan|d3d12|metal",
-                    help="the backend to tune. Default: the one ganlive plays this model on")
+    add_backend(ap)
     args = ap.parse_args(argv)
     folder = args.model if is_engine(args.model) else converted(args.model)[0]
     manifest, weights = read_folder(folder)

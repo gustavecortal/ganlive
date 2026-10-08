@@ -33,7 +33,6 @@ class HostSettings:
     written (`set`), then `commit`ted, and the engine uploads what was committed when it
     changed (`changed`). Every setting is a multiplier whose neutral is 1.0."""
 
-    pinned = False
 
     def __init__(self, names) -> None:
         self.names = list(names)

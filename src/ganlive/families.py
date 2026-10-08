@@ -1,17 +1,15 @@
 """The kinds of generator file -- engine model, converted StyleGAN2, this project's FastGAN --
-and how each is opened and made ready to play.
+and what each says about itself before it is loaded.
 
-Every model plays on the engine. A checkpoint is converted, at its first load, into the engine
-model beside it (`lichen.pt` -> `lichen.engine/`), which later loads read directly, so a
-checkpoint is opened with PyTorch only while it has no conversion beside it.
+Every model plays on the engine (`engine.load.open_model`). A checkpoint is described by its
+conversion when it has a current one, so it is opened with PyTorch only while it has none.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from ganlive.checkpoints import is_engine
-from ganlive.engine.load import conversion_of, needs_torch, open_model, read_manifest
+from ganlive.engine.load import conversion_of, read_manifest
 from ganlive.engine.player import EngineConfig
 from ganlive.levels import RANDOM_FLOOR
 
@@ -32,92 +30,38 @@ class LoadOptions:
     backend: str | None = None
 
 
-@dataclass
-class Prepared:
-    """What a family hands back: one model ready to play."""
+def _described(path) -> dict | None:
+    """The manifest that describes `path`: an engine model's own, or a checkpoint's current
+    conversion's. None for a checkpoint that has none."""
+    if is_engine(path):
+        return read_manifest(path)
+    found = conversion_of(path)
+    return None if found is None else found[1]
 
-    net: object
-    cfg: object
-    settings: object
-    #: The dials this model offers.
-    layout: object
-    #: The measured directions, or None.
-    directions: object = None
-    #: The `(bands, w_dim)` array a StyleGAN2 takes its `w` push in, None for one steered by `z`.
-    push: object = None
+
+def family_of(path) -> str:
+    """"engine", "stylegan2" or "fastgan". A StyleGAN2 shares the `.pt` suffix with FastGAN, so
+    its conversion says, or the file's own tag."""
+    if is_engine(path):
+        return "engine"
+    known = _described(path)
+    if known is not None:
+        return known.get("family", "fastgan")
+    from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
+
+    return "stylegan2" if S2.is_stylegan2(path) else "fastgan"
 
 
 def is_stylegan2(path) -> bool:
-    """Whether this is a converted StyleGAN2. It shares the `.pt` suffix with FastGAN, so the
-    file's own tag says, or its conversion's manifest."""
-    known = conversion_of(path)
-    if known is not None:
-        return known.get("family") == "stylegan2"
-    with needs_torch():
-        from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
-    return S2.is_stylegan2(path)
-
-
-def engine_config_of(path) -> EngineConfig:
-    return EngineConfig.of(read_manifest(path))
-
-
-def _checkpoint_config(read: Callable) -> Callable:
-    """A checkpoint's config off its conversion when it has one, else off the file."""
-    def config_of(path):
-        known = conversion_of(path)
-        return EngineConfig.of(known) if known is not None else read(path)
-    return config_of
-
-
-def _fastgan_config(path):
-    with needs_torch():
-        from ganlive.models import fastgan  # PyTorch: an unconverted checkpoint
-    return fastgan.config_of(path)
-
-
-def _stylegan2_config(path):
-    with needs_torch():
-        from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
-    return S2.config_of(path)
-
-
-def _prepare_engine(path, device, options: LoadOptions) -> Prepared:
-    """A model on the engine (see `engine.load`): on `device`, the wgpu device the bank plays
-    on, or else on this machine's fastest backend (or `options.backend`)."""
-    grain = options.measure_grain if family_of(path).name == "fastgan" else True
-    net, layout, directions = open_model(path, device, options.direction_floor, grain,
-                                         backend=options.backend)
-    return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=layout,
-                    directions=directions, push=net.push)
-
-
-@dataclass(frozen=True)
-class Family:
-    """One kind of generator file, and everything the bank asks about it."""
-
-    name: str
-    #: Is this file mine? Asked in `FAMILIES` order, so the last may simply say yes.
-    owns: Callable
-    #: `(path) -> config`: latent width and output size, without building the generator.
-    config_of: Callable
-    #: `(path, device, LoadOptions) -> Prepared`.
-    prepare: Callable
-
-
-#: Order matters: an engine folder first, then the file's own format tag, then what is left.
-FAMILIES = (
-    Family("engine", is_engine, engine_config_of, _prepare_engine),
-    Family("stylegan2", is_stylegan2, _checkpoint_config(_stylegan2_config), _prepare_engine),
-    Family("fastgan", lambda _path: True, _checkpoint_config(_fastgan_config), _prepare_engine),
-)
-
-
-def family_of(path) -> Family:
-    """Which of `FAMILIES` this file belongs to. Never None: the last one takes anything."""
-    return next(f for f in FAMILIES if f.owns(path))
+    return family_of(path) == "stylegan2"
 
 
 def config_of(path):
-    """A model's latent width and output size, whichever kind of file it is."""
-    return family_of(path).config_of(path)
+    """A model's latent width and output size, without loading it."""
+    known = _described(path)
+    if known is not None:
+        return EngineConfig.of(known)
+    from ganlive.models import fastgan  # PyTorch: an unconverted checkpoint
+    from ganlive.models import stylegan2 as S2
+
+    return S2.config_of(path) if S2.is_stylegan2(path) else fastgan.config_of(path)

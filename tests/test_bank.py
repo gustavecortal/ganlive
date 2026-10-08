@@ -20,7 +20,7 @@ from ganlive.checkpoints import admit, checkpoint_for, label_for, run_step, slug
 from ganlive.clock import WalkConfig
 from ganlive.dials import fastgan_dials
 from ganlive.dials import table as S
-from ganlive.families import FAMILIES, LoadOptions, family_of
+from ganlive.families import LoadOptions, config_of, family_of
 from ganlive.models.fastgan import Generator
 from ganlive.tools import play as live
 from ganlive.window import fit_height, parse_height
@@ -69,7 +69,7 @@ def test_a_converted_checkpoint_is_known_without_pytorch(tmp_path):
         "stamp": {"size": st.st_size, "mtime_ns": st.st_mtime_ns}}))
     script = ("import sys; from ganlive.families import config_of, family_of; "
               f"p = {str(checkpoint)!r}; c = config_of(p); "
-              "print(family_of(p).name, c.nz, c.ladder.width, 'torch' in sys.modules)")
+              "print(family_of(p), c.nz, c.ladder.width, 'torch' in sys.modules)")
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
     assert done.stdout.split() == ["stylegan2", "512", "256", "False"], done.stdout + done.stderr
 
@@ -101,7 +101,7 @@ def test_a_file_that_holds_no_generator_is_listed_but_not_offered(tmp_path):
     folder.mkdir(parents=True)
     torch.save({"adapter": {}, "step": 1, "config": {}}, folder / "0000001.pt")
     with pytest.raises(ValueError, match="no FastGAN generator"):
-        family_of(folder / "0000001.pt").config_of(folder / "0000001.pt")
+        config_of(folder / "0000001.pt")
     (entry,) = Shelf(_no_models(), tmp_path).entries()
     assert entry.why == "not playable", entry
 
@@ -195,17 +195,13 @@ def test_a_bank_may_mix_latent_widths_and_aspect_ratios_and_refuses_only_a_dupli
     assert admit([], pathlib.Path("runs/anything.pt")) is None
 
 
-def test_one_record_answers_every_question_about_a_model_file():
-    """The config reader, the loader, the layout and the shelf all ask the same `Family`, so a
-    new format is one entry and no two places can disagree."""
-    assert [f.name for f in FAMILIES] == ["engine", "stylegan2", "fastgan"], (
-        "order is load-bearing: an engine folder, the file's own tag, then whatever is left")
-    assert family_of(pathlib.Path("no-such-file.pt")).name == "fastgan", (
-        "the tail takes anything, so this never returns None")
-
-    for family in FAMILIES:
-        for field in ("owns", "config_of", "prepare"):
-            assert callable(getattr(family, field)), f"{family.name}.{field}"
+def test_a_file_is_an_engine_model_a_stylegan2_or_else_a_fastgan(tmp_path):
+    """An engine folder first, then the file's own tag, then whatever is left: never None."""
+    engine = tmp_path / "runs-engine"
+    engine.mkdir()
+    (engine / "manifest.json").write_text("{}")
+    assert family_of(engine) == "engine"
+    assert family_of(pathlib.Path("no-such-file.pt")) == "fastgan"
 
 
 def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():

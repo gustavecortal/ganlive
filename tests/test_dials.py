@@ -507,7 +507,7 @@ def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
         "mutable options would let one model's settings follow the next one's")
 
     # Every load path takes the whole object, so none of them can take a subset of it.
-    loaders = (R._prepare, FA._prepare_engine)
+    loaders = (R._prepare,)
     for fn in loaders:
         taken = [p for p in inspect.signature(fn).parameters.values()
                  if "LoadOptions" in str(p.annotation)]

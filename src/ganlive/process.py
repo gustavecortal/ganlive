@@ -80,7 +80,9 @@ def _holds_card(process) -> bool:
     not (macOS). An editor's linter server is a python process too, and holds no card."""
     maps = getattr(process, "memory_maps", None)
     if maps is not None:
-        return any(lib in (m.path or "").lower() for m in maps() for lib in CARD_LIBRARIES)
+        names = {os.path.basename(m.path or "").lower() for m in maps()}
+        return any(name.startswith(lib) or f"{lib}_" in name or f"lib{lib}" in name
+                   for name in names for lib in CARD_LIBRARIES)
     return any(word in " ".join(process.cmdline()).lower() for word in CARD_WORDS)
 
 
