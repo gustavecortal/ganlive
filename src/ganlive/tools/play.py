@@ -551,11 +551,11 @@ def serve_models(shelf, requests, r, recording: bool, switch_model) -> None:
 
 def status_line(frames: int, elapsed: float, recent, clock, rec, share: float) -> str:
     """The strip's first line: frame rate, frame time, tempo, the take, and audio delivery."""
-    deaf = "" if share > 0.95 else f" · DEAF {share:.0%}"
-    return (f"{frames / elapsed:.0f} fps · "
-            f"{statistics.median(recent):.1f} ms · "
+    deaf = "" if share > 0.95 else f", DEAF {share:.0%}"
+    return (f"{frames / elapsed:.0f} fps, "
+            f"{statistics.median(recent):.1f} ms, "
             f"{clock.bpm:.0f} bpm {clock.source}"
-            + (f" · REC {rec.seconds:.0f}s {rec.dropped} dropped" if rec is not None else "")
+            + (f", REC {rec.seconds:.0f}s {rec.dropped} dropped" if rec is not None else "")
             + deaf)
 
 

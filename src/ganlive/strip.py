@@ -746,7 +746,7 @@ class DialPanel:
 
         if scrolling:
             more = (f"{self._shelf_top + 1}-{self._shelf_top + fits} of {len(entries)} "
-                    f"· wheel to scroll")
+                    f"(wheel to scroll)")
             surf.blit(self._say(self._small, more, TRACK), (PAD, top + 2))
 
     def _paint_grid_header(self, surf) -> None:
@@ -765,8 +765,8 @@ class DialPanel:
         cfg = self.runner.walk_cfg
         pg.draw.line(surf, TRACK, (0, top), (w, top))
         surf.blit(self._say(self._tiny, "MOVE", GROUP_COLOUR["MOTION"]), (PAD, top + 3))
-        note = (f"{cfg.beats_per_segment:g} beats  ·  {cfg.hold * 100:.0f}% still"
-                + (f"  ·  {cfg.step_grid} steps" if cfg.step_grid else ""))
+        note = (f"{cfg.beats_per_segment:g} beats, {cfg.hold * 100:.0f}% still"
+                + (f", {cfg.step_grid} steps" if cfg.step_grid else ""))
         self._right(surf, self._say(self._small, note, FAINT), top + 3)
 
         x0, x1, base, inner = scope_box(w, top, tall)
@@ -865,20 +865,19 @@ class DialPanel:
         if self.bank is not None:
             model = self.bank.name
             if len(self.bank.models) > 1:
-                model = f"model {self.bank.index + 1}/{len(self.bank.models)} · {model}"
+                model = f"model {self.bank.index + 1} of {len(self.bank.models)}: {model}"
         keys = [f"{' '.join(spelling)} {label}" for spelling, label, action in HELP
                 if self.offers(action)]
         hands = sorted({HAND_WORDS.get(s, s) for s in self.runner.hands_from.values()})
         holding = f"held by {', '.join(hands)}" if hands else "nothing held"
         learning = None if self.encoders is None else self.encoders.learning
-        third = {MODE_ROUTING: "click wires · wheel how hard · right-click flips",
+        third = {MODE_ROUTING: "click wires, wheel sets how hard, right-click flips",
                  MODE_MODELS: "click plays a loaded model, or loads one"}.get(
-                     self.mode, f"LEARN {learning}: turn a knob · l cancels" if learning
-                     else f"{self.runner.preset.name} · {holding} · drag to set")
+                     self.mode, f"LEARN {learning}: turn a knob, l cancels" if learning
+                     else f"{self.runner.preset.name}, {holding}, drag to set")
         lines = [self.status, model, third]
         width = max(1, self._size[0] - 2 * PAD)
-        return lines + [line.removeprefix("· ")
-                        for line in self._lines(" · ".join(keys), self._small, width, KEY_LINES)]
+        return lines + self._lines(", ".join(keys), self._small, width, KEY_LINES)
 
     def _hit(self, x: int, y: int):
         """`(dial, value)` under a point in the strip, or None. A dark dial takes no mouse."""
