@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import functools
 import json
+import time
 from pathlib import Path
 
 from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, WEIGHTS, is_engine, slug_for
 from ganlive.engine import stamp
 from ganlive.engine.player import EngineGenerator, PlayedDirections, dials_of
 from ganlive.engine.runner import built, cache_dir, fastest, read_folder, tuned_plans
+from ganlive.engine.tune import quick
 from ganlive.levels import RANDOM_FLOOR
 
 
@@ -85,6 +87,21 @@ def converted(checkpoint, floor: float = RANDOM_FLOOR, grain: bool = True) -> tu
     raise RuntimeError(f"{checkpoint.name}: nowhere to write its engine model")
 
 
+def _tuned(model, manifest: dict, weights: bytes, path):
+    """`model` rebuilt with the plans a quick tune finds for its GPU (`tune.quick`), the first
+    time this model plays there. Remembered, so it happens once."""
+    device = model.device
+    started = time.perf_counter()
+    print("  plans: tuning this model's heaviest layers for this GPU, once", flush=True)
+    plans, best, start = quick(manifest, weights, device, log=lambda _line: None)
+    print(f"  plans: {start:.2f} -> {best:.2f} ms a frame in {time.perf_counter() - started:.0f} s. "
+          f"`ganlive tune {path}` searches every layer", flush=True)
+    if not plans:
+        return model
+    model.destroy()
+    return built(device, manifest, weights, plans)
+
+
 def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
                backend: str | None = None) -> tuple[EngineGenerator, object, PlayedDirections | None]:
     """The model at `path` ready to play, with its dial layout and directions: on the wgpu
@@ -100,11 +117,13 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
         print(f"engine: {report['best']}", flush=True)
     else:
         model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))
+    # A FastGAN on a GPU: a software adapter gains nothing from it, and StyleGAN2 has `tune`.
+    adapter = model.device.adapter
+    if (manifest.get("family", "fastgan") == "fastgan" and adapter.info["adapter_type"] != "CPU"
+            and tuned_plans(manifest, adapter) is None):
+        model = _tuned(model, manifest, weights, path)
     net = EngineGenerator(model)
     print(net.report(), flush=True)
-    if tuned_plans(manifest, model.device.adapter) is None:
-        print(f"  plans: the defaults. `ganlive tune {path}` finds this GPU's own, once "
-              f"(a few minutes), and every later load uses them", flush=True)
     layout, directions = dials_of(model.program)
     if directions is not None:
         print(f"directions: {directions.report()}", flush=True)
