@@ -64,7 +64,7 @@ def _prepared():
 
 #: Every kernel a tuned plan can choose, on layers whose defaults are others.
 OTHER_KERNELS = {
-    "feat_8.0": {"gemm": True, "rm": 8, "rn": 2, "S": 4},
+    "feat_8.0": {"gemm": True, "rm": 8, "rn": 2, "S": 1},
     "feat_8": {"by": 2, "bx": 2, "oct": 8, "f32": True, "slm": True},
     "feat_16": {"by": 2, "bx": 1, "oct": 8},
     "feat_32": {"by": 1, "bx": 4, "oct": 4, "slm": True},

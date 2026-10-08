@@ -10,7 +10,7 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
     """The program of `manifest`, carrying its probe and dials for the hosts. `plans` overrides
     how a FastGAN's convolutions split (see `program._plan`)."""
     if manifest.get("family") == "stylegan2":
-        program = compile_stylegan2(manifest, output=output)
+        program = compile_stylegan2(manifest, plans, output=output)
     else:
         program = compile_program(manifest, plans, output=output)
     for key in ("family", "probe", "dials", "stamp"):

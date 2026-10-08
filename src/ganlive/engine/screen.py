@@ -13,7 +13,7 @@ import math
 import numpy as np
 import wgpu
 
-from ganlive.engine.program import linear
+from ganlive.engine.codegen import linear
 
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 

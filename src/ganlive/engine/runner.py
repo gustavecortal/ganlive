@@ -21,9 +21,9 @@ import numpy as np
 import wgpu
 
 from ganlive.checkpoints import MANIFEST, WEIGHTS
+from ganlive.engine.codegen import FORMAT
 from ganlive.engine.compile import compile_manifest
 from ganlive.engine.probe import PROBE_LEVELS, probe_error
-from ganlive.engine.program import FORMAT
 from ganlive.files import remember
 
 USAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC

@@ -18,84 +18,13 @@ FastGAN ops, one shader each, generated for their exact shapes so that loops unr
 from __future__ import annotations
 
 import math
-from string import Template
 
+from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, linear, split, storage, wgsl
+from ganlive.engine.direct import conv3x3
+from ganlive.engine.gemm import matmul
 from ganlive.engine.noise import NOISE, noise_seed
 
-FORMAT = "ganlive-engine/1"
-
-WG = 8                      # direct-convolution workgroups are WG x WG threads
 GEMM_MAX = 6144             # maps up to this many pixels run as a matrix product
-GEMM_TARGET = 256           # workgroups a matrix product aims to fill, by splitting its sum
-
-# w1 / w4: one / four fp16 weights at element offset `e` of the weight blob P.
-HELPERS = """
-fn w1(e: u32) -> f32 { return unpack2x16float(P[e >> 1u])[e & 1u]; }
-fn w4(e: u32) -> vec4f { let i = e >> 1u; return vec4f(unpack2x16float(P[i]), unpack2x16float(P[i + 1u])); }
-fn sigmoid(x: f32) -> f32 { return 1.0 / (1.0 + exp(-x)); }
-fn sigmoid4(x: vec4f) -> vec4f { return 1.0 / (1.0 + exp(-x)); }
-"""
-
-
-def linear(n: int, size: int = 64) -> tuple[list[int], str]:
-    """The workgroups for `n` invocations, `size` a group, in rows of at most 65535 groups (the
-    per-dimension limit), and the WGSL expression for an invocation's index among the `n`."""
-    groups = math.ceil(n / size)
-    return [min(groups, 65535), math.ceil(groups / 65535), 1], f"(id.y * {65535 * size}u + id.x)"
-
-
-def split(tiles: int, steps: int) -> int:
-    """How many slices a matrix product's sum is split into, so that `tiles` workgroups fill the
-    GPU: doubling while that leaves at least 4 of the `steps` of 16 in each slice."""
-    S = 1
-    while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
-        S *= 2
-    return S
-
-
-def wgsl(text: str, **values) -> str:
-    """WGSL is full of braces, so shaders are templates with `${name}` holes."""
-    return Template(text).substitute(values, HELPERS=HELPERS)
-
-
-def storage(entries) -> str:
-    """`@binding` declarations for (name, type) pairs in order; `Y` is the one written."""
-    return "\n".join(
-        f"@group(0) @binding({i}) var<storage, {'read_write' if name == 'Y' else 'read'}> "
-        f"{name}: {kind};" for i, (name, kind) in enumerate(entries))
-
-
-class Builder:
-    """Collects shaders (deduplicated), buffers and steps while the ops are compiled."""
-
-    def __init__(self, manifest: dict, plans: dict) -> None:
-        self.m = manifest
-        self.overrides = plans
-        self.shaders: list[str] = []
-        self.index: dict[str, int] = {}
-        self.buffers: dict[str, dict] = {}
-        self.steps: list[dict] = []          # every frame
-        self.load: list[dict] = []           # once, after the buffers are made
-
-    def buffer(self, name: str, size: int, **spec) -> str:
-        self.buffers[name] = {"size": max(16, math.ceil(size / 4) * 4), **spec}
-        return name
-
-    def shader(self, code: str) -> int:
-        if code not in self.index:
-            self.index[code] = len(self.shaders)
-            self.shaders.append(code)
-        return self.index[code]
-
-    def step(self, name, code, bind, groups, plan=None, *, load=False) -> None:
-        step = {"name": name, "shader": self.shader(code), "bind": list(bind),
-                "groups": [int(g) for g in groups]}
-        if plan:
-            step["plan"] = plan
-        (self.load if load else self.steps).append(step)
-
-    def shape(self, tensor: str) -> list[int]:
-        return self.m["tensors"][tensor]
 
 
 def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8") -> dict:
@@ -290,6 +219,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
 
 def _bindings(op: dict, tensors: dict, source: str, kind: str = "array<u32>", extra=()):
+    """A conv's binding declarations and buffers (see `_entries`)."""
+    entries = _entries(op, tensors, source, kind) + list(extra)
+    return storage([(n, k) for n, k, _ in entries]), [buf for *_, buf in entries]
+
+
+def _entries(op: dict, tensors: dict, source: str, kind: str = "array<u32>") -> list:
     """A conv's bindings: P, its input, Y, then what its epilogue reads. "auto" layouts drop
     bindings a shader never reads, so only those are declared."""
     entries = [("P", "array<u32>", "P"), ("X", kind, source), ("Y", "array<u32>", tensors[op["out"]])]
@@ -299,8 +234,7 @@ def _bindings(op: dict, tensors: dict, source: str, kind: str = "array<u32>", ex
             entries.append(("K", "array<f32>", "K"))
     if op.get("scale"):
         entries.append(("S", "array<f32>", f"{op['scale']}.scale"))
-    entries += extra
-    return storage([(n, k) for n, k, _ in entries]), [buf for *_, buf in entries]
+    return entries
 
 
 def _epilogue(op: dict, v: str, g: str, plane: int, indent: str) -> str:
@@ -320,92 +254,53 @@ def _epilogue(op: dict, v: str, g: str, plane: int, indent: str) -> str:
 
 
 def _gemm(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
-    """[pixels x (cin*9)] by [(cin*9) x cout] for value and gate, tiled through workgroup
-    memory, the sum split into S slices so that even a 12x8 map fills the GPU. Each thread
-    holds RM rows by 4*RN columns, reading 4 rows of A and 4 columns of B per workgroup read.
-    A second pass adds the slices and runs the epilogue."""
+    """[pixels x (cin*taps)] by [(cin*taps) x cout] for value and gate (`gemm.matmul`). An
+    upsampling layer's product (see `_parity_weights`) runs over the input's pixels for each
+    of the four output parities, 4 taps a channel, its weights the combined f32 ones. A
+    second pass adds the slices and runs the epilogue."""
     cout, ho, wo = b.shape(op["out"])
     cin, hi, wi = b.shape(op["in"])
-    S, RM, RN = plan["S"], plan.get("rm", 4), plan.get("rn", 1)
     parity = op["up"]
-    # An upsampling layer's product (see `_parity_weights`) runs over the input's pixels for
-    # each of the four output parities, 4 taps a channel, its weights the combined f32 ones.
-    M, TK = (hi * wi if parity else ho * wo), 16
-    TM, TN = 8 * RM, 32 * RN
-    taps = 4 if parity else 9
-    KS = cin * taps // S
+    M, taps = (hi * wi, 4) if parity else (ho * wo, 9)
     gw, gh = (wi, hi) if parity else (wo, ho)
-    rows = [(r, i) for r in range(RM // 4) for i in range(4)]
-    accs = " ".join(f"var av{r}{i}{c} = vec4f(0.0); var ag{r}{i}{c} = vec4f(0.0);"
-                    for r, i in rows for c in range(RN))
-    reads = " ".join([f"let a{r} = As[kk * {TM // 4}u + lid.y + {8 * r}u];" for r in range(RM // 4)]
-                     + [f"let bv{c} = Bv[kk * {TN // 4}u + lid.x + {8 * c}u]; "
-                        f"let bg{c} = Bg[kk * {TN // 4}u + lid.x + {8 * c}u];" for c in range(RN)])
-    fma = " ".join(f"av{r}{i}{c} += a{r}.{'xyzw'[i]} * bv{c}; ag{r}{i}{c} += a{r}.{'xyzw'[i]} * bg{c};"
-                   for r, i in rows for c in range(RN))
-    gather = "\n".join(
-        f"      {{ let m = m4 + {i}u; let ry = i32(m / {gw}u) + dy; let rx = i32(m % {gw}u) + dx;\n"
-        f"        if (m < {M}u && ry >= 0 && ry < {gh} && rx >= 0 && rx < {gw}) {{\n"
-        f"          v[{i}] = unpack2x16float(X[base + u32(ry) * {wi}u + u32(rx)])[lane]; }} }}"
-        for i in range(4))
-    store = "\n".join(
-        f"  {{ let m = m0 + (lid.y + {8 * r}u) * 4u + {i}u; if (m < {M}u) {{\n"
-        f"    let row = (wg.z * {M}u + m) * {2 * cout // 4}u + n0 / 4u + lid.x + {8 * c}u;\n"
-        f"    Y[row] = av{r}{i}{c}; Y[row + {cout // 4}u] = ag{r}{i}{c}; }} }}"
-        for r, i in rows for c in range(RN))
-    if parity:
-        offsets = ("let dy = i32(par >> 1u) - 1 + i32(t >> 1u); "
-                   "let dx = i32(par & 1u) - 1 + i32(t & 1u);")
-        bload = (f"let k = k0 + kk; let ci = k / 4u; let q = k % 4u; "
-                 f"let at = 4u * (((par * {cin // 2}u + ci / 2u) * 4u + q) * {cout // 4}u + (n0 + nn) / 4u) "
-                 f"+ (ci & 1u); Bv[e] = W[at]; Bg[e] = W[at + 2u];")
-    else:
-        offsets = "let dy = i32(t / 3u) - 1; let dx = i32(t % 3u) - 1;"
-        bload = (f"let w = (k0 + kk) * {cout}u + n0 + nn; "
-                 f"Bv[e] = w4({op['wv']}u + w); Bg[e] = w4({op['wg']}u + w);")
+    offsets = ("let dy = i32(par >> 1u) - 1 + i32(t >> 1u); let dx = i32(par & 1u) - 1 + i32(t & 1u);"
+               if parity else "let dy = i32(t / 3u) - 1; let dx = i32(t % 3u) - 1;")
+    # The sum runs tap-major: k = tap * cin + channel, so k and k + 1 share an input read.
+    gather = (f"      let ci = k % {cin}u; let t = k / {cin}u; {offsets}\n"
+              f"      let base = (ci / 2u) * {hi * wi}u;\n" + "\n".join(
+                  f"      {{ let m = m4 + {i}u; let ry = i32(m / {gw}u) + dy; let rx = i32(m % {gw}u) + dx;\n"
+                  f"        if (m < {M}u && ry >= 0 && ry < {gh} && rx >= 0 && rx < {gw}) {{\n"
+                  f"          let x = unpack2x16float(X[base + u32(ry) * {wi}u + u32(rx)]); "
+                  f"v0[{i}] = x.x; v1[{i}] = x.y; }} }}"
+                  for i in range(4)))
     if parity:                  # reads the combined weights, not P
+        bload = (f"      let ci = k % {cin}u; let at = 4u * (((par * {cin // 2}u + ci / 2u) * 4u + k / {cin}u) * "
+                 f"{cout // 4}u + nn / 4u) + (ci & 1u); Bv[e] = W[at]; Bg[e] = W[at + 2u];")
         decl = storage([("X", "array<u32>"), ("Y", "array<vec4f>"), ("W", "array<vec4f>")])
         bind = [tensors[op["in"]], "scratch", _parity_weights(b, op, cin, cout)]
     else:
+        bload = (f"      let w = ((k % {cin}u) * 9u + k / {cin}u) * {cout}u + nn; "
+                 f"Bv[e] = w4({op['wv']}u + w); Bg[e] = w4({op['wg']}u + w);")
         decl = storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<vec4f>")]) + "\n" + HELPERS
         bind = ["P", tensors[op["in"]], "scratch"]
-    code = wgsl(decl + """
-var<workgroup> As: array<vec4f, ${tkm4}>;
-var<workgroup> Bv: array<vec4f, ${tkn4}>;
-var<workgroup> Bg: array<vec4f, ${tkn4}>;
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32,
-        @builtin(local_invocation_id) lid: vec3u) {
-  let m0 = wg.x * ${TM}u; let n0 = wg.y * ${TN}u; let s = wg.z % ${S}u; let par = wg.z / ${S}u;
-  ${accs}
-  for (var k0 = s * ${KS}u; k0 < (s + 1u) * ${KS}u; k0 += ${TK}u) {
-    for (var r = 0u; r < ${aloads}u; r++) {         // im2col, 4 pixels at a time
-      let e = li + r * 64u; let kk = e / ${tm4}u; let m4 = m0 + (e % ${tm4}u) * 4u;
-      let k = k0 + kk; let ci = k / ${taps}u; let t = k % ${taps}u;
-      ${offsets}
-      let base = (ci / 2u) * ${hwi}u; let lane = ci & 1u;
-      var v = vec4f(0.0);
-${gather}
-      As[e] = v;
-    }
-    for (var r = 0u; r < ${bloads}u; r++) {
-      let e = li + r * 64u; let kk = e / ${tn4}u; let nn = (e % ${tn4}u) * 4u;
-      ${bload}
-    }
-    workgroupBarrier();
-    for (var kk = 0u; kk < ${TK}u; kk++) {
-      ${reads}
-      ${fma}
-    }
-    workgroupBarrier();
-  }
-${store}
-}""", tkm4=TK * TM // 4, tkn4=TK * TN // 4, TM=TM, TN=TN, TK=TK, KS=KS, accs=accs, S=S, taps=taps,
-                offsets=offsets, bload=bload,
-                aloads=TK * TM // 4 // 64, tm4=TM // 4, hwi=hi * wi, gather=gather,
-                bloads=TK * TN // 4 // 64, tn4=TN // 4, cout=cout, wv=op["wv"], wg=op["wg"],
-                reads=reads, fma=fma, store=store)
-    b.step(f"{op['out']}.mm", code, bind, [math.ceil(M / TM), cout // TN, S * (4 if parity else 1)])
+    S = plan["S"]
+    if S == 1:                  # one slice: the product finishes the layer itself
+        entries = _entries(op, tensors, tensors[op["in"]])
+        if parity:
+            entries.append(("W", "array<vec4f>", bind[-1]))
+        at = (f"let px = (2u * (m / {wi}u) + par / 2u) * {wo}u + 2u * (m % {wi}u) + par % 2u;"
+              if parity else "let px = m;")
+        code, groups = matmul(
+            M=M, N=cout, K=cin * taps, S=1, rm=plan["rm"], rn=plan["rn"], mats=("v", "g"),
+            decl=storage([(n, k) for n, k, _ in entries]) + "\n" + HELPERS, gather=gather,
+            bload=bload, parts=4 if parity else 1,
+            finish=lambda acc: f"    {at}\n" + _epilogue(op, acc["v"], acc["g"], ho * wo, "    "))
+        b.step(op["out"], code, [buf for *_, buf in entries], groups, plan)
+        return
+    code, groups = matmul(M=M, N=cout, K=cin * taps, S=S, rm=plan["rm"], rn=plan["rn"],
+                          mats=("v", "g"), decl=decl, gather=gather, bload=bload,
+                          parts=4 if parity else 1)
+    b.step(f"{op['out']}.mm", code, bind, groups)
 
     decl, bind = _bindings(op, tensors, "scratch", "array<vec4f>")
     n = ho * wo * (cout // 4)
@@ -435,126 +330,11 @@ ${epilogue}
 
 
 def _conv(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
-    """A direct 3x3 convolution at one size, each thread BY x BX output pixels and `oct`
-    channels, so that every weight read serves all of the thread's pixels."""
+    """A plain conv at one size, directly (`direct.conv3x3`): value and gate together."""
     cout, ho, wo = b.shape(op["out"])
-    cin, hi, wi = b.shape(op["in"])
-    BY, BX, oct = plan["by"], plan["bx"], plan["oct"]
-    nv, f32w, tiled = oct // 4, plan.get("f32", False), plan.get("slm", False)
-    pix = [(dy, dx) for dy in range(BY) for dx in range(BX)]
-
-    rows, cols = range(-1, BY + 1), range(-1, BX + 1)
-
-    def nb(r, c):
-        return f"n{r + 1}_{c + 1}"
-
-    grid = [(r, c) for r in rows for c in cols]
-    each = [(p, j, d) for p, d in enumerate(pix) for j in range(nv)]
-    # Tiled: the workgroup reads the block of input it needs, CH channel pairs at a time, into
-    # workgroup memory once, rather than each thread reading its neighbours from the buffer.
-    RY, RX = WG * BY + 2, WG * BX + 2
-    CH = max(1, min(cin // 2, 3072 // (RY * RX)))
-    while (cin // 2) % CH:
-        CH -= 1
-    body = [f"  let oy = id.y * {BY}u; let ox = id.x * {BX}u;"]
-    if not tiled:
-        body += [f"  if (oy >= {ho}u || ox >= {wo}u) {{ return; }}",
-                 "  let by = i32(oy); let bx = i32(ox);"]
-        for r, c in grid:
-            body += [f"  let v{nb(r, c)} = by + {r} >= 0 && by + {r} < {hi} && bx + {c} >= 0 && bx + {c} < {wi};",
-                     f"  let i{nb(r, c)} = select(0u, u32(by + {r}) * {wi}u + u32(bx + {c}), v{nb(r, c)});"]
-    else:
-        body += [f"  let y0 = i32(wg.y * {WG * BY}u) - 1; let x0 = i32(wg.x * {WG * BX}u) - 1;",
-                 f"  let ly = lid.y * {BY}u + 1u; let lx = lid.x * {BX}u + 1u;"]
-    body.append(f"  let co = id.z * {oct}u;")
-    body += [f"  var av{p}_{j} = vec4f(0.0); var ag{p}_{j} = vec4f(0.0);" for p, j, _ in each]
-    if tiled:
-        body += [f"  for (var c0 = 0u; c0 < {cin // 2}u; c0 += {CH}u) {{",
-                 "  workgroupBarrier();",
-                 f"  for (var e = li; e < {CH * RY * RX}u; e += {WG * WG}u) {{",
-                 f"    let r = (e % {RY * RX}u) / {RX}u; let c = e % {RX}u;",
-                 "    let y = y0 + i32(r); let x = x0 + i32(c);",
-                 f"    F[e] = select(0u, X[(c0 + e / {RY * RX}u) * {hi * wi}u + u32(y) * {wi}u + u32(x)],",
-                 f"                  y >= 0 && y < {hi} && x >= 0 && x < {wi});",
-                 "  }",
-                 "  workgroupBarrier();",
-                 f"  for (var c2 = c0; c2 < c0 + {CH}u; c2++) {{",
-                 f"    let base = (c2 - c0) * {RY * RX}u;"]
-    else:
-        body += [f"  for (var c2 = 0u; c2 < {cin // 2}u; c2++) {{",
-                 f"    let base = c2 * {hi * wi}u;"]
-    body.append(f"    let wq = c2 * {9 * cout // 4}u + co / 4u;" if f32w else
-                f"    let we = c2 * {18 * cout}u + co; let wodd = we + {9 * cout}u;")
-    if tiled:
-        body += [f"    let {nb(r, c)} = unpack2x16float(F[base + (ly + {r}) * {RX}u + lx + {c}]);"
-                 if r >= 0 and c >= 0 else
-                 f"    let {nb(r, c)} = unpack2x16float(F[base + (ly - {-r}u) * {RX}u + lx + {c}]);"
-                 if c >= 0 else
-                 f"    let {nb(r, c)} = unpack2x16float(F[base + (ly + {r}) * {RX}u + lx - {-c}u]);"
-                 if r >= 0 else
-                 f"    let {nb(r, c)} = unpack2x16float(F[base + (ly - {-r}u) * {RX}u + lx - {-c}u]);"
-                 for r, c in grid]
-    else:
-        body += [f"    let {nb(r, c)} = select(vec2f(0.0), unpack2x16float(X[base + i{nb(r, c)}]), v{nb(r, c)});"
-                 for r, c in grid]
-    for t in range(9):
-        ky, kx = divmod(t, 3)
-        for j in range(nv):
-            o = f"{t * cout + 4 * j}u"
-            if f32w:
-                e = f"4u * (wq + {t * cout // 4 + j}u)"
-                body.append(f"    {{ let a = W[{e}]; let b = W[{e} + 1u]; let c = W[{e} + 2u]; let d = W[{e} + 3u];")
-            else:
-                body += [f"    {{ let a = w4({op['wv']}u + we + {o}); let b = w4({op['wv']}u + wodd + {o});",
-                         f"      let c = w4({op['wg']}u + we + {o}); let d = w4({op['wg']}u + wodd + {o});"]
-            for p, (dy, dx) in enumerate(pix):
-                n = nb(dy + ky - 1, dx + kx - 1)
-                body.append(f"      av{p}_{j} += {n}.x * a + {n}.y * b; ag{p}_{j} += {n}.x * c + {n}.y * d;")
-            body.append("    }")
-    body.append("  }")
-    if tiled:
-        body += ["  }", f"  if (oy >= {ho}u || ox >= {wo}u) {{ return; }}"]
-    for p, j, (dy, dx) in each:
-        body.append(f"  {{ let px = (oy + {dy}u) * {wo}u + ox + {dx}u; let c = co + {4 * j}u;")
-        body.append(_epilogue(op, f"av{p}_{j}", f"ag{p}_{j}", ho * wo, "    ") + " }")
-    decl, bind = _bindings(op, tensors, tensors[op["in"]],
-                           extra=[("W", "array<vec4f>", _f32_weights(b, op, cin, cout))] if f32w else ())
-    shared = f"var<workgroup> F: array<u32, {CH * RY * RX}>;" if tiled else ""
-    code = wgsl(decl + """
-${HELPERS}
-${shared}
-@compute @workgroup_size(${WG}, ${WG}, 1)
-fn main(@builtin(global_invocation_id) id: vec3u, @builtin(workgroup_id) wg: vec3u,
-        @builtin(local_invocation_id) lid: vec3u, @builtin(local_invocation_index) li: u32) {
-${body}
-}""", WG=WG, body="\n".join(body), shared=shared)
-    b.step(op["out"], code, bind,
-           [math.ceil(wo / BX / WG), math.ceil(ho / BY / WG), cout // oct], plan)
-
-
-def _f32_weights(b: Builder, op: dict, cin: int, cout: int) -> str:
-    """A 3x3 conv's weights made f32 at load, laid out [channel pair][tap][4 output channels]
-    as four vec4f (value even, value odd, gate even, gate odd), so that a thread reads them
-    without converting: faster on some backends (Vulkan on an Arc A770), slower on others."""
-    name = f"f32.{op['out']}"
-    q4 = cout // 4
-    n = cin // 2 * 9 * q4
-    b.buffer(name, n * 64)
-    groups, index = linear(n)
-    b.step(name, wgsl(storage([("P", "array<u32>"), ("Y", "array<vec4f>")]) + """
-${HELPERS}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  let i = ${index};
-  if (i >= ${n}u) { return; }
-  let e = (i / ${q4}u / 9u) * ${even}u + (i / ${q4}u % 9u) * ${cout}u + (i % ${q4}u) * 4u;
-  Y[4u * i] = w4(${wv}u + e);
-  Y[4u * i + 1u] = w4(${wv}u + e + ${odd}u);
-  Y[4u * i + 2u] = w4(${wg}u + e);
-  Y[4u * i + 3u] = w4(${wg}u + e + ${odd}u);
-}""", index=index, n=n, q4=q4, even=18 * cout, cout=cout, odd=9 * cout, wv=op["wv"],
-                         wg=op["wg"]), ["P", name], groups, load=True)
-    return name
+    conv3x3(b, step=op["out"], cin=b.shape(op["in"])[0], cout=cout, h=ho, w=wo, plan=plan,
+            mats={"v": op["wv"], "g": op["wg"]}, entries=_entries(op, tensors, tensors[op["in"]]),
+            finish=lambda acc: _epilogue(op, acc["v"], acc["g"], ho * wo, "    "))
 
 
 def _parity_weights(b: Builder, op: dict, cin: int, cout: int) -> str:
