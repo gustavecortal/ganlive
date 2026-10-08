@@ -26,9 +26,13 @@ DEFAULT_CODEC = "auto"
 #: Each encoder's constant-quality setting, so that a take keeps the picture's grain: Intel's
 #: quality mode at 22 recorded a 1620x1080 lichen walk at 10 Mbit/s and 3.3 levels from the
 #: frames, against 2.6 Mbit/s and 4.4 levels by default, in the same encode time. Encoders not
-#: tried on a card here keep their defaults, since an option one refuses would skip it.
+#: tried on a card here are given a bitrate instead (`BITS_PER_PIXEL`), which every encoder
+#: takes: an option one refused would make `auto` skip it.
 QUALITY = {"av1_qsv": {"global_quality": "22"}, "hevc_qsv": {"global_quality": "22"},
            "libx264": {"crf": "18"}}
+#: The bitrate of the others, in bits per pixel of each frame: 10 Mbit/s for 1620x1080 at 60
+#: fps, what Intel's quality mode chose for the same take.
+BITS_PER_PIXEL = 0.1
 
 #: Encoder frames reused in rotation, so the writer does not allocate one per frame.
 POOL = 4
@@ -162,6 +166,8 @@ class Recorder:
             try:
                 stream = container.add_stream(name, rate=round(self.fps), options=QUALITY.get(name, {}))
                 stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
+                if name not in QUALITY:
+                    stream.bit_rate = round(BITS_PER_PIXEL * self.width * self.height * self.fps)
                 stream.codec_context.time_base = tb
                 stream.codec_context.open()
             except Exception:                                        # noqa: BLE001
