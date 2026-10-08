@@ -62,12 +62,23 @@ def _prepared():
     return steerable, cfg, names
 
 
-def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device):
+#: Every kernel a tuned plan can choose, on layers whose defaults are others.
+OTHER_KERNELS = {
+    "feat_8.0": {"gemm": True, "rm": 8, "rn": 2, "S": 4},
+    "feat_8": {"by": 2, "bx": 2, "oct": 8, "f32": True, "slm": True},
+    "feat_16": {"by": 2, "bx": 1, "oct": 8},
+    "feat_32": {"by": 1, "bx": 4, "oct": 4, "slm": True},
+    "feat_128": {"by": 2, "bx": 2, "oct": 4, "f32": True},
+}
+
+
+@pytest.mark.parametrize("plans", [None, OTHER_KERNELS], ids=["default", "other-kernels"])
+def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device, plans):
     """With the noise the engine makes on the GPU itself, as a converted model plays."""
     steerable, cfg, names = _prepared()
     manifest, blob = manifest_of(steerable, cfg, names)
     manifest["probe"] = probe(steerable, cfg, names)
-    model = Model(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
+    model = Model(device, compile_manifest(manifest, plans, output="f32"), bytes(blob.data))
     assert model.strays() < PROBE_LEVELS                # what a backend must pass to be used
     for seed, k in enumerate((np.ones(len(names)), np.linspace(0.3, 1.7, len(names)))):
         z = host_latent(cfg.nz, seed=seed + 1)

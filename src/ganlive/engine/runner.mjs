@@ -69,8 +69,9 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
       output: buffers.out, height: program.height, width: program.width, steps, destroy,
       setLatent: (z) => device.queue.writeBuffer(buffers.Z, 0, z),
       setSettings: (k) => device.queue.writeBuffer(buffers.K, 0, k),
-      /** Records one frame. With `timestamps` (a GPUQuerySet), one timed pass per step. */
-      encode(encoder, timestamps) {
+      /** Records one frame. With `timestamps` (a GPUQuerySet), one timed pass per step,
+       *  writing queries from 2 * `first` on, so that one set can time many frames. */
+      encode(encoder, timestamps, first = 0) {
         if (!timestamps) {
           const frame = encoder.beginComputePass();
           for (const s of steps) run(frame, s);
@@ -79,7 +80,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
         }
         steps.forEach((s, i) => {
           const timed = encoder.beginComputePass({ timestampWrites: { querySet: timestamps,
-            beginningOfPassWriteIndex: 2 * i, endOfPassWriteIndex: 2 * i + 1 } });
+            beginningOfPassWriteIndex: 2 * (first + i), endOfPassWriteIndex: 2 * (first + i) + 1 } });
           run(timed, s);
           timed.end();
         });
