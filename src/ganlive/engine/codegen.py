@@ -9,7 +9,6 @@ from string import Template
 FORMAT = "ganlive-engine/1"
 
 WG = 8                      # direct-convolution workgroups are WG x WG threads
-GEMM_TARGET = 256           # workgroups a matrix product aims to fill, by splitting its sum
 
 # w1 / w4: one / four fp16 weights at element offset `e` of the weight blob P.
 HELPERS = """
@@ -27,15 +26,6 @@ def linear(n: int, size: int = 64) -> tuple[list[int], str]:
     return [min(groups, 65535), math.ceil(groups / 65535), 1], f"(id.y * {65535 * size}u + id.x)"
 
 
-def split(tiles: int, steps: int) -> int:
-    """How many slices a matrix product's sum is split into, so that `tiles` workgroups fill the
-    GPU: doubling while that leaves at least 4 of the `steps` of 16 in each slice."""
-    S = 1
-    while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
-        S *= 2
-    return S
-
-
 def wgsl(text: str, **values) -> str:
     """WGSL is full of braces, so shaders are templates with `${name}` holes."""
     return Template(text).substitute(values, HELPERS=HELPERS)
@@ -46,6 +36,11 @@ def storage(entries) -> str:
     return "\n".join(
         f"@group(0) @binding({i}) var<storage, {'read_write' if name == 'Y' else 'read'}> "
         f"{name}: {kind};" for i, (name, kind) in enumerate(entries))
+
+
+def bindings(entries) -> tuple[str, list[str]]:
+    """The declarations and the buffers of (name, type, buffer) bindings, in order."""
+    return storage([(n, k) for n, k, _ in entries]), [buf for *_, buf in entries]
 
 
 class Builder:
@@ -70,11 +65,9 @@ class Builder:
             self.shaders.append(code)
         return self.index[code]
 
-    def step(self, name, code, bind, groups, plan=None, *, load=False) -> None:
+    def step(self, name, code, bind, groups, *, load=False) -> None:
         step = {"name": name, "shader": self.shader(code), "bind": list(bind),
                 "groups": [int(g) for g in groups]}
-        if plan:
-            step["plan"] = plan
         (self.load if load else self.steps).append(step)
 
     def shape(self, tensor: str) -> list[int]:

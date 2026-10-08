@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import math
 
-from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, linear, split, storage, wgsl
+from ganlive.engine import direct
+from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, bindings, linear, storage, wgsl
 from ganlive.engine.direct import conv3x3
-from ganlive.engine.gemm import TK, matmul
-from ganlive.engine.program import GEMM_MAX
+from ganlive.engine.gemm import GEMM_MAX, TK, matmul, split, sum_slices
 
 LRELU = """
 fn lrelu4(x: vec4f) -> vec4f { return select(x * 0.2, x, x >= vec4f(0.0)) * 1.41421356; }
@@ -70,7 +70,7 @@ def compile_stylegan2(manifest: dict, plans: dict | None = None, output: str = "
             _styles(b, op)
             if op["up"]:
                 _upconv(b, op, src, dst)
-            elif _as_product(b, op):
+            elif _as_product(b.overrides, op):
                 _mm(b, op, src, dst, _plain(op))
             else:
                 _conv(b, op, src, dst)
@@ -207,11 +207,8 @@ def _conv(b: Builder, op: dict, src: str, dst: str) -> None:
     _channels(op)
     cout, h, w = op["cout"], op["h"], op["w"]
     side = 2 if h % 2 == 0 else 1
-    plan = {"by": side, "bx": side, "oct": 8 if cout % 8 == 0 else 4,
-            **{k: v for k, v in b.overrides.get(op["name"], {}).items() if k != "gemm"}}
-    if (not set(plan) <= {"by", "bx", "oct", "f32", "slm"} or plan["oct"] % 4 or cout % plan["oct"]
-            or h % plan["by"] or w % plan["bx"]):
-        raise ValueError(f"{op['name']}: {plan} does not fit {cout} channels at {h}x{w}")
+    plan = direct.check({"by": side, "bx": side, "oct": 8 if cout % 8 == 0 else 4,
+                         **_override(b, op["name"])}, op["name"], cout, h, w)
     entries = [("P", "array<u32>", "P"), ("X", "array<u32>", src), ("Y", "array<u32>", dst),
                ("S", "array<f32>", "S"), ("D", "array<f32>", "D"), ("K", "array<f32>", "K")]
 
@@ -233,7 +230,7 @@ def _tiles(op: dict, M: int) -> bool:
 def _mm_plan(b: Builder, op: dict, g: dict) -> dict:
     """How one product tiles: rows a thread (`rm`), column groups (`rn`) and slices (`S`), by
     default so that even a 4x4 map fills the GPU."""
-    plan = {"rm": 4, "rn": 1, **{k: v for k, v in b.overrides.get(g["name"], {}).items() if k != "gemm"}}
+    plan = {"rm": 4, "rn": 1, **_override(b, g["name"])}
     steps = op["cin"] * len(g["taps"]) // TK
     plan.setdefault("S", split(math.ceil(g["M"] / (8 * plan["rm"])) * (op["cout"] // (32 * plan["rn"])), steps))
     return plan
@@ -274,10 +271,15 @@ def _parities(op: dict) -> list[dict]:
     return out
 
 
-def _as_product(b: Builder, op: dict) -> bool:
+def _override(b: Builder, name: str) -> dict:
+    """The plan given for step `name`, without the choice of kernel ("gemm")."""
+    return {k: v for k, v in b.overrides.get(name, {}).items() if k != "gemm"}
+
+
+def _as_product(overrides: dict, op: dict) -> bool:
     """Whether a plain conv runs as a matrix product: up to GEMM_MAX pixels, or when a plan
     says {"gemm": True} for it, by name."""
-    forced = b.overrides.get(op["name"], {}).get("gemm")
+    forced = overrides.get(op["name"], {}).get("gemm")
     M = op["h"] * op["w"]
     return _tiles(op, M) and (M <= GEMM_MAX if forced is None else forced)
 
@@ -286,7 +288,6 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
     """Each step's plans worth trying on a new machine. A matrix product (by its name) tries
     rows and columns a thread and splits, a direct conv (by its layer's name) the tiles that
     do not spill registers, with f32 weights and workgroup memory or without."""
-    b = Builder(manifest, {})
     out = {}
     for op in manifest["ops"]:
         if op["op"] != "conv":
@@ -294,14 +295,12 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
         if op["up"]:
             products = _parities(op) if _tiles(op, 1) else []
         else:
-            products = [_plain(op)] if _as_product(b, op) else []
+            products = [_plain(op)] if _as_product({}, op) else []
         for g in products:
             out[g["name"]] = [{"rn": 2}, {"rm": 8}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}, {"S": 4},
                               {"rn": 2, "S": 2}]
         if not op["up"] and not products:
-            out[op["name"]] = [{"by": by, "bx": bx, "oct": oct, **extra}
-                               for by, bx, oct in ((2, 2, 8), (2, 2, 4), (1, 2, 8), (1, 4, 4), (2, 4, 4))
-                               for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
+            out[op["name"]] = direct.CHOICES
     return out
 
 
@@ -309,7 +308,7 @@ def _scratch(b: Builder, op: dict) -> int:
     """The partial sums the largest matrix product of this layer keeps."""
     if op["up"]:
         products = _parities(op)
-    elif _as_product(b, op):
+    elif _as_product(b.overrides, op):
         products = [_plain(op)]
     else:
         return 16
@@ -340,53 +339,42 @@ def _mm(b: Builder, op: dict, src: str, dst: str, g: dict) -> None:
                   for i in range(4)))
     bload = (f"      let row = (k % {cin}u) * 9u + TAP[k / {cin}u]; "
              f"Bw[e] = w4({op['weight']}u + row * {cout}u + nn);")
-    # What finishes the layer from the demodulated sum `v` of channels c..c+3 at row m: the
+    # What finishes the layer from the sum of channels c..c+3 at row m, demodulated: the
     # epilogue into `dst`, or, for a parity of a transposed convolution, a store into T.
     if g["store"] is None:
-        finish = "\n".join(["let px = m;", *(line for line in _epilogue(op, "v", M) if line)])
+        tail = "\n".join(["let px = m;", *(line for line in _epilogue(op, "v", M) if line)])
         out, extra, helpers = dst, [("K", "array<f32>", "K")], LRELU
     else:
         plane = g["plane"]
-        finish = (f"let px = {g['store']};\n"
-                  f"Y[(c / 2u) * {plane}u + px] = pack2x16float(v.xy);\n"
-                  f"Y[(c / 2u + 1u) * {plane}u + px] = pack2x16float(v.zw);")
+        tail = (f"let px = {g['store']};\n"
+                f"Y[(c / 2u) * {plane}u + px] = pack2x16float(v.xy);\n"
+                f"Y[(c / 2u + 1u) * {plane}u + px] = pack2x16float(v.zw);")
         out, extra, helpers = "T", [], ""
-    demod = "var v = {acc} * vec4f(D[c], D[c + 1u], D[c + 2u], D[c + 3u]);\n"
 
+    def finish(acc: dict) -> str:
+        return "    " + (f"var v = {acc['w']} * vec4f(D[c], D[c + 1u], D[c + 2u], D[c + 3u]);\n"
+                         + tail).replace("\n", "\n    ")
+
+    product = dict(M=M, N=cout, K=cin * nt, S=S, rm=plan["rm"], rn=plan["rn"], mats=("w",),
+                   gather=gather, bload=bload)
+    ends = [("Y", "array<u32>", out), ("D", "array<f32>", "D"), *extra]
     if S == 1:                  # one slice: the product finishes the layer itself
-        entries = [("P", "array<u32>", "P"), ("X", "array<u32>", src), ("Y", "array<u32>", out),
-                   ("S", "array<f32>", "S"), ("D", "array<f32>", "D"), *extra]
-        code, groups = matmul(
-            M=M, N=cout, K=cin * nt, S=1, rm=plan["rm"], rn=plan["rn"], mats=("w",),
-            decl=storage([(n, k) for n, k, _ in entries]) + HELPERS + helpers + tap,
-            gather=gather, bload=bload,
-            finish=lambda acc: "    " + (demod.format(acc=acc["w"]) + finish).replace("\n", "\n    "))
-        b.step(g["name"], code, [buf for *_, buf in entries], groups)
+        decl, bufs = bindings([("P", "array<u32>", "P"), ("X", "array<u32>", src), *ends,
+                               ("S", "array<f32>", "S")])
+        code, groups = matmul(**product, decl=decl + HELPERS + helpers + tap, finish=finish)
+        b.step(g["name"], code, bufs, groups)
         return
-
-    code, groups = matmul(M=M, N=cout, K=cin * nt, S=S, rm=plan["rm"], rn=plan["rn"], mats=("w",),
-                          decl=storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<vec4f>"),
-                                        ("S", "array<f32>")]) + HELPERS + tap,
-                          gather=gather, bload=bload)
-    b.step(f"{g['name']}.mm", code, ["P", src, "scratch", "S"], groups)
-    n = M * (cout // 4)
-    groups, index = linear(n)
-    entries = [("P", "array<u32>", "P"), ("X", "array<vec4f>", "scratch"), ("Y", "array<u32>", out),
-               ("D", "array<f32>", "D"), *extra]
-    if g["store"] is not None:              # the store into T reads no weights
-        entries = entries[1:]
-    code = wgsl(storage([(n_, k) for n_, k, _ in entries]) + ("${HELPERS}" if g["store"] is None else "")
-                + helpers + f"""
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {{
-  let i = {index};
-  if (i >= {n}u) {{ return; }}
-  let m = i % {M}u; let c = (i / {M}u) * 4u;
-  var sum = vec4f(0.0);
-  for (var s = 0u; s < {S}u; s++) {{ sum += X[(s * {M}u + m) * {cout // 4}u + c / 4u]; }}
-  {demod.format(acc="sum")}  {finish.replace(chr(10), chr(10) + "  ")}
-}}""")
-    b.step(g["name"], code, [buf for *_, buf in entries], groups)
+    decl, bufs = bindings([("P", "array<u32>", "P"), ("X", "array<u32>", src),
+                           ("Y", "array<vec4f>", "scratch"), ("S", "array<f32>", "S")])
+    code, groups = matmul(**product, decl=decl + HELPERS + tap)
+    b.step(f"{g['name']}.mm", code, bufs, groups)
+    # The store into T reads no weights, so P is bound only for the epilogue.
+    reads_p = [("P", "array<u32>", "P")] if g["store"] is None else []
+    decl, bufs = bindings([*reads_p, ("X", "array<vec4f>", "scratch"), *ends])
+    code, groups = sum_slices(rows=M, M=M, N=cout, S=S, mats=("w",),
+                              decl=decl + (HELPERS if reads_p else "") + helpers,
+                              where="let m = r; let first = 0u;", finish=finish)
+    b.step(g["name"], code, bufs, groups)
 
 
 def _upconv(b: Builder, op: dict, src: str, dst: str) -> None:
@@ -401,13 +389,13 @@ def _upconv(b: Builder, op: dict, src: str, dst: str) -> None:
 
 
 def _upconv_direct(b: Builder, op: dict, src: str, dst: str) -> None:
-    _channels(op)
     """2x up: the stride-2 transposed 3x3 convolution of the styled input, demodulated, into T
     (2h+1 square), then the 4x4 blur with the epilogue into `dst` (2h square).
 
     Output (2a+i, 2b+j) of the transposed convolution reads input (a, b) through tap
     (i, j), and (a-1, b) or (a, b-1) through taps (i+2, j) and (i, j+2) where i, j are 0: one
     thread for the four outputs of block (a, b) reads a 2x2 block of input, every tap once."""
+    _channels(op)
     cin, cout, h, w = op["cin"], op["cout"], op["h"], op["w"]
     hi, wi = h // 2, w // 2
     th, tw = h + 1, w + 1

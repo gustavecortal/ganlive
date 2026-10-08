@@ -19,18 +19,17 @@ from __future__ import annotations
 
 import math
 
-from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, linear, split, storage, wgsl
+from ganlive.engine import direct
+from ganlive.engine.codegen import FORMAT, HELPERS, WG, Builder, bindings, linear, storage, wgsl
 from ganlive.engine.direct import conv3x3
-from ganlive.engine.gemm import matmul
+from ganlive.engine.gemm import GEMM_MAX, matmul, split, sum_slices
 from ganlive.engine.noise import NOISE, noise_seed
-
-GEMM_MAX = 6144             # maps up to this many pixels run as a matrix product
 
 
 def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8") -> dict:
     """The program for `manifest`, drawing packed RGBA8 pixels for a browser canvas, BGRA8
-    (`output="bgra8"`) for the desktop app, or float planes in [-1, 1] (`"f32"`) for checks. `plans` overrides how conv layers
-    split, by name: {"gemm": True} or {"by": 2, "bx": 4, "oct": 4}."""
+    (`output="bgra8"`) for the desktop app, or float planes in [-1, 1] (`"f32"`) for checks.
+    `plans` overrides how conv layers run, by name (see `_plan`)."""
     b = Builder(manifest, plans or {})
     m = manifest
     b.buffer("P", m["bytes"], init="weights")
@@ -89,23 +88,14 @@ def _plan(b: Builder, op: dict) -> dict:
 
     forced = b.overrides.get(op["out"])
     if (forced or {}).get("gemm") or (not forced and rows <= GEMM_MAX and gemm_fits):
-        forced = forced or {}
+        forced = forced or {}               # `matmul` refuses what does not tile
         rm, rn = forced.get("rm", 4), forced.get("rn", 1)
-        if not gemm_fits or cout % (32 * rn) or rm % 4:
-            raise ValueError(f"{op['out']}: {cin}->{cout} channels do not tile as a matrix "
-                             f"product of {8 * rm}x{32 * rn}")
         tiles = math.ceil(rows / (8 * rm)) * (cout // (32 * rn)) * (4 if up else 1)
-        S = forced.get("S") or split(tiles, steps)
-        if steps % S:
-            raise ValueError(f"{op['out']}: a sum of {steps} steps does not split {S} ways")
-        return {"gemm": True, "rm": rm, "rn": rn, "S": S}
-    plan = dict(forced or {"by": 1, "bx": 2, "oct": 4} if up else forced or {"by": 2, "bx": 2, "oct": 4})
-    known = {"by", "bx", "oct"} | (set() if up else {"f32", "slm"})
-    rows_in, cols_in = (ho // 2, wo // 2) if up else (ho, wo)   # the pixels a thread tiles
-    if (not set(plan) <= known or plan["oct"] % 4 or cout % plan["oct"]
-            or rows_in % plan["by"] or cols_in % plan["bx"]):
-        raise ValueError(f"{op['out']}: {plan} does not fit {cout} channels at {ho}x{wo}")
-    return plan
+        return {"gemm": True, "rm": rm, "rn": rn, "S": forced.get("S") or split(tiles, steps)}
+    if up:                                  # a thread tiles input pixels
+        return direct.check(dict(forced or {"by": 1, "bx": 2, "oct": 4}), op["out"], cout,
+                            ho // 2, wo // 2, keys=("by", "bx", "oct"))
+    return direct.check(dict(forced or {"by": 2, "bx": 2, "oct": 4}), op["out"], cout, ho, wo)
 
 
 def plan_choices(manifest: dict) -> dict[str, list[dict]]:
@@ -127,9 +117,7 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
             options += [{"by": by, "bx": bx, "oct": oct} for by, bx, oct in
                         ((1, 2, 4), (1, 4, 4), (2, 2, 4), (1, 2, 8), (2, 1, 4), (1, 1, 8))]
         else:
-            options += [{"by": by, "bx": bx, "oct": oct, **extra}
-                        for by, bx, oct in ((2, 2, 8), (2, 2, 4), (1, 2, 8), (1, 4, 4), (2, 4, 4))
-                        for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
+            options += direct.CHOICES
         out[op["out"]] = options
     return out
 
@@ -245,12 +233,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }""", ch=ch, fc2=op["fc2"], slot=slot), ["P", silu, scale, "K"], [math.ceil(ch / 64), 1, 1])
 
 
-def _bindings(op: dict, tensors: dict, source: str, kind: str = "array<u32>", extra=()):
-    """A conv's binding declarations and buffers (see `_entries`)."""
-    entries = _entries(op, tensors, source, kind) + list(extra)
-    return storage([(n, k) for n, k, _ in entries]), [buf for *_, buf in entries]
-
-
 def _entries(op: dict, tensors: dict, source: str, kind: str = "array<u32>") -> list:
     """A conv's bindings: P, its input, Y, then what its epilogue reads. "auto" layouts drop
     bindings a shader never reads, so only those are declared."""
@@ -283,15 +265,27 @@ def _epilogue(op: dict, v: str, g: str, plane: int, indent: str) -> str:
 def _gemm(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
     """[pixels x (cin*taps)] by [(cin*taps) x cout] for value and gate (`gemm.matmul`). An
     upsampling layer's product (see `_parity_weights`) runs over the input's pixels for each
-    of the four output parities, 4 taps a channel, its weights the combined f32 ones. A
-    second pass adds the slices and runs the epilogue."""
+    of the four output parities, 4 taps a channel, its weights the combined f32 ones. Split
+    in slices, a second pass adds them and runs the epilogue."""
     cout, ho, wo = b.shape(op["out"])
     cin, hi, wi = b.shape(op["in"])
-    parity = op["up"]
-    M, taps = (hi * wi, 4) if parity else (ho * wo, 9)
-    gw, gh = (wi, hi) if parity else (wo, ho)
-    offsets = ("let dy = i32(par >> 1u) - 1 + i32(t >> 1u); let dx = i32(par & 1u) - 1 + i32(t & 1u);"
-               if parity else "let dy = i32(t / 3u) - 1; let dx = i32(t % 3u) - 1;")
+    parity, S = op["up"], plan["S"]
+    if parity:
+        M, taps, gw, gh = hi * wi, 4, wi, hi
+        offsets = "let dy = i32(par >> 1u) - 1 + i32(t >> 1u); let dx = i32(par & 1u) - 1 + i32(t & 1u);"
+        bload = (f"      let ci = k % {cin}u; let at = 4u * (((par * {cin // 2}u + ci / 2u) * 4u + k / {cin}u) * "
+                 f"{cout // 4}u + nn / 4u) + (ci & 1u); Bv[e] = W[at]; Bg[e] = W[at + 2u];")
+        weights = [("W", "array<vec4f>", _parity_weights(b, op, cin, cout))]
+        at = f"let px = (2u * (m / {wi}u) + par / 2u) * {wo}u + 2u * (m % {wi}u) + par % 2u;"
+        where = (f"let px = r; let par = (px / {wo}u % 2u) * 2u + px % 2u; "
+                 f"let m = (px / {wo}u / 2u) * {wi}u + (px % {wo}u) / 2u; let first = par * {S}u;")
+    else:
+        M, taps, gw, gh = ho * wo, 9, wo, ho
+        offsets = "let dy = i32(t / 3u) - 1; let dx = i32(t % 3u) - 1;"
+        bload = (f"      let w = ((k % {cin}u) * 9u + k / {cin}u) * {cout}u + nn; "
+                 f"Bv[e] = w4({op['wv']}u + w); Bg[e] = w4({op['wg']}u + w);")
+        weights = [("P", "array<u32>", "P")]
+        at, where = "let px = m;", "let px = r; let m = r; let first = 0u;"
     # The sum runs tap-major: k = tap * cin + channel, so k and k + 1 share an input read.
     gather = (f"      let ci = k % {cin}u; let t = k / {cin}u; {offsets}\n"
               f"      let base = (ci / 2u) * {hi * wi}u;\n" + "\n".join(
@@ -300,60 +294,21 @@ def _gemm(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
                   f"          let x = unpack2x16float(X[base + u32(ry) * {wi}u + u32(rx)]); "
                   f"v0[{i}] = x.x; v1[{i}] = x.y; }} }}"
                   for i in range(4)))
-    if parity:                  # reads the combined weights, not P
-        bload = (f"      let ci = k % {cin}u; let at = 4u * (((par * {cin // 2}u + ci / 2u) * 4u + k / {cin}u) * "
-                 f"{cout // 4}u + nn / 4u) + (ci & 1u); Bv[e] = W[at]; Bg[e] = W[at + 2u];")
-        decl = storage([("X", "array<u32>"), ("Y", "array<vec4f>"), ("W", "array<vec4f>")])
-        bind = [tensors[op["in"]], "scratch", _parity_weights(b, op, cin, cout)]
-    else:
-        bload = (f"      let w = ((k % {cin}u) * 9u + k / {cin}u) * {cout}u + nn; "
-                 f"Bv[e] = w4({op['wv']}u + w); Bg[e] = w4({op['wg']}u + w);")
-        decl = storage([("P", "array<u32>"), ("X", "array<u32>"), ("Y", "array<vec4f>")]) + "\n" + HELPERS
-        bind = ["P", tensors[op["in"]], "scratch"]
-    S = plan["S"]
+    product = dict(M=M, N=cout, K=cin * taps, S=S, rm=plan["rm"], rn=plan["rn"], mats=("v", "g"),
+                   gather=gather, bload=bload, parts=4 if parity else 1)
     if S == 1:                  # one slice: the product finishes the layer itself
-        entries = _entries(op, tensors, tensors[op["in"]])
-        if parity:
-            entries.append(("W", "array<vec4f>", bind[-1]))
-        at = (f"let px = (2u * (m / {wi}u) + par / 2u) * {wo}u + 2u * (m % {wi}u) + par % 2u;"
-              if parity else "let px = m;")
-        code, groups = matmul(
-            M=M, N=cout, K=cin * taps, S=1, rm=plan["rm"], rn=plan["rn"], mats=("v", "g"),
-            decl=storage([(n, k) for n, k, _ in entries]) + "\n" + HELPERS, gather=gather,
-            bload=bload, parts=4 if parity else 1,
-            finish=lambda acc: f"    {at}\n" + _epilogue(op, acc["v"], acc["g"], ho * wo, "    "))
-        b.step(op["out"], code, [buf for *_, buf in entries], groups, plan)
+        decl, bufs = bindings(_entries(op, tensors, tensors[op["in"]]) + weights[parity - 1:])
+        code, groups = matmul(**product, decl=decl + HELPERS, finish=lambda acc: (
+            f"    {at}\n" + _epilogue(op, acc["v"], acc["g"], ho * wo, "    ")))
+        b.step(op["out"], code, bufs, groups)
         return
-    code, groups = matmul(M=M, N=cout, K=cin * taps, S=S, rm=plan["rm"], rn=plan["rn"],
-                          mats=("v", "g"), decl=decl, gather=gather, bload=bload,
-                          parts=4 if parity else 1)
-    b.step(f"{op['out']}.mm", code, bind, groups)
-
-    decl, bind = _bindings(op, tensors, "scratch", "array<vec4f>")
-    n = ho * wo * (cout // 4)
-    groups, index = linear(n)
-    if parity:
-        where = (f"let par = (px / {wo}u % 2u) * 2u + px % 2u; "
-                 f"let m = (px / {wo}u / 2u) * {wi}u + (px % {wo}u) / 2u; let first = par * {S}u;")
-    else:
-        where = "let m = px; let first = 0u;"
-    code = wgsl(decl + """
-${HELPERS}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  let i = ${index};
-  if (i >= ${n}u) { return; }
-  let px = i % ${plane}u; let c = (i / ${plane}u) * 4u;
-  ${where}
-  var sv = vec4f(0.0); var sg = vec4f(0.0);
-  for (var s = first; s < first + ${S}u; s++) {
-    let row = (s * ${M}u + m) * ${c2}u + c / 4u;
-    sv += X[row]; sg += X[row + ${c4}u];
-  }
-${epilogue}
-}""", n=n, index=index, M=M, S=S, c2=2 * cout // 4, c4=cout // 4, plane=ho * wo, where=where,
-                epilogue=_epilogue(op, "sv", "sg", ho * wo, "  "))
-    b.step(op["out"], code, bind, groups, plan)
+    decl, bufs = bindings([("X", "array<u32>", tensors[op["in"]]), ("Y", "array<vec4f>", "scratch"), *weights])
+    code, groups = matmul(**product, decl=decl + ("" if parity else HELPERS))
+    b.step(f"{op['out']}.mm", code, bufs, groups)
+    decl, bufs = bindings(_entries(op, tensors, "scratch", "array<vec4f>"))
+    code, groups = sum_slices(rows=ho * wo, M=M, N=cout, S=S, mats=("v", "g"), decl=decl + HELPERS,
+                              where=where, finish=lambda acc: _epilogue(op, acc["v"], acc["g"], ho * wo, "  "))
+    b.step(op["out"], code, bufs, groups)
 
 
 def _conv(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
@@ -452,16 +407,15 @@ def _upconv(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
         body.append(f"    {{ let px = (2u * (a0 + {u}u) + i) * {wo}u + 2u * (b0 + {v}u) + {j}u; let c = co + {4 * n}u;")
         body.append(_epilogue(op, f"av{k}_{n}", f"ag{k}_{n}", ho * wo, "      ") + " }")
     body.append("  }")
-    decl, bind = _bindings(op, tensors, tensors[op["in"]],
-                           extra=[("W", "array<vec4f>", _parity_weights(b, op, cin, cout))])
+    decl, bind = bindings(_entries(op, tensors, tensors[op["in"]])
+                          + [("W", "array<vec4f>", _parity_weights(b, op, cin, cout))])
     code = wgsl(decl + """
 ${HELPERS}
 @compute @workgroup_size(${WG}, ${WG}, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
 ${body}
 }""", WG=WG, body="\n".join(body))
-    b.step(op["out"], code, bind,
-           [math.ceil(wi / BX / WG), math.ceil(hi / BY / WG), cout // oct], plan)
+    b.step(op["out"], code, bind, [math.ceil(wi / BX / WG), math.ceil(hi / BY / WG), cout // oct])
 
 
 def _rgb(b: Builder, op: dict, tensors: dict, fmt: str) -> None:

@@ -113,7 +113,7 @@ class Model:
         manifest, weights = read_folder(folder)
         if device is None:
             return fastest(manifest, weights, **options)[0]
-        return built(device, manifest, weights, tuned_plans(manifest, device.adapter), own_device=False)
+        return built(device, manifest, weights, tuned_plans(manifest, device.adapter))
 
     def destroy(self) -> None:
         """Free this model's buffers. Its device may be shared, so it stays."""
@@ -192,9 +192,11 @@ OUTPUT = "bgra8"
 
 
 def model_key(manifest: dict) -> str:
-    """What `choices` keeps a model's measurements under: the manifest and the shader
-    generator's code, so that a change to either measures and tunes again."""
-    digest = hashlib.sha1(json.dumps(manifest, sort_keys=True).encode())
+    """What `choices` keeps a model's measurements under: what of the manifest its shaders
+    are made from, and the shader generator's code, so that a change to either measures and
+    tunes again (a new probe or new dials do not)."""
+    shaped = {k: v for k, v in manifest.items() if k not in ("probe", "dials", "stamp")}
+    digest = hashlib.sha1(json.dumps(shaped, sort_keys=True).encode())
     digest.update(code_hash("ganlive.engine.compile").encode())
     return digest.hexdigest()[:12]
 
@@ -207,26 +209,48 @@ def adapter_name(adapter) -> str:
 
 def tuned_plans(manifest: dict, adapter, choices: Path | None = None) -> dict | None:
     """The plans `ganlive tune` found for `manifest` on `adapter`, if it did."""
-    saved = _choices(choices or cache_dir() / "backends.json").get(model_key(manifest), {})
+    saved = _choices(choices).get(model_key(manifest), {})
     return saved.get("plans", {}).get(adapter_name(adapter))
 
 
-def built(device, manifest: dict, weights: bytes, plans: dict | None = None, *, own_device: bool,
+def remember_plans(manifest: dict, adapter, plans: dict, choices: Path | None = None) -> None:
+    """Keep `plans` for `manifest` on `adapter`, so that backends compare again, each with
+    its own plans, at the next load."""
+    saved = _choices(choices)
+    entry = saved.setdefault(model_key(manifest), {})
+    entry.setdefault("plans", {})[adapter_name(adapter)] = plans
+    entry.pop("measured", None)
+    remember(_choices_path(choices), json.dumps(saved, indent=2))
+
+
+def built(device, manifest: dict, weights: bytes, plans: dict | None = None, *,
           deadline: float | None = None) -> Model:
     """`manifest` built on `device` and checked against its probe (`checked`): with `plans`,
-    or with the defaults if those no longer compile or draw right."""
+    or with the defaults if those do not draw right here (a driver update, say)."""
+    pipelines: dict = {}                    # the two attempts share most shaders
     if plans:
         try:
             return checked(device, compile_manifest(manifest, plans, OUTPUT), weights,
-                           own_device=False, deadline=deadline)
-        except BuildTimeout:
-            if own_device:
-                device.destroy()
-            raise
-        except (ValueError, RuntimeError, wgpu.GPUError):
-            pass                            # plans from an older generator: the defaults
+                           deadline=deadline, pipelines=pipelines)
+        except (ValueError, RuntimeError, wgpu.GPUError) as exc:
+            if isinstance(exc, BuildTimeout):
+                raise
     return checked(device, compile_manifest(manifest, None, OUTPUT), weights,
-                   own_device=own_device, deadline=deadline)
+                   deadline=deadline, pipelines=pipelines)
+
+
+def frame_ms(model: Model, frames: int = 15, rounds: int = 3) -> float:
+    """The best of `rounds` mean frame times over `frames` frames."""
+    best = math.inf
+    for _ in range(rounds):
+        model.frame()
+        model.wait()
+        started = time.perf_counter()
+        for _ in range(frames):
+            model.frame()
+        model.wait()
+        best = min(best, (time.perf_counter() - started) / frames * 1000)
+    return best
 
 
 def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
@@ -240,7 +264,6 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
     remembered in `choices`. The first backend in `FIRST` order builds without a limit, the
     others within `budget` seconds. `backend` ("vulkan", "d3d12", "metal", ...) uses that
     backend without measuring."""
-    choices = choices or cache_dir() / "backends.json"
     adapters = sorted(_gpus(backend), key=lambda a: a.info["backend_type"] not in FIRST)
     names = _names(adapters)
     key = model_key(manifest)
@@ -248,9 +271,14 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
     known = saved.get(key, {})
     plans = known.get("plans", {})
 
-    def build(adapter, deadline=None):
-        return built(_device(adapter), manifest, weights, plans.get(adapter_name(adapter)),
-                     own_device=True, deadline=deadline)
+    def build(adapter, deadline=None) -> Model:
+        """On a device of the model's own, which goes with it if the build fails."""
+        device = _device(adapter)
+        try:
+            return built(device, manifest, weights, plans.get(adapter_name(adapter)), deadline=deadline)
+        except BaseException:
+            device.destroy()
+            raise
 
     if backend or len(adapters) == 1:
         return build(adapters[0]), {"best": names[0]}
@@ -261,39 +289,31 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
             pass                            # the remembered backend fails today: measure again
 
     measured, made, slow = {}, {}, []
-    for i, (name, adapter) in enumerate(zip(names, adapters, strict=True)):
+    # The first backend builds without a limit, the others within the budget. If none of
+    # those builds, the slow ones are waited for, in order, until one does.
+    queue = [(name, adapter, i > 0) for i, (name, adapter) in enumerate(zip(names, adapters, strict=True))]
+    while queue:
+        name, adapter, limited = queue.pop(0)
         try:
-            made[name] = build(adapter, time.perf_counter() + budget if i else None)
+            made[name] = build(adapter, time.perf_counter() + budget if limited else None)
+            measured.pop(name, None)
         except BuildTimeout:
             measured[name] = {"error": f"builds in over {budget:.0f} s"}
-            slow.append((name, adapter))
+            slow.append((name, adapter, False))
         except (RuntimeError, ValueError, wgpu.GPUError) as exc:
             measured[name] = {"error": str(exc)[:200]}
-    if not made and slow:                   # nothing else draws it: wait for a slow one
-        name, adapter = slow.pop(0)
-        try:
-            made[name] = build(adapter)
-            del measured[name]
-        except (RuntimeError, ValueError, wgpu.GPUError) as exc:
-            measured[name] = {"error": str(exc)[:200]}
+        if not queue and not made and slow:
+            queue.append(slow.pop(0))
     # Rounds alternate between backends and each keeps its best, so a moment when something
     # else holds the GPU cannot decide the choice. A backend that fails mid-way drops out.
     best_ms = dict.fromkeys(made, math.inf)
     for _ in range(3):
         for name in list(best_ms):
-            model = made[name]
             try:
-                model.frame()
-                model.wait()
-                started = time.perf_counter()
-                for _ in range(frames):
-                    model.frame()
-                model.wait()
+                best_ms[name] = min(best_ms[name], frame_ms(made[name], frames, rounds=1))
             except (RuntimeError, wgpu.GPUError) as exc:
                 measured[name] = {"error": str(exc)[:200]}
                 del made[name], best_ms[name]
-                continue
-            best_ms[name] = min(best_ms[name], (time.perf_counter() - started) / frames * 1000)
     if not made:
         raise RuntimeError(f"no backend draws this model: {measured}")
     measured.update({n: {"ms": round(ms, 2)} for n, ms in best_ms.items()})
@@ -307,25 +327,17 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
     # A slow compiler stays slow, and is not waited for again.
     if len(best_ms) + len(slow) == len(names):
         saved[key] = {**known, **report}
-        remember(choices, json.dumps(saved, indent=2))
+        remember(_choices_path(choices), json.dumps(saved, indent=2))
     return made[best], report
 
 
-def checked(device, program, weights, *, own_device: bool, deadline: float | None = None,
+def checked(device, program, weights, *, deadline: float | None = None,
             pipelines: dict | None = None) -> Model:
-    """A model built on `device`, refused if it does not draw the program's probe. A device the
-    model owns goes with it, and a shared one stays."""
-    try:
-        model = Model(device, program, weights, deadline=deadline, pipelines=pipelines)
-    except BaseException:
-        if own_device:
-            device.destroy()
-        raise
+    """A model built on `device`, refused if it does not draw the program's probe."""
+    model = Model(device, program, weights, deadline=deadline, pipelines=pipelines)
     off = model.strays() if "probe" in program else 0.0
     if off > PROBE_LEVELS:
         model.destroy()
-        if own_device:
-            device.destroy()
         raise RuntimeError(f"draws the probe {off:.1f} levels off on "
                            f"{device.adapter.info['backend_type']}")
     return model
@@ -353,9 +365,14 @@ def _names(adapters) -> list[str]:
     return [f"{b} #{base[:i].count(b) + 1}" if base.count(b) > 1 else b for i, b in enumerate(base)]
 
 
-def _choices(path: Path) -> dict:
+def _choices_path(choices: Path | None) -> Path:
+    """Where this user's backend choices and tuned plans are kept."""
+    return choices or cache_dir() / "backends.json"
+
+
+def _choices(choices: Path | None) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(_choices_path(choices).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 

@@ -6,45 +6,14 @@ backend, and every later load uses them (`runner.built`)."""
 from __future__ import annotations
 
 import json
-import time
+import math
 from collections.abc import Callable
 from pathlib import Path
 
 import wgpu
 
-from ganlive.engine import program, program_stylegan2
-from ganlive.engine.compile import compile_manifest
-from ganlive.engine.probe import PROBE_LEVELS
-from ganlive.engine.runner import (
-    OUTPUT,
-    Model,
-    _choices,
-    _device,
-    adapter_name,
-    cache_dir,
-    model_key,
-)
-from ganlive.files import remember
-
-
-def plan_choices(manifest: dict) -> dict[str, list[dict]]:
-    """Each layer's plans worth trying, by the name a plan is given under."""
-    family = program_stylegan2 if manifest.get("family") == "stylegan2" else program
-    return family.plan_choices(manifest)
-
-
-def frame_ms(model: Model, frames: int = 15, rounds: int = 3) -> float:
-    """The best of `rounds` mean frame times over `frames` frames."""
-    best = float("inf")
-    for _ in range(rounds):
-        model.frame()
-        model.wait()
-        started = time.perf_counter()
-        for _ in range(frames):
-            model.frame()
-        model.wait()
-        best = min(best, (time.perf_counter() - started) / frames * 1000)
-    return best
+from ganlive.engine.compile import compile_manifest, plan_choices
+from ganlive.engine.runner import OUTPUT, _device, checked, frame_ms, remember_plans
 
 
 def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] = print,
@@ -53,12 +22,19 @@ def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] 
     remembered in `choices`."""
     device = _device(adapter)
     pipelines: dict = {}                 # each trial compiles only the shaders it changes
+    seen: set[str] = set()               # options that compile to a program already timed
 
     def timed(plans: dict) -> float:
-        model = Model(device, compile_manifest(manifest, plans, OUTPUT), weights, pipelines=pipelines)
+        program = compile_manifest(manifest, plans, OUTPUT)
+        shape = json.dumps([program["shaders"], program["steps"], program["load"]])
+        if shape in seen:
+            return math.inf
+        seen.add(shape)
         try:
-            if "probe" in model.program and model.strays() > PROBE_LEVELS:
-                return float("inf")
+            model = checked(device, program, weights, pipelines=pipelines)
+        except RuntimeError:             # draws the probe wrong
+            return math.inf
+        try:
             return frame_ms(model)
         finally:
             model.destroy()
@@ -71,16 +47,11 @@ def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] 
             trial = {**plans, layer: option}
             try:
                 ms = timed(trial)
-            except (ValueError, RuntimeError, wgpu.GPUError):
+            except (ValueError, wgpu.GPUError):
                 continue                 # a plan this layer cannot take
             if ms < best * 0.995:
                 plans, best = trial, ms
                 log(f"  {layer} {json.dumps(option)}: {ms:.2f} ms")
     device.destroy()
-    path = choices or cache_dir() / "backends.json"
-    saved = _choices(path)
-    entry = saved.setdefault(model_key(manifest), {})
-    entry.setdefault("plans", {})[adapter_name(adapter)] = plans
-    entry.pop("measured", None)          # backends compare again, each with its plans
-    remember(path, json.dumps(saved, indent=2))
+    remember_plans(manifest, adapter, plans, choices)
     return plans, best, start

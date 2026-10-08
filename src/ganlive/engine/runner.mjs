@@ -46,7 +46,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
     };
     const compiled = async (specs) => {
       const pipelines = await Promise.all(specs.map((s) => pipeline(s.shader)));
-      return specs.map((s, i) => ({ name: s.name, plan: s.plan, groups: s.groups, pipeline: pipelines[i],
+      return specs.map((s, i) => ({ name: s.name, groups: s.groups, pipeline: pipelines[i],
         bind: device.createBindGroup({ layout: pipelines[i].getBindGroupLayout(0),
           entries: s.bind.map((n, j) => ({ binding: j, resource: { buffer: buffers[n] } })) }) }));
     };

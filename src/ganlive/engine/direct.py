@@ -9,7 +9,21 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
-from ganlive.engine.codegen import WG, Builder, linear, storage, wgsl
+from ganlive.engine.codegen import WG, Builder, bindings, linear, storage, wgsl
+
+#: The direct plans worth trying on a new machine: the tiles that do not spill registers, with
+#: f32 weights and workgroup memory or without.
+CHOICES = [{"by": by, "bx": bx, "oct": oct, **extra}
+           for by, bx, oct in ((2, 2, 8), (2, 2, 4), (1, 2, 8), (1, 4, 4), (2, 4, 4))
+           for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
+
+
+def check(plan: dict, name: str, cout: int, h: int, w: int, keys=("by", "bx", "oct", "f32", "slm")) -> dict:
+    """`plan` if its tile fits `cout` channels of an h x w map, refused otherwise."""
+    if (not set(plan) <= set(keys) or plan["oct"] % 4 or cout % plan["oct"]
+            or h % plan["by"] or w % plan["bx"]):
+        raise ValueError(f"{name}: {plan} does not fit {cout} channels at {h}x{w}")
+    return plan
 
 
 def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan: dict,
@@ -100,7 +114,8 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
     if f32w:
         entries = [*entries, ("W", "array<vec4f>", f32_weights(b, step, mats, cin, cout))]
     shared = f"var<workgroup> F: array<u32, {CH * RY * RX}>;" if tiled else ""
-    code = wgsl(storage([(n, k) for n, k, _ in entries]) + """
+    decl, bufs = bindings(entries)
+    code = wgsl(decl + """
 ${HELPERS}
 ${helpers}
 ${shared}
@@ -109,8 +124,7 @@ fn main(@builtin(global_invocation_id) id: vec3u, @builtin(workgroup_id) wg: vec
         @builtin(local_invocation_id) lid: vec3u, @builtin(local_invocation_index) li: u32) {
 ${body}
 }""", WG=WG, body="\n".join(body), shared=shared, helpers=helpers)
-    b.step(step, code, [buf for *_, buf in entries],
-           [math.ceil(w / BX / WG), math.ceil(h / BY / WG), cout // oct], plan)
+    b.step(step, code, bufs, [math.ceil(w / BX / WG), math.ceil(h / BY / WG), cout // oct])
 
 
 def f32_weights(b: Builder, key: str, mats: dict[str, int], cin: int, cout: int) -> str:

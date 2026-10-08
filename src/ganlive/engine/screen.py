@@ -14,6 +14,7 @@ import numpy as np
 import wgpu
 
 from ganlive.engine.codegen import linear
+from ganlive.engine.runner import MAPPABLE
 
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
@@ -141,7 +142,7 @@ class EngineStage:
         #: The downloads of the open `handoff` block, or None outside one.
         self._jobs: list | None = None
         #: Whether a conversion may write straight into the buffer the host maps.
-        self._mappable = "mappable-primary-buffers" in device.features
+        self._mappable = MAPPABLE in device.features
 
     def _pipeline(self, code: str):
         return self.device.create_compute_pipeline(

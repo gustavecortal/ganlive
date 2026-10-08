@@ -11,9 +11,20 @@ from __future__ import annotations
 
 import math
 
-from ganlive.engine.codegen import wgsl
+from ganlive.engine.codegen import linear, wgsl
 
 TK = 16                     # the sum advances 16 rows of B at a time
+GEMM_MAX = 6144             # maps up to this many pixels run as a product by default
+GEMM_TARGET = 256           # workgroups a product aims to fill, by splitting its sum
+
+
+def split(tiles: int, steps: int) -> int:
+    """How many slices a product's sum is split into, so that `tiles` workgroups fill the GPU:
+    doubling while that leaves at least 4 of the `steps` of 16 in each slice."""
+    S = 1
+    while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
+        S *= 2
+    return S
 
 
 def matmul(*, M: int, N: int, K: int, S: int, rm: int, rn: int, mats: tuple[str, ...], decl: str,
@@ -39,18 +50,15 @@ def matmul(*, M: int, N: int, K: int, S: int, rm: int, rn: int, mats: tuple[str,
     reads = " ".join([f"let a{r} = As[kk * {TM // 4}u + lid.y + {8 * r}u];" for r in range(rm // 4)]
                      + [f"let b{x}{c} = B{x}[kk * {TN // 4}u + lid.x + {8 * c}u];" for x in mats for c in cols])
     fma = " ".join(f"a{x}{r}{i}{c} += a{r}.{'xyzw'[i]} * b{x}{c};" for x in mats for r, i in rows for c in cols)
-    if finish is not None and S == 1:
-        store = "\n".join(
-            f"  {{ let m = m0 + (lid.y + {8 * r}u) * 4u + {i}u; if (m < {M}u) {{\n"
-            f"    let c = n0 + (lid.x + {8 * c}u) * 4u;\n"
-            + finish({x: f"a{x}{r}{i}{c}" for x in mats}) + " } }"
-            for r, i in rows for c in cols)
-    else:
-        store = "\n".join(
-            f"  {{ let m = m0 + (lid.y + {8 * r}u) * 4u + {i}u; if (m < {M}u) {{\n"
-            f"    let row = (wg.z * {M}u + m) * {width}u + n0 / 4u + lid.x + {8 * c}u;\n    "
-            + " ".join(f"Y[row + {j * N // 4}u] = a{x}{r}{i}{c};" for j, x in enumerate(mats)) + " } }"
-            for r, i in rows for c in cols)
+    def stored(r, i, c):
+        if finish is not None and S == 1:
+            return (f"    let c = n0 + (lid.x + {8 * c}u) * 4u;\n"
+                    + finish({x: f"a{x}{r}{i}{c}" for x in mats}))
+        return (f"    let row = (wg.z * {M}u + m) * {width}u + n0 / 4u + lid.x + {8 * c}u;\n    "
+                + " ".join(f"Y[row + {j * N // 4}u] = a{x}{r}{i}{c};" for j, x in enumerate(mats)))
+
+    store = "\n".join(f"  {{ let m = m0 + (lid.y + {8 * r}u) * 4u + {i}u; if (m < {M}u) {{\n"
+                      + stored(r, i, c) + " } }" for r, i in rows for c in cols)
     shared = "\n".join(f"var<workgroup> B{x}: array<vec4f, {TK * TN // 4}>;" for x in mats)
     code = wgsl(decl + """
 var<workgroup> As: array<vec4f, ${tkm4}>;
@@ -84,3 +92,28 @@ ${store}
                 aloads=TK * TM // 8 // 64, tm4=TM // 4, gather=gather, bloads=TK * TN // 4 // 64,
                 tn4=TN // 4, bload=bload, reads=reads, fma=fma, store=store)
     return code, [math.ceil(M / TM), N // TN, S * parts]
+
+
+def sum_slices(*, rows: int, M: int, N: int, S: int, mats: tuple[str, ...], decl: str, where: str,
+               finish) -> tuple[str, list[int]]:
+    """The second pass of a product split in S slices, X being its partial sums: for each of
+    `rows` rows `r` and group of columns `c` .. `c` + 3, `where` sets `m`, the product's row,
+    and `first`, its first slice, and `finish` is given each B's total."""
+    n = rows * (N // 4)
+    groups, index = linear(n)
+    width = len(mats) * N // 4
+    code = decl + f"""
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {{
+  let i = {index};
+  if (i >= {n}u) {{ return; }}
+  let r = i % {rows}u; let c = (i / {rows}u) * 4u;
+  {where}
+  {" ".join(f"var s{x} = vec4f(0.0);" for x in mats)}
+  for (var s = first; s < first + {S}u; s++) {{
+    let row = (s * {M}u + m) * {width}u + c / 4u;
+    {" ".join(f"s{x} += X[row + {j * N // 4}u];" for j, x in enumerate(mats))}
+  }}
+{finish({x: f"s{x}" for x in mats})}
+}}"""
+    return code, groups

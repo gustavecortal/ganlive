@@ -13,7 +13,7 @@ from pathlib import Path
 from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, WEIGHTS, is_engine, slug_for
 from ganlive.engine import stamp
 from ganlive.engine.player import EngineGenerator, PlayedDirections, dials_of
-from ganlive.engine.runner import built, cache_dir, fastest, tuned_plans
+from ganlive.engine.runner import built, cache_dir, fastest, read_folder, tuned_plans
 from ganlive.levels import RANDOM_FLOOR
 
 
@@ -44,16 +44,15 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR,
     device `gpu`, or else on this machine's fastest backend for it, with the plans tuned for
     that device (`ganlive tune`)."""
     if is_engine(path):
-        folder = Path(path)
-        manifest = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
+        manifest, weights = read_folder(path)
     else:
         folder, manifest = converted(path, floor, grain)
-    weights = (folder / WEIGHTS).read_bytes()
+        weights = (folder / WEIGHTS).read_bytes()
     if gpu is None:
         model, report = fastest(manifest, weights)
         print(f"engine: {report['best']}", flush=True)
     else:
-        model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter), own_device=False)
+        model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))
     net = EngineGenerator(model)
     print(net.report(), flush=True)
     layout, directions = dials_of(model.program)

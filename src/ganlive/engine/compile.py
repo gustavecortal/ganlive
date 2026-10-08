@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ganlive.engine import program, program_stylegan2
 from ganlive.engine.program import compile_program
 from ganlive.engine.program_stylegan2 import compile_stylegan2
 
@@ -17,3 +18,9 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
         if key in manifest:
             program[key] = manifest[key]
     return program
+
+
+def plan_choices(manifest: dict) -> dict[str, list[dict]]:
+    """Each layer's plans worth trying (`ganlive tune`), by the name a plan is given under."""
+    family = program_stylegan2 if manifest.get("family") == "stylegan2" else program
+    return family.plan_choices(manifest)
