@@ -16,7 +16,6 @@ from pathlib import Path
 
 from ganlive.checkpoints import PROGRAM, WEIGHTS, checkpoint_for, slug_for
 from ganlive.engine.compile import compile_manifest
-from ganlive.engine.player import browser_dials
 from ganlive.files import size_mb, write_json
 from ganlive.tools import add_device, parser
 
@@ -43,7 +42,6 @@ def main(argv=None) -> int:
         print(exc, file=sys.stderr)
         return 2
     program = compile_manifest(manifest, browser=True)
-    program["knobs"] = browser_dials(program)
     write_json(out / PROGRAM, program, indent=None)
     print(f"{checkpoint.name} -> {out}: {program['width']}x{program['height']}, "
           f"{len(program['steps'])} steps, {size_mb(out / WEIGHTS):.1f} MB of weights, "

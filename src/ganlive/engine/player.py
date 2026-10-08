@@ -8,12 +8,15 @@ PyTorch-free: what a played FastGAN needs from `ganlive.settings`, `dials.derive
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ganlive.dials import fastgan_dials, table
-from ganlive.engine.runner import Model
 from ganlive.ladder import Ladder
+
+if TYPE_CHECKING:
+    from ganlive.engine.runner import Model
 
 
 @dataclass(frozen=True)
@@ -110,22 +113,16 @@ class EngineGenerator:
                 f"{self.cfg.ladder.height}, {len(self.model.steps)} steps")
 
 
-def browser_dials(program: dict) -> list[dict]:
-    """The dials a browser plays (`runner.mjs`'s pages): every live direction and MODEL dial,
-    with what the strip says of it and what it writes. A direction pushes its row of the
-    basis by `push` at a position, a MODEL dial sets each of its settings by its curve."""
+def browser_layout(program: dict) -> tuple[list[dict], list[str]]:
+    """`(knobs, live)`: the dials a browser plays (`web/dials.mjs`), in the strip's order, every
+    block with what the strip says of each dial and what it writes, and the names of those
+    that reach this model."""
     layout, directions = dials_of(program)
     live = table.live_dials(HostSettings(program["settings"]), directions, layout)
-    out = []
-    for knob in layout.knobs:
-        if knob.name not in live or knob.group not in ("LATENT", "MODEL"):
-            continue
-        entry = {"name": knob.name, "group": knob.group, "rest": knob.rest, "about": knob.blurb,
-                 "poles": knob.poles, "writes": [[w.setting, w.points] for w in knob.writes]}
-        if knob.group == "LATENT":
-            entry["push"] = table.DIRECTION_POINTS
-        out.append(entry)
-    return out
+    knobs = [{"name": k.name, "group": k.group, "rest": k.rest, "blurb": k.blurb, "poles": k.poles,
+              "writes": [[w.setting, w.points] for w in k.writes], "measured": k.measured}
+             for k in layout.knobs]
+    return knobs, [k.name for k in layout.knobs if k.name in live]
 
 
 def dials_of(program: dict) -> tuple[table.Layout, PlayedDirections | None]:

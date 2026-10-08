@@ -26,15 +26,17 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }"""
 
 
+def pcg(v):
+    """`NOISE`'s hash of 32-bit words, on uint32 arrays."""
+    s = v * np.uint32(747796405) + np.uint32(2891336453)
+    w = ((s >> ((s >> np.uint32(28)) + np.uint32(4))) ^ s) * np.uint32(277803737)
+    return (w >> np.uint32(22)) ^ w
+
+
 def seeded_noise(n: int, seed: int) -> np.ndarray:
     """What `NOISE` writes into an n-element buffer, computed on the host: the noise every
     engine model plays, so that `convert` can give PyTorch the same."""
     i = np.arange(n, dtype=np.uint32)
-
-    def pcg(v):
-        s = v * np.uint32(747796405) + np.uint32(2891336453)
-        w = ((s >> ((s >> np.uint32(28)) + np.uint32(4))) ^ s) * np.uint32(277803737)
-        return (w >> np.uint32(22)) ^ w
 
     def unit(v):
         return ((pcg(v) >> np.uint32(8)).astype(np.float32) + np.float32(0.5)) / np.float32(16777216.0)

@@ -112,7 +112,7 @@ NEEDS_ENCODERS = "encoders"
 
 #: `(keys, label, what it needs)`. One table for the help line and the key handler.
 HELP = ((("r",), "free", MINE), (("s",), "save", "save"), (("v",), "rec", "record"),
-        (("c",), "still", "still"), (("tab",), "preset", "preset"),
+        (("c",), "still", "still"), (("tab", "p"), "preset", "preset"),
         (("[", "]"), "model", "model"), (("m",), "load", NEEDS_SHELF),
         (("l",), "learn", NEEDS_ENCODERS),
         (("g",), "route", MINE), (("escape",), "quit", None))
@@ -986,7 +986,7 @@ class DialPanel:
             self._dirty = True
         elif ev.key == pg.K_c and self.offers("still"):
             act("still")()
-        elif ev.key == pg.K_TAB and self.offers("preset"):
+        elif ev.key in (pg.K_TAB, pg.K_p) and self.offers("preset"):
             act("preset")(-1 if ev.mod & pg.KMOD_SHIFT else 1)
             self.reload()
         elif (step := model_step(pg, ev)) and self.offers("model"):

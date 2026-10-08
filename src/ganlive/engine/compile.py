@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ganlive.engine import fit, program, program_stylegan2
+from ganlive.engine.player import browser_layout
 from ganlive.engine.program import compile_program
 from ganlive.engine.program_stylegan2 import compile_stylegan2
 
@@ -11,7 +12,7 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
                      browser: bool = False) -> dict:
     """The program of `manifest`, carrying its probe and dials for the hosts. `plans` overrides
     how a FastGAN's convolutions split (see `program._plan`), and `browser` asks for the plans
-    every browser plays well."""
+    every browser plays well, and for the dials it plays (`player.browser_layout`)."""
     if manifest.get("family") == "stylegan2":
         program = compile_stylegan2(manifest, plans, output=output)
     else:
@@ -21,6 +22,8 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
             program[key] = manifest[key]
     if output != "f32":         # how a browser draws the pixels onto a canvas
         program["screen"] = fit.screen(output)
+    if browser:                 # and the dials it plays them with
+        program["knobs"], program["live"] = browser_layout(program)
     return program
 
 

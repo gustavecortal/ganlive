@@ -11,6 +11,7 @@ import math
 import numpy as np
 
 from ganlive.clock import WalkConfig, position
+from ganlive.engine.noise import pcg, seeded_noise
 
 
 def _angle(z0: np.ndarray, z1: np.ndarray) -> float:
@@ -75,9 +76,10 @@ class SlerpWalk:
         return max(self.CANON, self.nz)
 
     def _draw(self, k: int, salt: int = 0) -> np.ndarray:
-        """A Gaussian draw that depends only on `(base_seed, salt, k)`."""
-        rng = np.random.default_rng((self.cfg.base_seed * 1_000_003 + salt * 7_919 + k) & 0x7FFF_FFFF)
-        return rng.standard_normal(self.canon, dtype=np.float32)
+        """A Gaussian draw that depends only on `(base_seed, salt, k)`: the engine's own
+        generator (`seeded_noise`), which a browser computes the same way (web/walk.mjs)."""
+        seed = (self.cfg.base_seed * 1_000_003 + salt * 7_919 + k) & 0x7FFF_FFFF
+        return seeded_noise(self.canon, int(pcg(np.array([seed], np.uint32))[0]))
 
     def home_for(self, k: int) -> np.ndarray:
         """The neighbourhood segment `k` is drawn around. Salted so `home_0` is not `seed_0`."""

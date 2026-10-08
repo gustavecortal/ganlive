@@ -81,7 +81,7 @@ Dark dials are inactive for the current model.
 | `l` | Map the next MIDI knob to the last dial touched |
 | `[` / `]` | Previous / next loaded model |
 | `m` | Browse models under `--runs` |
-| `Tab` / `Shift+Tab` | Next / previous preset |
+| `Tab` or `P` / `Shift+Tab` or `Shift+P` | Next / previous preset |
 | `s` | Save a preset |
 | `r` | Release all mouse-controlled dials |
 | `v` | Start / stop video recording |
