@@ -20,9 +20,7 @@ from __future__ import annotations
 import math
 from string import Template
 
-import numpy as np
-
-from ganlive.levels import LEVEL
+from ganlive.engine.noise import NOISE, noise_seed
 
 FORMAT = "ganlive-engine/1"
 
@@ -495,82 +493,5 @@ def _noise(b: Builder, key: str, h: int, w: int) -> None:
     n = h * w
     b.buffer(f"noise.{key}", n * 4)
     b.buffer(f"noise.{key}.n", 16, init="words", words=[n, noise_seed(key)])
-    groups = math.ceil(n / 256)
-    b.step(f"noise.{key}", NOISE, [f"noise.{key}", f"noise.{key}.n"],
-           [min(groups, 65535), math.ceil(groups / 65535), 1], load=True)
-
-
-# Standard normal noise made on the GPU (a PCG hash per element, Box-Muller), so no host
-# ships or computes it. U holds the element count and the seed.
-NOISE = """
-@group(0) @binding(0) var<storage, read_write> Y: array<f32>;
-@group(0) @binding(1) var<storage, read> U: array<u32>;
-fn pcg(v: u32) -> u32 {
-  let s = v * 747796405u + 2891336453u;
-  let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-  return (w >> 22u) ^ w;
-}
-fn unit(v: u32) -> f32 { return (f32(pcg(v) >> 8u) + 0.5) / 16777216.0; }
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  let i = id.y * 16776960u + id.x;          // rows of 65535 workgroups of 256
-  if (i >= U[0]) { return; }
-  let a = unit((2u * i) ^ U[1]); let b = unit((2u * i + 1u) ^ U[1]);
-  Y[i] = sqrt(-2.0 * log(a)) * cos(6.2831853 * b);
-}"""
-
-
-def seeded_noise(n: int, seed: int) -> np.ndarray:
-    """What `NOISE` writes into an n-element buffer, computed on the host: the noise every
-    engine model plays, so that `convert` can give PyTorch the same."""
-    i = np.arange(n, dtype=np.uint32)
-
-    def pcg(v):
-        s = v * np.uint32(747796405) + np.uint32(2891336453)
-        w = ((s >> ((s >> np.uint32(28)) + np.uint32(4))) ^ s) * np.uint32(277803737)
-        return (w >> np.uint32(22)) ^ w
-
-    def unit(v):
-        return ((pcg(v) >> np.uint32(8)).astype(np.float32) + np.float32(0.5)) / np.float32(16777216.0)
-
-    a = unit((np.uint32(2) * i) ^ np.uint32(seed))
-    b = unit((np.uint32(2) * i + np.uint32(1)) ^ np.uint32(seed))
-    return (np.sqrt(np.float32(-2.0) * np.log(a)) * np.cos(np.float32(6.2831853) * b)).astype(np.float32)
-
-
-#: A probe is the picture's mean over this grid of blocks, coarse enough that fp16 rounding
-#: averages out and fine enough that a backend drawing the wrong picture cannot match it.
-PROBE_GRID = (16, 24)
-#: How far a backend's probe may stray, in 8-bit levels averaged over the blocks.
-PROBE_LEVELS = 2.0
-
-
-def box_means(image: np.ndarray) -> np.ndarray:
-    """Block means in [-1, 1], (3, 16, 24), of a (3, H, W) float picture or of (H, W, 4)
-    RGBA8 pixels, the latter summed as integers with no full-size float copy."""
-    gh, gw = PROBE_GRID
-    pixels = image.dtype == np.uint8
-    h, w = image.shape[:2] if pixels else image.shape[1:]
-    # Block i spans rows [i*h/gh, (i+1)*h/gh), so any size divides into the grid.
-    rows, cols = (np.arange(n) * size // n for n, size in ((gh, h), (gw, w)))
-    area = np.outer(np.diff(rows, append=h), np.diff(cols, append=w))
-    if pixels:
-        sums = np.add.reduceat(np.add.reduceat(image[..., :3], rows, axis=0, dtype=np.uint64),
-                               cols, axis=1)
-        return (sums.transpose(2, 0, 1) / area) / LEVEL - 1.0
-    sums = np.add.reduceat(np.add.reduceat(image, rows, axis=1, dtype=np.float64), cols, axis=2)
-    return sums / area
-
-
-def probe_error(probe: dict, image: np.ndarray) -> float:
-    """How far a drawing of the probe's latent is from PyTorch's, in 8-bit levels averaged over
-    the blocks: what a backend must keep under PROBE_LEVELS to be used."""
-    return float(np.abs(box_means(image).ravel() - np.asarray(probe["means"])).mean() * LEVEL)
-
-
-def noise_seed(text: str) -> int:
-    """FNV-1a, so each noise layer gets its own seed from its name."""
-    h = 2166136261
-    for ch in text:
-        h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF
-    return h
+    b.step(f"noise.{key}", NOISE, [f"noise.{key}", f"noise.{key}.n"], linear(n, 256)[0],
+           load=True)

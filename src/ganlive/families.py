@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ganlive.checkpoints import PROGRAM, is_engine, is_onnx
+from ganlive.checkpoints import MANIFEST, is_engine, is_onnx
 from ganlive.device import playback_dtype
 from ganlive.dials import steer
 from ganlive.engine.load import open_model
@@ -78,7 +78,7 @@ def open_stylegan2(path, device, exact: bool = False, dtype=None):
 
 
 def engine_config_of(path) -> EngineConfig:
-    return EngineConfig.of(json.loads((Path(path) / PROGRAM).read_text(encoding="utf-8")))
+    return EngineConfig.of(json.loads((Path(path) / MANIFEST).read_text(encoding="utf-8")))
 
 
 def _prepare_engine(path, device, dtype, options: LoadOptions) -> Prepared:

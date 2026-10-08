@@ -247,7 +247,7 @@ def test_ganlive_opens_a_fastgan_checkpoint(tmp_path):
     torch.save({"g_ema": net.state_dict(), "config": cfg}, path)
 
     model = R._prepare(path, gpu, LoadOptions())
-    assert (tmp_path / "tiny.engine" / "program.json").is_file(), "converted beside it"
+    assert (tmp_path / "tiny.engine" / "manifest.json").is_file(), "converted beside it"
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
     assert model.settings.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and

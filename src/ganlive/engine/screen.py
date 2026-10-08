@@ -13,6 +13,8 @@ import math
 import numpy as np
 import wgpu
 
+from ganlive.engine.program import linear
+
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
 # The model's RGBA8 frame -> the size shown, as BGRA8 (what an SDL texture is). Shrinking
@@ -250,9 +252,8 @@ class EngineStage:
         h, w = frame.height, frame.width
         size = h * w * 3 // 2
         out = self._buffer(f"nv12.{dest}", size)
-        groups = math.ceil(math.ceil(size / 4) / 256)
         self._run(self._nv12, [frame.buffer, out, self._words("nv12", h, w)],
-                  (min(groups, 65535), math.ceil(groups / 65535), 1))
+                  linear(math.ceil(size / 4), 256)[0])
         return self._take(dest, out, size, (h * 3 // 2, w), depth)
 
     def rgb_still(self, frame: Stepped) -> np.ndarray:

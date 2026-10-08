@@ -7,9 +7,11 @@ import numpy as np
 import pytest
 import torch
 
-from ganlive.engine.convert import build, prepared, stylegan2_manifest, stylegan2_net
-from ganlive.engine.program import LEVEL, PROBE_LEVELS
-from ganlive.engine.program_stylegan2 import compile_stylegan2
+from ganlive.engine.compile import compile_manifest
+from ganlive.engine.convert_fastgan import manifest_of, prepared, probe
+from ganlive.engine.convert_stylegan2 import stylegan2_manifest, stylegan2_net
+from ganlive.engine.probe import PROBE_LEVELS
+from ganlive.levels import LEVEL
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import Config, Generator
@@ -63,8 +65,9 @@ def _prepared():
 def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device):
     """With the noise the engine makes on the GPU itself, as a converted model plays."""
     steerable, cfg, names = _prepared()
-    program, blob = build(steerable, cfg, names, output="f32")
-    model = Model(device, program, bytes(blob.data))
+    manifest, blob = manifest_of(steerable, cfg, names)
+    manifest["probe"] = probe(steerable, cfg, names)
+    model = Model(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
     assert model.strays() < PROBE_LEVELS                # what a backend must pass to be used
     for seed, k in enumerate((np.ones(len(names)), np.linspace(0.3, 1.7, len(names)))):
         z = host_latent(cfg.nz, seed=seed + 1)
@@ -89,9 +92,9 @@ def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(device,
         for layer in layers:
             layer.noise_strength.data.fill_(0.3)        # trained noise is never off
     S2.save(tmp_path / "tiny.pt", cfg, fresh.state_dict())
-    net, settings, _push = stylegan2_net(tmp_path / "tiny.pt")
+    net, settings = stylegan2_net(tmp_path / "tiny.pt")
     manifest, blob = stylegan2_manifest(net, list(settings.names))
-    model = Model(device, compile_stylegan2(manifest, output="f32"), bytes(blob.data))
+    model = Model(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
     for seed, k in enumerate((np.ones(len(settings.names)), np.linspace(0.5, 1.5, len(settings.names)))):
         z = host_latent(cfg.z_dim, seed=seed + 1)
         settings.write[:] = k

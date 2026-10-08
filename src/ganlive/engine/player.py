@@ -89,7 +89,7 @@ class EngineGenerator:
         self.model = model
         self.cfg = EngineConfig.of(model.program)
         self.settings = HostSettings(model.program["settings"])
-        #: A StyleGAN2's `w` push, one row per style range, which the walk writes; None for a
+        #: A StyleGAN2's `w` push, one row per style range, which the walk writes. None for a
         #: model steered through its latent.
         shape = model.program.get("push_shape")
         self.push = None if shape is None else np.zeros(shape, np.float32)

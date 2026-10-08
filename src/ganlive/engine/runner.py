@@ -20,8 +20,10 @@ from pathlib import Path
 import numpy as np
 import wgpu
 
-from ganlive.checkpoints import PROGRAM, WEIGHTS
-from ganlive.engine.program import FORMAT, PROBE_LEVELS, probe_error
+from ganlive.checkpoints import MANIFEST, WEIGHTS
+from ganlive.engine.compile import compile_manifest
+from ganlive.engine.probe import PROBE_LEVELS, probe_error
+from ganlive.engine.program import FORMAT
 from ganlive.files import remember
 
 USAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
@@ -140,9 +142,10 @@ class Model:
 
 
 def read_folder(folder) -> tuple[dict, bytes]:
+    """The program and weights of the engine model in `folder`."""
     folder = Path(folder)
-    program = json.loads((folder / PROGRAM).read_text(encoding="utf-8"))
-    return program, (folder / WEIGHTS).read_bytes()
+    manifest = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
+    return compile_manifest(manifest), (folder / WEIGHTS).read_bytes()
 
 
 def cache_dir() -> Path:

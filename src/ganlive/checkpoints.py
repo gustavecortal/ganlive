@@ -11,8 +11,10 @@ ONNX = ".onnx"
 #: The suffix of the derived directions saved beside a checkpoint (`dials.derive.cache_path`).
 CACHE_SUFFIX = ".directions.pt"
 #: The file that makes a folder an engine model (`ganlive convert`), and its weights.
-PROGRAM = "program.json"
+MANIFEST = "manifest.json"
 WEIGHTS = "weights.bin"
+#: The compiled shaders `ganlive convert` also writes, for the browser runner.
+PROGRAM = "program.json"
 #: The suffix of the engine model a checkpoint is converted into, beside it, at load.
 ENGINE_SUFFIX = ".engine"
 
@@ -22,8 +24,8 @@ def is_onnx(path) -> bool:
 
 
 def is_engine(path) -> bool:
-    """Whether this is an engine model: a folder holding a program."""
-    return (Path(path) / PROGRAM).is_file()
+    """Whether this is an engine model: a folder holding a manifest."""
+    return (Path(path) / MANIFEST).is_file()
 
 
 def is_published_engine(path) -> bool:

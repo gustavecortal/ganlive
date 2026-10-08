@@ -22,11 +22,9 @@ import math
 from ganlive.engine.program import (
     FORMAT,
     GEMM_MAX,
-    NOISE,
     WG,
     Builder,
     linear,
-    noise_seed,
     split,
     storage,
     wgsl,
@@ -66,8 +64,7 @@ def compile_stylegan2(manifest: dict, output: str = "rgba8") -> dict:
     b.buffer("img0", side)
     b.buffer("img1", side)
 
-    _mapping(b)
-    _ws(b)
+    _ws(b, _mapping(b))
     src, img = None, None
     for op in m["ops"]:
         if op["op"] == "const":
@@ -95,7 +92,7 @@ def compile_stylegan2(manifest: dict, output: str = "rgba8") -> dict:
             "buffers": b.buffers, "load": b.load, "steps": b.steps}
 
 
-def _mapping(b: Builder) -> None:
+def _mapping(b: Builder) -> str:
     m = b.m
     nz = m["nz"]
     b.step("map.norm", wgsl(storage([("Z", "array<f32>"), ("Y", "array<f32>")]) + """
@@ -127,10 +124,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }""", n_in=layer["n_in"], n_out=layer["n_out"], w=layer["w"], bias=layer["b"]),
                ["P", src, dst], [math.ceil(layer["n_out"] / 64), 1, 1])
         src, dst = dst, src
-    b.m["mapped"] = src
+    return src
 
 
-def _ws(b: Builder) -> None:
+def _ws(b: Builder, mapped: str) -> None:
     """Every layer's w: `w_avg + t (w - w_avg) + push`, t and push its style range's."""
     m = b.m
     wd, n_ws = m["w_dim"], m["num_ws"]
@@ -149,7 +146,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   Y[id.x] = avg + K[SLOT[band]] * (X[c] - avg) + U[band * ${wd}u + c];
 }""", n_ws=n_ws, bands=bands, n_bands=len(m["band_slots"]), slots=slots, total=n_ws * wd,
                    wd=wd, avg=m["w_avg"]),
-           ["P", m["mapped"], "K", "push", "WS"], [math.ceil(n_ws * wd / 64), 1, 1])
+           ["P", mapped, "K", "push", "WS"], [math.ceil(n_ws * wd / 64), 1, 1])
 
 
 def _styles(b: Builder, op: dict) -> None:
@@ -204,7 +201,7 @@ def _epilogue(op: dict, acc: str, plane: int) -> list[str]:
 def _channels(op: dict) -> None:
     """Refuse channel counts the direct paths cannot split: pairs in, groups of 4 out."""
     if op["cin"] % 2 or op["cout"] % 4:
-        raise ValueError(f"{op['name']}: {op['cin']} -> {op['cout']} channels; the engine plays "
+        raise ValueError(f"{op['name']}: {op['cin']} -> {op['cout']} channels. The engine plays "
                          f"even input and multiple-of-4 output channel counts")
 
 
@@ -575,14 +572,13 @@ def _out(b: Builder, img: str, output: str) -> None:
         store = (f"let s = clamp(vec3f(I[px], I[{plane}u + px], I[{2 * plane}u + px]), vec3f(-1.0), vec3f(1.0));\n"
                  f"  Y[px] = pack4x8unorm(vec4f(s * 0.5 + 0.5, 1.0));")
         kind = "u32"
+    groups, index = linear(plane, 256)
     b.step("out", wgsl(storage([("I", "array<f32>"), ("Y", f"array<{kind}>")]) + """
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  let px = id.y * 16776960u + id.x;
+  let px = ${index};
   if (px >= ${plane}u) { return; }
   ${store}
-}""", plane=plane, store=store), [img, "out"],
-           [min(math.ceil(plane / 256), 65535), math.ceil(math.ceil(plane / 256) / 65535), 1])
+}""", plane=plane, store=store, index=index), [img, "out"], groups)
 
 
-__all__ = ["compile_stylegan2", "NOISE", "noise_seed"]
