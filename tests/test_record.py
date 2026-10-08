@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import wave
 
 import numpy as np
 import pytest
 
 from ganlive.files import next_path
-from ganlive.record.frames import Take
 from ganlive.record.sync import Guide
 from ganlive.record.video import Recorder, save_still
 from tests.support import _drained
@@ -41,37 +41,49 @@ def _guide_blocks(guide, count, channels=10, frames=256, level=0.5):
         guide.push(block)
 
 
-def test_a_take_on_a_card_too_slow_for_it_keeps_every_frame_at_its_own_time():
-    """A loop running at 20 passes a second records a 60 fps take: each frame is logged with
-    the state worked out at its own time, drawn in order (one a pass while playing, the rest
-    after the take is stopped), and none is lost."""
-    take = Take(60.0, start=100.0)
-    drawn = []
-    for k in range(20):                                   # one second at 20 passes a second
-        now = 100.0 + k / 20
-        while (at := take.due(now)) is not None:
-            take.keep("net", np.full((1, 4), at), np.ones(2), None)
-        if take.behind:
-            drawn.append(take.oldest())
-            take.shift()
-    take.stopped = True
-    while take.behind:
-        drawn.append(take.oldest())
-        take.shift()
-    assert [f.index for f in drawn] == list(range(take.slot + 1)) and len(drawn) == 58
-    assert all(f.latent[0, 0] == pytest.approx(100.0 + f.index / 60) for f in drawn), \
-        "a frame was drawn with another frame's state"
+def test_a_take_drops_frames_rather_than_making_the_picture_wait():
+    """A realtime recorder drops a frame when its queue is full, so a slow encoder cannot pace
+    ganlive. No thread is started: this tests the queue policy alone."""
+    rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True, depth=2)
+    plane = np.zeros((12, 8), dtype=np.uint8)
+    assert rec.offer(plane) is True
+    assert rec.offer(plane) is True
+    assert rec.offer(plane) is False, "a full queue blocked instead of dropping"
+    assert rec.dropped == 1 and rec.offered == 3
+
+    slow = Recorder("unused.mp4", 8, 8, 60.0, depth=2)
+    assert [slow.offer(plane) for _ in range(2)] == [True, True]
+    assert slow.dropped == 0
+
+
+def test_a_dropped_frame_costs_the_take_a_held_frame_not_its_length():
+    """A realtime take stamps frames by wall clock, so a dropped frame becomes a held frame and
+    the file keeps the performance's length; counted stamps would make it play back fast."""
+    rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True, depth=64)
+    plane = np.zeros((12, 8), dtype=np.uint8)
+    rec.offer(plane)
+    time.sleep(0.1)                        # six frames of wall clock at 60 fps
+    rec.offer(plane)
+    stamps = [rec._q.get()[0] for _ in range(2)]
+    assert stamps[0] == 0
+    assert stamps[1] >= 4, f"a 100 ms gap became {stamps[1]} frames"
+
+    counted = Recorder("unused.mp4", 8, 8, 60.0, depth=64)
+    counted.offer(plane)
+    time.sleep(0.05)
+    counted.offer(plane)
+    assert [counted._q.get()[0] for _ in range(2)] == [0, 1]
 
 
 def test_a_take_is_a_playable_file_with_a_trailer(tmp_path):
     out = tmp_path / "take.mp4"
-    rec = Recorder(out, 128, 64, 30.0, "libx264", depth=8).start()
+    rec = Recorder(out, 128, 64, 30.0, "libx264", realtime=True, depth=8).start()
     rng = np.random.default_rng(0)
     for _ in range(20):
         rec.offer(np.ascontiguousarray(rng.integers(0, 255, (96, 128), dtype=np.uint8)))
     report = rec.stop()
     assert "error" not in report, report
-    assert report["frames"] == 20, report
+    assert report["frames"] == 20 - report["dropped"], report
     assert report["offered"] == 20, report
     assert out.exists() and out.stat().st_size > 0
 
@@ -108,9 +120,10 @@ def test_serial_names_do_not_collide_and_sort_in_the_order_they_were_made(tmp_pa
 def test_the_encoder_can_be_made_to_open_before_the_clock_starts(tmp_path):
     """An encoder opens on its first frame, which for some (e.g. `av1_qsv`, about 1.5 s holding
     the GIL) stalls the render thread. `drain` lets a caller pay that before the clock starts."""
-    rec = Recorder(tmp_path / "warm.mp4", 64, 64, 30.0, "libx264", depth=4).start()
+    rec = Recorder(tmp_path / "warm.mp4", 64, 64, 30.0, "libx264",
+                   realtime=True, depth=4).start()
     plane = np.zeros((96, 64), dtype=np.uint8)
-    rec.offer(plane)
+    assert rec.offer(plane) is True
     assert rec.drain(timeout=30.0) is True, "the writer never caught up"
     assert rec.written == 1, rec.written
 
@@ -228,7 +241,8 @@ def test_the_bar_lines_keep_coming_after_the_machine_is_restarted(tmp_path):
 def test_a_take_whose_encoder_never_opens_reports_it_and_stops(tmp_path):
     """If the encoder cannot open, `stop` still returns promptly and the report says why,
     rather than waiting on a queue nothing drains."""
-    rec = Recorder(tmp_path / "x.mp4", 64, 64, 30.0, "no_such_encoder", depth=2).start()
+    rec = Recorder(tmp_path / "x.mp4", 64, 64, 30.0, "no_such_encoder",
+                   realtime=True, depth=2).start()
     for _ in range(6):
         rec.offer(np.zeros((96, 64), np.uint8))
     done = threading.Event()
@@ -281,7 +295,7 @@ def test_a_take_can_wait_until_its_encoder_is_open(tmp_path):
     """A take started mid-session waits, with the card idle, until the encoder has opened:
     a hardware encoder starting its media engine beside a running generator has lost the
     device on an Intel Arc. A failure to open answers the wait too, rather than hanging it."""
-    rec = Recorder(tmp_path / "open.mp4", 64, 64, 30.0, "libx264").start()
+    rec = Recorder(tmp_path / "open.mp4", 64, 64, 30.0, "libx264", realtime=True).start()
     assert rec.wait_open(timeout=30.0), "the encoder never said it was open"
     assert rec.codec == "libx264"
     rec.stop()

@@ -169,8 +169,6 @@ Controls with no measured effect are inactive.
 
 Press `v` to start or stop recording, or launch with `--record`.
 Videos use an available hardware encoder, with software fallback.
-A take keeps every frame: if the card cannot draw them all while you play, the rest are drawn
-after you stop, and the status line shows how long that takes.
 
 Press `c` to save a full-resolution PNG. Files are saved under `runs/ganlive/`.
 
