@@ -101,7 +101,7 @@ export class Player {
     this.lag = 0;
     this.last = null;
     this.shown = null;
-    /** Whatever else wants each frame drawn (a take): `{draw(encoder, entry), drawn(now)}`. */
+    /** Whatever else wants frames drawn (a take): `{wants(now), draw(encoder, entry, now), drawn(now)}`. */
     this.tap = null;
     this.redraw = true;
     this.stats = { frames: 0, since: performance.now(), fps: 0, ms: 0 };
@@ -191,6 +191,9 @@ export class Player {
     this.runner.apply(features.since, features.features(), m.settings);
     this.clock.advance(Math.min(dt, LONGEST_STEP_S));
     const latent = this.walk.latent(this.clock.beats);
+    // While recording, draw only the frames the take keeps: the card does no work the take
+    // would throw away, and the take gets every slot it can.
+    if (this.tap && !this.tap.wants(now)) return false;
     // The card is behind: skip rather than queue, which would hold up the page around it.
     if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(dt * 1000, 4))) return false;
     const same = !this.redraw && !m.settings.changed && this.shown && this.shown.every((v, i) => v === latent[i]);
@@ -205,7 +208,7 @@ export class Player {
     const encoder = this.device.createCommandEncoder();
     m.model.encode(encoder);
     m.onto.draw(encoder, this.context.getCurrentTexture());
-    this.tap?.draw(encoder, m);
+    this.tap?.draw(encoder, m, now);
     this.device.queue.submit([encoder.finish()]);
     this.tap?.drawn(now);
     this.pending++;

@@ -156,3 +156,16 @@ def test_the_web_player_plays_as_the_desktop_does():
         "notes": {str(k): v for k, v in parse_notes(cases["notes"]).items()},
         "channels": {str(k): v for k, v in parse_track_channels(cases["channels"]).items()},
     }
+
+
+def test_web_take_colour_is_the_desktop_take_colour():
+    """A browser take's I420 (take.mjs) and the desktop's NV12 (engine/screen.py) convert
+    colour with the same maths, so a take looks the same from either."""
+    from ganlive.engine.screen import NV12
+
+    js = (Path(__file__).parents[1] / "src/ganlive/web/take.mjs").read_text(encoding="utf-8")
+    for line in ("const KR = 0.2126; const KB = 0.0722; const KG = 1.0 - 0.2126 - 0.0722;",
+                 "* 2.0 - 1.0;", "* 109.5 + 125.5), 0.0, 255.0));",
+                 "(c.b - l) * (224.0 / (4.0 * (1.0 - KB)))", "(c.r - l) * (224.0 / (4.0 * (1.0 - KR)))",
+                 "return u32(clamp(round(v + 128.0), 0.0, 255.0));"):
+        assert line in NV12 and line in js, line
