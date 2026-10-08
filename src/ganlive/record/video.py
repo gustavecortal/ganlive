@@ -57,20 +57,18 @@ def save_still(path: Path, rgb) -> threading.Thread:
 class Recorder:
     """A container, a bounded queue of NV12 frames, and the one thread that encodes them.
 
-    With `realtime`, a frame offered while the queue is full is dropped and the timestamps
-    follow the wall clock, so the file plays at the speed the take happened. Without it,
-    `offer` blocks and every frame is kept."""
+    Every frame offered is kept, stamped with its place in the take: `offer` waits while the
+    queue is full, and a caller that must not wait asks `wants` first. `play` hands it the
+    frames of a `record.frames.Take`, one per frame of the take."""
 
     def __init__(self, path, width: int, height: int, fps: float, codec: str = DEFAULT_CODEC,
-                 *, realtime: bool = False, depth: int = 4) -> None:
+                 *, depth: int = 4) -> None:
         self.path = Path(path)
         self.width, self.height = int(width), int(height)
         self.fps = float(fps)
         self.codec = codec
-        self.realtime = bool(realtime)
         self._q: queue.Queue = queue.Queue(maxsize=max(1, depth))
         self.offered = 0
-        self.dropped = 0
         self.written = 0
         self.failed: list[BaseException] = []
         self._thread: threading.Thread | None = None
@@ -99,35 +97,20 @@ class Recorder:
 
     @property
     def wants(self) -> bool:
-        """Whether a frame offered right now would actually be written."""
+        """Whether a frame offered right now would be queued without waiting."""
         return not self._q.full()
 
-    def skip(self) -> None:
-        """Count a frame the caller chose not to fetch, so the report still adds up."""
-        self.offered += 1
-        self.dropped += 1
-
-    def offer(self, plane) -> bool:
-        """Hand one host frame to the writer. False means the picture did not wait for it."""
+    def offer(self, plane) -> None:
+        """Hand the take's next frame to the writer, waiting while the queue is full."""
         self.offered += 1
         if self._t0 is None:
             self._t0 = time.perf_counter()
-        if not self.realtime:
-            self._pts += 1
-            self._q.put((self._pts, plane))
-            return True
-        pts = max(self._pts + 1, round(self.seconds * self.fps))
-        try:
-            self._q.put_nowait((pts, plane))
-        except queue.Full:
-            self.dropped += 1
-            return False
-        self._pts = pts
-        return True
+        self._pts += 1
+        self._q.put((self._pts, plane))
 
     def drain(self, timeout: float = 30.0) -> bool:
         """Block until the writer has caught up with everything offered so far."""
-        want = self.offered - self.dropped
+        want = self.offered
         end = time.perf_counter() + timeout
         while self.written < want and not self.failed and time.perf_counter() < end:
             time.sleep(0.005)
@@ -142,11 +125,10 @@ class Recorder:
         return self.report()
 
     def report(self) -> dict:
-        """What is in the file. `offered == frames + dropped` unless the writer failed."""
+        """What is in the file. `offered == frames` unless the writer failed."""
         out = {"file": str(self.path), "codec": self.codec,
                "mb": round(size_mb(self.path), 1), "frames": self.written,
-               "offered": self.offered,
-               "dropped": self.dropped, "seconds": round(self.seconds, 1)}
+               "offered": self.offered, "seconds": round(self.written / self.fps, 1)}
         if self.failed:
             out["error"] = f"{type(self.failed[0]).__name__}: {self.failed[0]}"
         return out

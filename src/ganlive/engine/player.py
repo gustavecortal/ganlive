@@ -107,6 +107,19 @@ class EngineGenerator:
         self.model.frame()
         return self
 
+    def redraw(self, frame) -> EngineGenerator:
+        """Draw `frame` of a take's log (`record.frames.Frame`) as it was worked out: its own
+        latent, settings and push. The next call uploads its own again."""
+        m = self.model
+        m.set_latent(frame.latent)
+        m.set_settings(frame.settings)
+        self.settings.changed = True
+        if frame.push is not None:
+            m.device.queue.write_buffer(m.buffers["push"], 0, frame.push)
+            self._pushed[...] = np.nan               # never equal: the next call uploads its own
+        m.frame()
+        return self
+
     def report(self) -> str:
         info = self.model.device.adapter.info
         return (f"engine on {info['backend_type']} {info['device']}: {self.cfg.ladder.width}x"

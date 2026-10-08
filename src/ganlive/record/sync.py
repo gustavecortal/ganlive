@@ -110,17 +110,22 @@ class Guide:
         self._thread.start()
         return f"{self.sidecar_path.name} and {self.wav_path.name}"
 
-    def mark(self, beat: float) -> None:
+    def mark(self, beat: float, at: float | None = None) -> None:
         """Called every frame; records a mark only when a bar line has been crossed.
 
-        The next bar line is recomputed from wherever the clock is now, so a transport restart
-        (beats back to 0) or a song-position jump keeps marking, once per bar."""
+        `at` is the frame's own time (`time.perf_counter`), when it is worked out after it was
+        due, as a take catching up does: the audio that arrived since is taken off. The next bar
+        line is recomputed from wherever the clock is now, so a transport restart (beats back
+        to 0) or a song-position jump keeps marking, once per bar."""
         if self._path is None:
             return
         if beat >= self._next_mark:
+            now = time.perf_counter()
+            at = now if at is None else at
+            audio = self._audio_seconds()
             self._marks.append({"beat": round(beat, 4),
-                                "video_s": round(time.perf_counter() - self._t0, 4),
-                                "audio_s": self._audio_seconds()})
+                                "video_s": round(at - self._t0, 4),
+                                "audio_s": None if audio is None else round(audio - (now - at), 4)})
         self._next_mark = math.floor(beat / BEATS_PER_BAR + 1) * BEATS_PER_BAR
 
     def _audio_seconds(self) -> float | None:
