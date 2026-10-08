@@ -175,7 +175,7 @@ class EngineStage:
         """Nothing to fall back to: the conversions are shaders."""
 
     def warm(self, staged) -> int:
-        """The conversions compile when the stage is made; nothing is left to build."""
+        """Nothing is left to build: the conversions compiled when the stage was made."""
         return 0
 
     def sync(self) -> None:
@@ -196,7 +196,7 @@ class EngineStage:
         return contextlib.nullcontext()
 
     def pinned(self) -> dict[str, bool]:
-        return {name: True for name in self._rings}
+        return {name: True for name, _shape in self._rings}
 
     def step(self, outs) -> Stepped:
         """The model's frame at the size shown, as BGRA8."""
@@ -209,12 +209,13 @@ class EngineStage:
         return Stepped(out, h, w)
 
     def _take(self, name: str, source, size: int, shape, depth: int = 3) -> np.ndarray:
-        """Copy `size` bytes of `source` to the host through this destination's ring; the array
-        holds them once the copy is read (now, or at the block's ticket)."""
+        """Copy `size` bytes of `source` to the host through this destination's ring, one per
+        shape, so that switching models reuses rings. The array holds them once the copy is
+        read, now or at the block's ticket."""
         padded = math.ceil(size / 4) * 4
-        ring = self._rings.get(name)
-        if ring is None or ring["shape"] != tuple(shape):
-            ring = self._rings[name] = {"shape": tuple(shape), "n": 0, "slots": [
+        ring = self._rings.get((name, tuple(shape)))
+        if ring is None:
+            ring = self._rings[(name, tuple(shape))] = {"n": 0, "slots": [
                 (self.device.create_buffer(size=padded, usage=wgpu.BufferUsage.MAP_READ
                                            | wgpu.BufferUsage.COPY_DST),
                  np.zeros(shape, np.uint8)) for _ in range(max(2, depth))]}

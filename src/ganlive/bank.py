@@ -1,14 +1,14 @@
 """A bank of loaded models, one playing at a time, and the shelf of models on disk that can join it.
 
-`build` turns checkpoint paths into a `Bank`. Every model plays on the engine, all on one wgpu
-device, the first model's fastest; how each kind of file becomes an engine model is in
+`build` turns checkpoint paths into a `Bank`. Every model plays on the engine, all on the one
+wgpu device the first model found fastest. How each kind of file becomes an engine model is in
 `families`, and file naming is in `checkpoints`.
 """
 from __future__ import annotations
 
 import functools
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -80,7 +80,7 @@ def _prepare(path, gpu, options: LoadOptions) -> Model:
     family = family_of(path)
     if family.name not in ENGINE_FAMILIES:
         raise ValueError(f"{label_for(path)}: a {family.name} model does not play on the engine "
-                         f"yet; a FastGAN does, converted with `ganlive convert`")
+                         f"yet. A FastGAN does.")
     started = time.perf_counter()
     got = family.prepare(path, gpu, None, options)
     return Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
@@ -263,7 +263,9 @@ class Shelf:
         out = []
         for path in self._models():
             why, note = "", ""
-            if path not in here:
+            if path not in here and family_of(path).name not in ENGINE_FAMILIES:
+                why = "not on the engine yet"
+            elif path not in here:
                 try:
                     cfg = self._config(path)
                 except ValueError:
@@ -285,7 +287,8 @@ class Shelf:
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
             if is_engine(folder):
-                found.append(folder)
+                if not folder.name.endswith(ENGINE_SUFFIX):     # a checkpoint's own conversion
+                    found.append(folder)
                 continue
             # `runs/engine/<model>`; a `.engine` folder beside a checkpoint is that checkpoint's.
             found += sorted(p for p in folder.iterdir()
@@ -320,9 +323,12 @@ def build(checkpoints: list, device: str | None = None, height: int | None = 0, 
           screen=None, options: LoadOptions | None = None) -> Bank:
     """Load and prepare every checkpoint on the engine, warm the stage at each one's size, and
     return the bank playing the first. The first model picks the wgpu device (its fastest
-    backend here) and the others join it. `device` and `dtype` are unused: the engine chooses
-    its own backend and plays in fp16. `height` is as `window.parse_height` returns."""
+    backend here) and the others join it. `device` is where a checkpoint converted at load has
+    its dials measured. `dtype` is unused, since the engine plays in fp16. `height` is as
+    `window.parse_height` returns."""
     options = options or LoadOptions()
+    if device:
+        options = replace(options, measure_on=device)
     paths = [checkpoint_for(Path(t)) for t in checkpoints]
 
     models: list[Model] = []

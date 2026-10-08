@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # torch is not listed: the right build depends on your GPU, so the README installs it first.
-dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6"]
+dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6", "wgpu>=0.32"]
 
 [project.urls]
 Homepage = "https://github.com/gustavecortal/ganlive"
@@ -39,14 +39,12 @@ Issues = "https://github.com/gustavecortal/ganlive/issues"
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
 record = ["av>=13"]
-# The WGSL engine through wgpu-py: Vulkan, Metal or DX12.
-wgpu = ["wgpu>=0.32"]
 # ONNX Runtime picks TensorRT, CUDA, ROCm, MIGraphX, CoreML or DirectML where present.
 onnx = ["onnx>=1.17", "onnxruntime>=1.20", "onnxscript>=0.7"]
 # The same through OpenVINO: the fastest path on Intel GPUs.
 onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6", "onnxscript>=0.7"]
 hub = ["ganlive[onnx]", "huggingface_hub>=0.25"]
-all = ["ganlive[audio,record,onnx,hub,wgpu]"]
+all = ["ganlive[audio,record,onnx,hub]"]
 dev = ["ganlive[all]", "pytest>=8", "ruff>=0.6", "pillow>=10"]
 
 [project.scripts]

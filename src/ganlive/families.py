@@ -6,6 +6,7 @@ model beside it (`lichen.pt` -> `lichen.engine/`), which later loads read direct
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,14 +14,14 @@ from pathlib import Path
 
 import torch
 
-from ganlive.checkpoints import ENGINE_SUFFIX, PROGRAM, is_engine, is_onnx
+from ganlive.checkpoints import ENGINE_SUFFIX, PROGRAM, is_engine, is_onnx, slug_for
 from ganlive.device import playback_dtype
 from ganlive.dials import derive, fastgan_dials, steer, table
 from ganlive.dials.gate import directions_for
 from ganlive.engine import convert as engine_convert
 from ganlive.engine.player import EngineConfig, EngineGenerator, Ladder, dials_of
 from ganlive.engine.program import PROBE_LEVELS
-from ganlive.engine.runner import Model, fastest, read_folder
+from ganlive.engine.runner import Model, cache_dir, fastest, read_folder
 from ganlive.models import calibrate, fastgan, onnx_file
 from ganlive.models import stylegan2 as S2
 from ganlive.models.capture import compile_and_count
@@ -48,6 +49,8 @@ class LoadOptions:
     #: How many times a random direction's effect a derived direction must beat to earn a
     #: dial. See `pixels.RANDOM_FLOOR`.
     direction_floor: float = RANDOM_FLOOR
+    #: The PyTorch device a conversion measures a model's dials on. None is the fastest here.
+    measure_on: str | None = None
 
 
 @dataclass
@@ -147,27 +150,38 @@ def engine_config_of(path) -> EngineConfig:
     return EngineConfig(program["nz"], Ladder(program["height"], program["width"]))
 
 
-def converted(checkpoint, device=None) -> Path:
-    """The engine model beside `checkpoint`, converted now unless it is there and current."""
+def converted(checkpoint, options: LoadOptions) -> Path:
+    """The engine model of `checkpoint`, converted now unless one is current: made by this
+    converter, from these very bytes, with these options. Beside the checkpoint, or in the
+    user's cache when its folder cannot be written."""
     checkpoint = Path(checkpoint)
-    folder = checkpoint.with_suffix(ENGINE_SUFFIX)
-    try:
-        program = json.loads((folder / PROGRAM).read_text(encoding="utf-8"))
-        if (program.get("made_by") == engine_convert.MADE_BY and (folder / PROGRAM).stat().st_mtime
-                >= checkpoint.stat().st_mtime):
+    digest = hashlib.sha1(checkpoint.read_bytes()).hexdigest()
+    stamp = {"made_by": engine_convert.MADE_BY, "checkpoint": digest,
+             "floor": options.direction_floor, "grain": options.measure_grain}
+    beside = checkpoint.with_suffix(ENGINE_SUFFIX)
+    cached = cache_dir() / "engine" / f"{slug_for(checkpoint)}-{digest[:12]}"
+    for folder in (beside, cached):
+        try:
+            if json.loads((folder / PROGRAM).read_text(encoding="utf-8")).get("stamp") == stamp:
+                return folder
+        except (OSError, ValueError):
+            continue
+    for folder in (beside, cached):
+        try:
+            print(f"converting {checkpoint.name} for the engine (once) -> {folder}", flush=True)
+            engine_convert.convert(checkpoint, folder, options.measure_on, stamp=stamp,
+                                   floor=options.direction_floor, grain=options.measure_grain)
             return folder
-    except (OSError, ValueError):
-        pass
-    print(f"converting {checkpoint.name} for the engine (once) -> {folder}", flush=True)
-    engine_convert.convert(checkpoint, folder, device)
-    return folder
+        except OSError as exc:
+            print(f"  cannot write there ({exc})", flush=True)
+    raise RuntimeError(f"{checkpoint.name}: nowhere to write its engine model")
 
 
 def _prepare_engine(path, device, dtype, options: LoadOptions) -> Prepared:
     """An engine model made ready to play: on `device`, a wgpu device the bank already plays
     on, or else on this machine's fastest backend for it (see `engine.runner.fastest`).
     A FastGAN checkpoint is converted first; `dtype` is unused, the engine is fp16."""
-    folder = Path(path) if is_engine(path) else converted(path)
+    folder = Path(path) if is_engine(path) else converted(path, options)
     program, weights = read_folder(folder)
     if device is None:
         model, report = fastest(program, weights)

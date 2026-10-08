@@ -16,17 +16,21 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from ganlive import levels
 from ganlive.device import detect_backend
-from ganlive.dials import fastgan_dials, steer
+from ganlive.dials import derive, fastgan_dials, gate, steer, table
 from ganlive.dials.gate import directions_for, measure_dials
 from ganlive.engine import program as _program
 from ganlive.engine.program import box_means, compile_program, noise_seed, seeded_noise
 from ganlive.files import write_json
+from ganlive.models import fastgan, fold, onnx_rewrite
+from ganlive.models import steerable as steerable_modules
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import freeze_noise, load
 from ganlive.models.fold import prepare_for_inference
@@ -40,10 +44,12 @@ from ganlive.models.steerable import SteerableSLE
 from ganlive.pixels import EXACT_LEVELS
 from ganlive.settings import Settings
 
-#: What a converted model was made by, stamped into it: a change to the converter or the shader
-#: generator converts every checkpoint again at its next load, so an improvement reaches
-#: models converted before it.
-MADE_BY = hashlib.sha1(Path(__file__).read_bytes() + Path(_program.__file__).read_bytes()).hexdigest()[:12]
+#: What a converted model was made by, stamped into it: every module that shapes its weights,
+#: shaders or measured dials. A change to any of them converts every checkpoint again at its
+#: next load, so an improvement reaches models converted before it.
+MADE_BY = hashlib.sha1(b"".join(Path(m.__file__).read_bytes() for m in (
+    _program, derive, fastgan, fastgan_dials, fold, gate, levels, onnx_rewrite, steer,
+    steerable_modules, table)) + Path(__file__).read_bytes()).hexdigest()[:12]
 
 
 class Blob:
@@ -193,18 +199,21 @@ class Driven(torch.nn.Module):
         return self.steerable(z, self.settings.vec)
 
 
-def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None) -> dict:
+def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None, *,
+                   floor: float = levels.RANDOM_FLOOR, grain: bool = True) -> dict:
     """The dials of this net, measured once here so that playing measures nothing: the noise
-    gains each band needs, the latent directions that beat a random one (ranked), and how far
-    each MODEL dial moves the picture, which decides which dials are live. On `device`, the
-    fastest PyTorch has here unless given, with the engine's own noise."""
+    gains each band needs (the stock ones without `grain`), the latent directions that beat a
+    random one `floor` times over (ranked), and how far each MODEL dial moves the picture,
+    which decides which dials are live. On `device`, the fastest PyTorch has here unless
+    given, with the engine's own noise."""
     device = device or detect_backend()
     net = Driven(copy.deepcopy(steerable).to(device),
                  Settings(names, device, torch.float32)).eval()
     with torch.no_grad():
-        gains = steer.calibrate_noise(net, net.settings, cfg.nz, device, torch.float32)
+        gains = (steer.calibrate_noise(net, net.settings, cfg.nz, device, torch.float32)
+                 if grain else None)
         layout = fastgan_dials.fastgan(noise_gains=gains)
-        found = directions_for(net, cfg.nz, device, torch.float32, path=checkpoint)
+        found = directions_for(net, cfg.nz, device, torch.float32, path=checkpoint, floor=floor)
         layout = measure_dials(net, net.settings, layout, cfg.nz, device, torch.float32)
     directions = None if found is None else {
         "basis": np.round(found.basis.float().cpu().numpy(), 6).tolist(),
@@ -223,13 +232,24 @@ def build(steerable, cfg, names: list[str], output: str = "rgba8", dials=None) -
     return program, blob
 
 
-def convert(checkpoint, out: Path, device=None) -> dict:
-    """Write the engine model for `checkpoint`, its dials measured on `device`, into the folder
-    `out`. Returns the program."""
+def convert(checkpoint, out: Path, device=None, *, floor: float = levels.RANDOM_FLOOR,
+            grain: bool = True, stamp: dict | None = None) -> dict:
+    """Write the engine model for `checkpoint`, its dials measured on `device` (see
+    `measured_dials` for `floor` and `grain`), into the folder `out`. Returns the program.
+    `stamp` records what it was made from, for a later load to tell whether it is current."""
     steerable, cfg, names = prepared(checkpoint)
-    dials = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint)
+    dials = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint,
+                           floor=floor, grain=grain)
     program, blob = build(steerable, cfg, names, dials=dials)
     program["made_by"] = MADE_BY
-    write_json(Path(out) / "program.json", program, indent=None)
-    (Path(out) / "weights.bin").write_bytes(blob.data)
+    if stamp is not None:
+        program["stamp"] = stamp
+    # The weights first and the program last, each renamed into place whole: a conversion cut
+    # short leaves no program that a load would take for a finished one.
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "weights.bin.part").write_bytes(blob.data)
+    os.replace(out / "weights.bin.part", out / "weights.bin")
+    write_json(out / "program.json.part", program, indent=None)
+    os.replace(out / "program.json.part", out / "program.json")
     return program

@@ -64,8 +64,10 @@ def index_of(models, path) -> int | None:
 
 def admit(models, path) -> None:
     """Raise `ValueError` if this checkpoint may not join these models. Only a duplicate is
-    refused: models in one bank may differ in latent width, size and aspect."""
-    if index_of(models, path) is not None:
+    refused, by path or by name, since a model's dials are remembered by its name: models in
+    one bank may differ in latent width, size and aspect."""
+    if index_of(models, path) is not None or any(
+            label_for(m.path) == label_for(path) for m in models):
         raise ValueError(f"{label_for(path)} is already in this bank")
 
 

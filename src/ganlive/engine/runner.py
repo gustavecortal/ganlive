@@ -88,9 +88,9 @@ class Model:
         return cls(device, program, weights)
 
     def destroy(self) -> None:
+        """Free this model's buffers. Its device may be shared, so it stays."""
         for buf in self.buffers.values():
             buf.destroy()
-        self.device.destroy()
 
     def set_latent(self, z) -> None:
         self.device.queue.write_buffer(self.buffers["Z"], 0, np.ascontiguousarray(z, np.float32))
@@ -205,8 +205,9 @@ def fastest(program: dict, weights: bytes, *, backend: str | None = None, frames
     measured.update({n: {"ms": round(ms, 2)} for n, ms in best_ms.items()})
     best = min(best_ms, key=best_ms.get)
     for name, model in built.items():
-        if name != best:
+        if name != best:                    # each was built on a device of its own
             model.destroy()
+            model.device.destroy()
     report = {"best": best, "measured": measured}
     # A failure may be passing (memory held elsewhere): only a clean measurement is kept.
     if len(best_ms) == len(names):
@@ -222,6 +223,7 @@ def _checked(adapter, program, weights) -> Model:
         off = model.strays()
         if off > PROBE_LEVELS:
             model.destroy()
+            model.device.destroy()
             raise RuntimeError(f"draws the probe {off:.1f} levels off")
     return model
 
