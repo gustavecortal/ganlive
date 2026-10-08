@@ -110,6 +110,24 @@ class EngineGenerator:
                 f"{self.cfg.ladder.height}, {len(self.model.steps)} steps")
 
 
+def browser_dials(program: dict) -> list[dict]:
+    """The dials a browser plays (`runner.mjs`'s pages): every live direction and MODEL dial,
+    with what the strip says of it and what it writes. A direction pushes its row of the
+    basis by `push` at a position, a MODEL dial sets each of its settings by its curve."""
+    layout, directions = dials_of(program)
+    live = table.live_dials(HostSettings(program["settings"]), directions, layout)
+    out = []
+    for knob in layout.knobs:
+        if knob.name not in live or knob.group not in ("LATENT", "MODEL"):
+            continue
+        entry = {"name": knob.name, "group": knob.group, "rest": knob.rest, "about": knob.blurb,
+                 "poles": knob.poles, "writes": [[w.setting, w.points] for w in knob.writes]}
+        if knob.group == "LATENT":
+            entry["push"] = table.DIRECTION_POINTS
+        out.append(entry)
+    return out
+
+
 def dials_of(program: dict) -> tuple[table.Layout, PlayedDirections | None]:
     """The layout a converted model offers, with each MODEL dial's measured travel, and its
     directions. A program converted without dials offers the stock tables, unmeasured."""
