@@ -20,8 +20,10 @@ from ganlive.device import detect_backend
 from ganlive.dials import fastgan_dials, steer
 from ganlive.dials.gate import directions_for, measure_dials
 from ganlive.engine.blob import Blob
+from ganlive.engine.compile import compile_manifest
 from ganlive.engine.noise import noise_seed, seeded_noise
 from ganlive.engine.probe import box_means
+from ganlive.engine.runner import checked, default_device
 from ganlive.levels import EXACT_LEVELS, RANDOM_FLOOR
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import freeze_noise, load
@@ -165,16 +167,47 @@ class Driven(torch.nn.Module):
         return self.steerable(z, self.settings.vec)
 
 
+class EngineDriven(Driven):
+    """The same, drawn by the engine (`runner.Model` of an f32 program): the picture for `z`
+    at the settings written, as a (1, 3, H, W) tensor in [-1, 1] on the host. Its modules are
+    still the steerable net's, which `derive.sefa` factorises."""
+
+    def __init__(self, steerable, settings: Settings, model) -> None:
+        super().__init__(steerable, settings)
+        self.model = model
+
+    def forward(self, z):
+        self.model.set_latent(z.detach().float().cpu().numpy())
+        self.model.set_settings(self.settings.vec.detach().float().cpu().numpy())
+        self.model.frame()
+        return torch.from_numpy(self.model.read())[None]
+
+
+def on_engine(manifest: dict, blob: Blob):
+    """The converted model built on this machine's GPU to measure its dials, or None where it
+    cannot be, or does not draw the probe PyTorch drew."""
+    try:
+        return checked(default_device(), compile_manifest(manifest, output="f32"), bytes(blob.data))
+    except Exception as exc:  # noqa: BLE001  no adapter, or a backend that draws it wrong
+        print(f"dials measured with PyTorch: the engine cannot here ({exc})", flush=True)
+        return None
+
+
 def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None, *,
-                   floor: float = RANDOM_FLOOR, grain: bool = True) -> dict:
+                   floor: float = RANDOM_FLOOR, grain: bool = True, engine=None) -> dict:
     """The dials of this net, measured once here so that playing measures nothing: the noise
     gains each band needs (the stock ones without `grain`), the latent directions that beat a
     random one `floor` times over (ranked), and how far each MODEL dial moves the picture,
-    which decides which dials are live. On `device`, the fastest PyTorch has here unless
-    given, with the engine's own noise."""
-    device = device or detect_backend()
-    net = Driven(copy.deepcopy(steerable).to(device),
-                 Settings(names, device, torch.float32)).eval()
+    which decides which dials are live. Drawn by `engine` (`on_engine`) when given, which
+    takes a fraction of the time PyTorch does at a FastGAN's full size, or else by PyTorch on
+    `device` (the fastest here unless given). Either way with the engine's own noise."""
+    if engine is not None:
+        device = "cpu"
+        net = EngineDriven(steerable, Settings(names, device, torch.float32), engine).eval()
+    else:
+        device = device or detect_backend()
+        net = Driven(copy.deepcopy(steerable).to(device),
+                     Settings(names, device, torch.float32)).eval()
     with torch.no_grad():
         gains = (steer.calibrate_noise(net, net.settings, cfg.nz, device, torch.float32)
                  if grain else None)
@@ -194,6 +227,12 @@ def measure(checkpoint, device=None, *, floor: float = RANDOM_FLOOR,
     steerable, cfg, names = prepared(checkpoint)
     manifest, blob = manifest_of(steerable, cfg, names)
     manifest["probe"] = probe(steerable, cfg, names)
-    manifest["dials"] = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint,
-                                       floor=floor, grain=grain)
+    engine = on_engine(manifest, blob) if device is None else None
+    try:
+        manifest["dials"] = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint,
+                                           floor=floor, grain=grain, engine=engine)
+    finally:
+        if engine is not None:
+            engine.destroy()
+            engine.device.destroy()
     return manifest, blob

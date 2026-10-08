@@ -4,8 +4,8 @@ any GPU and in a browser, without PyTorch.
     ganlive convert runs/lichen/lichen.pt            ->  runs/engine/lichen/
 
 The folder holds `weights.bin` (fp16) and `manifest.json`: the model's layers, its dials
-(measured here, on `--device`), and a probe of the picture PyTorch draws, which a backend must
-match before it is trusted. `program.json` holds the compute shaders compiled from it, for the
+(measured here, drawn by the engine on this machine's GPU), and a probe of the picture PyTorch
+draws, which a backend must match before it is trusted. `program.json` holds the compute shaders compiled from it, for the
 browser runner. Converting needs PyTorch.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ def main(argv=None) -> int:
     ap.add_argument("checkpoint", type=Path, help="a checkpoint, or a run folder for its newest")
     ap.add_argument("--out", type=Path, default=None,
                     help="destination folder. Default: runs/engine/<model>")
-    add_device(ap, help="where the dials are measured. Default: whichever accelerator is there")
+    add_device(ap, help="measure the dials with PyTorch on this device rather than on the engine")
     args = ap.parse_args(argv)
     try:
         checkpoint = checkpoint_for(args.checkpoint)
