@@ -75,6 +75,23 @@ def test_a_dropped_frame_costs_the_take_a_held_frame_not_its_length():
     assert [counted._q.get()[0] for _ in range(2)] == [0, 1]
 
 
+def test_a_take_sets_the_time_catching_up_a_late_pass_and_skipping_only_when_far_behind():
+    """The loop draws each frame of a take at that frame's own time: a pass 50 ms late finds
+    the three frames it missed due at once, at their own times, and none is lost. Only a take
+    more than half a second behind, a card slower than the take, skips ahead."""
+    rec = Recorder("unused.mp4", 8, 8, 60.0, realtime=True)
+    assert rec.next_frame(100.0) == 100.0
+    rec.claim()
+    late = []
+    while (at := rec.next_frame(100.05)) is not None:
+        late.append(at)
+        rec.claim()
+    assert late == pytest.approx([100.0 + k / 60 for k in (1, 2, 3)])
+    assert rec.dropped == 0
+    rec.next_frame(102.0)
+    assert rec.dropped > 0
+
+
 def test_a_take_is_a_playable_file_with_a_trailer(tmp_path):
     out = tmp_path / "take.mp4"
     rec = Recorder(out, 128, 64, 30.0, "libx264", realtime=True, depth=8).start()

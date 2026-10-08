@@ -20,7 +20,8 @@ def next_path(folder: Path, stem: str, suffix: str) -> Path:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     # One directory listing rather than a stat per candidate: this can run inside a frame.
-    taken = {p.stem.rsplit("-", 1)[-1] for p in folder.glob(f"{stem}-*{suffix}")}
+    # The number right after the stem, so a take renamed after it (`take-07-hits-...`) keeps it.
+    taken = {p.stem[len(stem) + 1:].split("-", 1)[0] for p in folder.glob(f"{stem}-*{suffix}")}
     used = {int(t) for t in taken if t.isdigit()}
     n = next((i for i in range(1, 1000) if i not in used), None)
     if n is None:
