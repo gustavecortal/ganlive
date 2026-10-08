@@ -16,6 +16,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,10 @@ def default_device(fallback: bool = False):
     """The high-performance adapter's device (or, with `fallback`, the CPU one's)."""
     return _device(wgpu.gpu.request_adapter_sync(power_preference="high-performance",
                                                  force_fallback_adapter=fallback))
+
+
+#: Threads that compile a program's shaders.
+COMPILERS = 8
 
 
 class BuildTimeout(RuntimeError):
@@ -87,14 +92,20 @@ class Model:
         self.output = self.buffers["out"]
         pipelines = {} if pipelines is None else pipelines
 
+        def compile_one(code):
+            if deadline is not None and time.perf_counter() > deadline:
+                raise BuildTimeout(f"{device.adapter.info['backend_type']} compiles too slowly")
+            return device.create_compute_pipeline(layout="auto", compute={
+                "module": device.create_shader_module(code=code), "entry_point": "main"})
+
+        # Compiled side by side: wgpu's D3D12 compiles each shader with FXC on the calling
+        # thread, 4.5 s for lichen alone and 1.0 s from eight threads.
+        todo = [c for c in dict.fromkeys(program["shaders"]) if c not in pipelines]
+        with ThreadPoolExecutor(min(COMPILERS, len(todo)) or 1) as pool:
+            pipelines.update(zip(todo, pool.map(compile_one, todo), strict=True))
+
         def compiled(spec):
-            code = program["shaders"][spec["shader"]]
-            if code not in pipelines:
-                if deadline is not None and time.perf_counter() > deadline:
-                    raise BuildTimeout(f"{device.adapter.info['backend_type']} compiles too slowly")
-                pipelines[code] = device.create_compute_pipeline(layout="auto", compute={
-                    "module": device.create_shader_module(code=code), "entry_point": "main"})
-            pipeline = pipelines[code]
+            pipeline = pipelines[program["shaders"][spec["shader"]]]
             bind = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=[
                 {"binding": i, "resource": {"buffer": self.buffers[n], "offset": 0,
                                             "size": self.buffers[n].size}}
@@ -253,7 +264,7 @@ def frame_ms(model: Model, frames: int = 15, rounds: int = 3) -> float:
     return best
 
 
-def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
+def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frames: int = 10,
             choices: Path | None = None, budget: float = BUDGET) -> tuple[Model, dict]:
     """The model built on whichever GPU backend draws it right and fastest here, and what was
     measured.

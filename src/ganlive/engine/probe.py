@@ -23,6 +23,12 @@ def box_means(image: np.ndarray) -> np.ndarray:
     # Block i spans rows [i*h/gh, (i+1)*h/gh), so any size divides into the grid.
     rows, cols = (np.arange(n) * size // n for n, size in ((gh, h), (gw, w)))
     area = np.outer(np.diff(rows, append=h), np.diff(cols, append=w))
+    if pixels and h % gh == 0 and w % gw == 0:
+        # Equal blocks, as every engine model's are: summed by rows of blocks first, ten
+        # times faster than `reduceat` on a 3072x2048 frame.
+        bands = image.reshape(gh, h // gh, -1).sum(axis=1, dtype=np.uint32)
+        sums = bands.reshape(gh, gw, w // gw, -1).sum(axis=2)[..., :3]
+        return (sums.transpose(2, 0, 1) / area) / LEVEL - 1.0
     if pixels:
         sums = np.add.reduceat(np.add.reduceat(image[..., :3], rows, axis=0, dtype=np.uint64),
                                cols, axis=1)
