@@ -18,9 +18,6 @@ const QUEUE = 4;
 const RING = 6;
 /** What the I420 shader writes, as each frame tells the encoder. The MP4 says it too (`colr`). */
 const BT709 = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false };
-/** Seconds a take may fall behind its frames before it gives up on them: only a card that
- *  cannot draw the model at the take's rate gets there. */
-const MOST_BEHIND_S = 0.5;
 /** Seconds between key frames. */
 const KEY_EVERY_S = 2;
 
@@ -99,9 +96,9 @@ export async function prepareTake(entry, { fps = 60 } = {}) {
   for await (const _ of configure(entry.width, entry.height, fps)) break;
 }
 
-/** Start a take of `entry` (a loaded model) at `fps`. While it is the player's `tap`, the
- *  player draws one picture at each time `next` gives, and calls `draw` and `drawn` for it;
- *  `stop` resolves to the video as a Blob. */
+/** Start a take of `entry` (a loaded model) at `fps`. While it is the player's `tap`, the player
+ *  logs the frame due at each time `next` gives, and draws the frames `waiting` in order into it
+ *  (`record`, then `recorded` after the submit); `stop` resolves to the video as a Blob. */
 export async function startTake(device, entry, { fps = 60 } = {}) {
   // I420 halves each side for its colour planes, so an odd size goes through a canvas instead.
   const even = entry.width % 2 === 0 && entry.height % 2 === 0;
@@ -115,8 +112,12 @@ class TakeBase {
     Object.assign(this, { entry, fps });
     this.start = null;
     this.slot = -1;
+    /** Frames logged and not drawn yet, oldest first: `{index, entry, latent, settings}`. */
+    this.waiting = [];
+    this.latest = null;
     this.frames = 0;
     this.dropped = 0;
+    this.failed = null;
   }
   /** Seconds recorded so far. */
   get seconds() {
@@ -124,24 +125,17 @@ class TakeBase {
   }
   /** The time (ms, as the player's) of the take's next frame, if it is due by the animation
    *  frame at `now`: up to half a frame early, so each animation frame of a screen at the
-   *  take's rate draws one. The take starts at the first `now`. */
+   *  take's rate makes one. The take starts at the first `now`. */
   next(now) {
     this.start ??= now;
-    const period = 1000 / this.fps;
-    const behind = Math.floor((now - this.start) / period) - (this.slot + 1);
-    if (behind > MOST_BEHIND_S * this.fps) {
-      this.dropped += behind;
-      this.slot += behind;
-    }
-    const at = this.start + (this.slot + 1) * period;
-    return at <= now + period / 2 ? at : null;
+    const at = this.start + ((this.slot + 1) * 1000) / this.fps;
+    return at <= now + 500 / this.fps ? at : null;
   }
-  /** Into the player's encoder: the picture drawn for the take's next frame. A model switched
-   *  to mid-take has the take's size (the page refuses others). */
-  draw(encoder, m) {
-    if (m !== this.entry) this.use(m);
-    this.slot++;
-    this.record(encoder);
+  /** Keep frame `f` (the player's `update`) as the take's next. */
+  log(f) {
+    f.index = ++this.slot;
+    this.waiting.push(f);
+    this.latest = f;
   }
   ready() {
     return true;
@@ -158,7 +152,6 @@ class CodecTake extends TakeBase {
     this.out = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
     this.shape = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.shape, 0, new Uint32Array([h, w, 0, 0]));
-    this.use(entry);
     const groups = Math.ceil(bytes / 4 / 256);
     this.groups = [Math.min(groups, 65535), Math.ceil(groups / 65535)];
     this.ring = Array.from({ length: RING }, () => ({
@@ -166,9 +159,10 @@ class CodecTake extends TakeBase {
       busy: false,
     }));
     this.filling = null;
+    /** The conversion for each model the take has drawn, made once. */
+    this.binds = new Map();
     /** Each frame's encode waits for the one before, so frames reach the encoder in order. */
     this.chain = Promise.resolve();
-    this.failed = null;
     this.open(first);
   }
   /** Encode with `candidate`. An encoder can claim a configuration and then refuse its first
@@ -188,14 +182,17 @@ class CodecTake extends TakeBase {
     }));
     encoder.configure(this.config);
   }
-  /** Convert `entry`'s frames from now on. */
+  /** The conversion of `entry`'s frames: a model switched to mid-take has the take's size
+   *  (the page refuses others). */
   use(entry) {
-    this.entry = entry;
-    const module = this.device.createShaderModule({ code: I420(entry.program.output === "bgra8" ? "zyx" : "xyz") });
-    this.pipeline = this.device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-    this.bind = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: entry.model.output } }, { binding: 1, resource: { buffer: this.out } },
-      { binding: 2, resource: { buffer: this.shape } }] });
+    if (!this.binds.has(entry)) {
+      const module = this.device.createShaderModule({ code: I420(entry.program.output === "bgra8" ? "zyx" : "xyz") });
+      const pipeline = this.device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+      this.binds.set(entry, [pipeline, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: entry.model.output } }, { binding: 1, resource: { buffer: this.out } },
+        { binding: 2, resource: { buffer: this.shape } }] })]);
+    }
+    return this.binds.get(entry);
   }
   get label() {
     return `${this.config.codec}, ${this.config.bitrateMode === "quantizer" ? "constant quality" : "high bitrate"}`;
@@ -203,21 +200,24 @@ class CodecTake extends TakeBase {
   ready() {
     return !this.failed && !this.switching && this.encoder.encodeQueueSize < QUEUE && this.ring.some((r) => !r.busy);
   }
-  /** The frame as I420, into a free buffer of the ring. */
-  record(encoder) {
+  /** Frame `f`, the oldest waiting, just drawn into the player's encoder: as I420, into a free
+   *  buffer of the ring. */
+  record(encoder, f) {
+    const [pipeline, bind] = this.use(f.entry);
     const pass = encoder.beginComputePass();
-    pass.setPipeline(this.pipeline);
-    pass.setBindGroup(0, this.bind);
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(...this.groups);
     pass.end();
     this.filling = this.ring.find((r) => !r.busy);
     this.filling.busy = true;
+    this.filling.index = this.waiting.shift().index;
     encoder.copyBufferToBuffer(this.out, 0, this.filling.buffer, 0, this.out.size);
   }
   /** After the player's submit: read the frame back, then hand it to the encoder. */
-  drawn() {
+  recorded() {
     const r = this.filling;
-    const slot = this.slot;
+    const slot = r.index;
     const mapped = r.buffer.mapAsync(GPUMapMode.READ);
     this.chain = this.chain.then(() => mapped).then(async () => {
       if (this.switching) await this.reopened;      // a frame read back while the encoder changes
@@ -267,14 +267,23 @@ class RecorderTake extends TakeBase {
     this.recorder.start(1000);
     this.label = this.recorder.mimeType;
   }
-  use(entry) {
-    this.entry = entry;
-    this.onto = screen(this.device, entry.model, this.format);
+  /** MediaRecorder stamps each frame as it arrives, so a frame drawn late cannot be put back
+   *  in its place: only the newest waits, and those it replaces count as `dropped`. */
+  log(f) {
+    this.dropped += this.waiting.length;
+    this.waiting = [];
+    super.log(f);
   }
-  record(encoder) {
+  use(entry) {
+    if (entry !== this.entry || !this.onto) this.onto = screen(this.device, entry.model, this.format);
+    this.entry = entry;
+  }
+  record(encoder, f) {
+    this.use(f.entry);
+    this.waiting.shift();
     this.onto.draw(encoder, this.context.getCurrentTexture());
   }
-  drawn() {
+  recorded() {
     this.stream.getVideoTracks()[0].requestFrame?.();
     this.frames++;
   }

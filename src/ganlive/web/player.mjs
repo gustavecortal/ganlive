@@ -17,6 +17,12 @@ const LONGEST_STEP_S = 0.25;
 const DEPTH = 2;
 /** Frames of a take drawn in one animation frame at most, catching up after a late one. */
 const CATCH_UP = 4;
+/** Frames of a take worked out in one animation frame at most: a tab hidden for minutes catches
+ *  up over several rather than freezing in one. */
+const MOST_LOGGED = 120;
+/** Seconds a take may fall behind while playing. Beyond, its frames wait for `endTake`, so a
+ *  card too slow for the take spends itself on the live picture. */
+const LIVE_BEHIND_S = 1;
 /** The holder the page's sliders hold dials under, above knobs and pads. */
 export const HAND = "console";
 export const HAND_PRIORITY = 10;
@@ -103,8 +109,10 @@ export class Player {
     this.lag = 0;
     this.last = null;
     this.shown = null;
-    /** A take, while recording: `{fps, next(now), ready(), draw(encoder, entry, at), drawn()}`. */
+    /** A take, while recording (`take.mjs`). */
     this.tap = null;
+    /** The take's frame last drawn on the screen. */
+    this.onScreen = null;
     this.redraw = true;
     this.stats = { frames: 0, since: performance.now(), fps: 0, ms: 0 };
   }
@@ -182,67 +190,106 @@ export class Player {
 
   /** The animation frame at `now` (ms, a requestAnimationFrame time). Returns whether it drew.
    *
-   *  While recording, the take sets the time: one picture for each frame of the take, made at
-   *  that frame's own time (`take.next`), so the video has every frame, evenly spaced, whatever
-   *  the screen's refresh rate. A frame the card or the encoder could not take yet waits for
-   *  the next animation frame rather than being lost, and a late one is caught up. */
+   *  While recording, the take sets the time: the drums, the dials and the beat are worked out
+   *  at each frame of the take, at that frame's own time (`take.next`), and kept in its log.
+   *  The encoder draws them in order while the card keeps up, and the newest is the one shown,
+   *  so on a card that keeps up each picture is drawn once. Frames the card had no time for
+   *  wait, and `endTake` draws them, so a take has every frame, evenly spaced, on any card. */
   frame(now) {
     const m = this.current;
     if (!m) return false;
-    if (!this.tap) return this.step(m, now, false);
-    let drew = false;
-    for (let n = 0; n < CATCH_UP; n++) {
-      const at = this.tap.next(now);
-      if (at === null || !this.tap.ready() || this.pending >= DEPTH + Math.ceil((this.lag * this.tap.fps) / 1000)) break;
-      drew = this.step(m, at, true);
+    const take = this.tap;
+    if (!take) return this.step(m, now);
+    for (let n = 0, at; n < MOST_LOGGED && (at = take.next(now)) !== null; n++) take.log(this.update(m, at));
+    const room = DEPTH + Math.ceil((this.lag * take.fps) / 1000);
+    let shown = false;
+    if (take.waiting.length <= LIVE_BEHIND_S * take.fps)
+      for (let n = 0; n < CATCH_UP && take.waiting.length && take.ready() && this.pending < room; n++) {
+        const f = take.waiting[0];
+        const newest = f === take.latest;
+        this.draw(f, newest, take);
+        shown ||= newest;
+      }
+    if (!shown && take.latest && take.latest !== this.onScreen && this.pending < room) {
+      this.draw(take.latest, true, null);
+      shown = true;
     }
-    return drew;
+    return shown;
   }
 
-  /** The drums, the dials and the beat at `now`, then the picture: unless the card is behind
-   *  or nothing changed, or always for a take's frame (`taped`). */
-  step(m, now, taped) {
-    const dt = this.last === null ? 0 : (now - this.last) / 1000;
+  /** The drums, the dials and the beat at `now`, then the picture, unless the card is behind or
+   *  nothing changed. */
+  step(m, now) {
+    const f = this.update(m, now);
+    const changed = m.settings.changed;
+    m.settings.changed = false;
+    // The card is behind: skip rather than queue, which would hold up the page around it.
+    if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(this.dt * 1000, 4))) return false;
+    const same = !this.redraw && !changed && this.shown && this.shown.every((v, i) => v === f.latent[i]);
+    if (same) return false;
+    this.draw(f, true, null);
+    return true;
+  }
+
+  /** The drums, the dials and the beat at `now`: the frame model `m` would draw then. */
+  update(m, now) {
+    this.dt = this.last === null ? 0 : (now - this.last) / 1000;
     this.last = now;
     const features = this.features;
     features.tick(now / 1000);
     this.runner.observe(features.drain());
     this.runner.apply(features.since, features.features(), m.settings);
-    this.clock.advance(Math.min(dt, LONGEST_STEP_S));
-    const latent = this.walk.latent(this.clock.beats);
-    if (!taped) {
-      // The card is behind: skip rather than queue, which would hold up the page around it.
-      if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(dt * 1000, 4))) return false;
-      const same = !this.redraw && !m.settings.changed && this.shown && this.shown.every((v, i) => v === latent[i]);
-      if (same) return false;
-    }
-    this.redraw = false;
-    this.shown = latent;
-    m.model.setLatent(latent);
-    if (m.settings.changed) {
-      m.model.setSettings(m.settings.sent);
-      m.settings.changed = false;
-    }
+    this.clock.advance(Math.min(this.dt, LONGEST_STEP_S));
+    return { entry: m, latent: this.walk.latent(this.clock.beats), settings: m.settings.sent.slice() };
+  }
+
+  /** Draw frame `f`: onto the screen, into `take`, or both. */
+  draw(f, screen, take) {
+    const m = f.entry;
+    m.model.setLatent(f.latent);
+    m.model.setSettings(f.settings);
     const encoder = this.device.createCommandEncoder();
     m.model.encode(encoder);
-    m.onto.draw(encoder, this.context.getCurrentTexture());
-    if (taped) this.tap.draw(encoder, m, now);
+    if (screen) {
+      m.onto.draw(encoder, this.context.getCurrentTexture());
+      this.redraw = false;
+      this.shown = f.latent;
+      this.onScreen = f;
+    }
+    take?.record(encoder, f);
     this.device.queue.submit([encoder.finish()]);
-    if (taped) this.tap.drawn();
+    take?.recorded();
     this.pending++;
     const t = performance.now();
     this.device.queue.onSubmittedWorkDone().then(() => {
       this.pending--;
       this.stats.ms = 0.9 * this.stats.ms + 0.1 * (performance.now() - t);
     });
+    if (!screen) return;
     const s = this.stats;
     s.frames++;
-    if (now - s.since > 1000) {
-      s.fps = (s.frames * 1000) / (now - s.since);
+    if (t - s.since > 1000) {
+      s.fps = (s.frames * 1000) / (t - s.since);
       s.frames = 0;
-      s.since = now;
+      s.since = t;
     }
-    return true;
+  }
+
+  /** Stop recording: draw the frames the take is still waiting for, `onProgress(fraction)` as
+   *  it goes, then the video as a Blob. The picture plays on meanwhile. */
+  async endTake(onProgress) {
+    const take = this.tap;
+    this.tap = null;
+    const total = take.waiting.length;
+    while (take.waiting.length && !take.failed) {
+      if (!take.ready() || this.pending >= DEPTH + Math.ceil((this.lag * take.fps) / 1000)) {
+        await new Promise((r) => setTimeout(r, 4));
+        continue;
+      }
+      this.draw(take.waiting[0], false, take);
+      onProgress?.(1 - take.waiting.length / total);
+    }
+    return take.stop();
   }
 
   /** The picture now, as a PNG at the model's own size. */
