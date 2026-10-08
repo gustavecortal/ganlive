@@ -184,35 +184,31 @@ Measure your hardware with:
 ganlive latency --checkpoint runs/stylegan2/ffhq.pt
 ```
 
-Reported measurements on a $350 Intel Arc A770 with PyTorch 2.13+xpu:
+Reported measurements on a $350 Intel Arc A770, through Vulkan, before `ganlive tune`:
 
 | Model | Native resolution | Frame time | FPS |
 |---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 10.7 ms | 94 |
-| FastGAN, displayed at 1620×1080 | 3072×2048 | 8.8 ms | 114 |
+| StyleGAN2 FFHQ | 1024×1024 | 34.6 ms | 29 |
+| FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 10.0 ms | 100 |
+| FastGAN amber | 1536×1024 | 5.5 ms | 183 |
 
-These measure generation and frame preparation. With the window and controls,
-the FFHQ loop took 12.4 ms, with 13.8 ms at the 95th percentile.
-
-Reported measurements on an Apple M5 MacBook Pro with PyTorch 2.14.1 on MPS:
-
-| Model | Native resolution | Frame time | FPS |
-|---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 46.4 ms | 22 |
-| FastGAN, displayed at 1472×982 | 3072×2048 | 31.0 ms | 32 |
-
-With the window and controls, the FFHQ loop took 47.7 ms, with 48.9 ms at the 95th
-percentile.
+These measure generation and frame preparation. `ganlive tune` took 5 to 10% off each
+model's frame on this card.
 
 Results depend on your model, hardware, and runtime.
 
 ## Install
 
 Follow the [README quick start](../README.md#quick-start).
-Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/) first.
 
-ganlive detects CUDA, Intel XPU, Apple MPS, or CPU.
-AMD GPUs use the ROCm PyTorch build on Linux.
+Models play on WebGPU through Vulkan, Metal, or Direct3D 12. At a model's first load,
+ganlive measures which of these draws it right and fastest on your machine and remembers
+the choice. `--backend` picks one instead, and `ganlive tune` finds how each layer runs fastest
+on your GPU.
+
+PyTorch is needed only to convert a checkpoint, which happens once, at its first load.
+Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/), or the
+`convert` extra for the default build.
 
 Add optional features with `uv pip install -e ".[EXTRA]"`:
 
@@ -220,6 +216,7 @@ Add optional features with `uv pip install -e ".[EXTRA]"`:
 |---|---|
 | `audio` | Audio input and recording guide tracks |
 | `record` | Video recording |
+| `convert` | PyTorch, to convert checkpoints |
 | `all` | All features |
 | `dev` | Development dependencies |
 

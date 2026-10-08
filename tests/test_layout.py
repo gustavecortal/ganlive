@@ -45,16 +45,15 @@ DEFERRABLE = {"sounddevice", "av", "psutil", "pygame"}
 
 #: Every other import made inside a function, and why it is not at the top.
 DEFERRED = {
-    # `play` answers `--help` and a bad argument without loading torch.
-    ("ganlive.tools.play", "torch"): "torch",
+    # `play` answers `--help` and a bad argument before wgpu and the engine load.
     ("ganlive.tools.convert", "ganlive.engine.convert"): "torch",
     # An engine model that is already converted plays without PyTorch.
     ("ganlive.engine.load", "ganlive.engine.convert"): "torch",
-    ("ganlive.tools.play", "ganlive.bank"): "torch",
-    ("ganlive.tools.play", "ganlive.device"): "torch",
-    ("ganlive.tools.play", "ganlive.families"): "torch",
-    # Recording is torch-free until a take actually starts.
-    ("ganlive.record.video", "ganlive.pixels"): "torch",
+    ("ganlive.tools.play", "ganlive.bank"): "start-up",
+    ("ganlive.tools.play", "ganlive.families"): "start-up",
+    # A checkpoint without its conversion beside it is read with PyTorch, and only then.
+    ("ganlive.families", "ganlive.models.fastgan"): "torch",
+    ("ganlive.families", "ganlive.models.stylegan2"): "torch",
     # The converted-StyleGAN2 file opens with no other module of this package.
     ("ganlive.models.stylegan2", "ganlive.models.common"): "self-contained",
     # NVIDIA's own code, from the checkout named on the command line.
@@ -62,8 +61,11 @@ DEFERRED = {
     ("ganlive.tools.import_stylegan2", "legacy"): "on --repo",
 }
 
-#: Modules that must import without torch: the hardware checks run before any model does.
-TORCH_FREE = ("ganlive.clock", "ganlive.control.midi", "ganlive.tools.doctor", "ganlive.tools.play")
+#: Modules that must import without torch: the hardware checks run before any model does, and
+#: a converted model plays without PyTorch installed at all.
+TORCH_FREE = ("ganlive.clock", "ganlive.control.midi", "ganlive.tools.doctor", "ganlive.tools.play",
+              "ganlive.bank", "ganlive.families", "ganlive.walk", "ganlive.tools.latency",
+              "ganlive.tools.tune", "ganlive.engine.load", "ganlive.process")
 
 
 def _modules():

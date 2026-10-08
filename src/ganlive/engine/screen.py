@@ -131,7 +131,6 @@ class EngineStage:
     def __init__(self, device, height: int, width: int) -> None:
         self.device = device
         self.height, self.width = int(height), int(width)
-        self.compiled = {"yuv": True, "rgb": True, "bgra": True}
         self._resize = self._pipeline(RESIZE)
         self._nv12 = self._pipeline(NV12)
         self._buffers: dict = {}
@@ -194,10 +193,6 @@ class EngineStage:
     def resize(self, height: int, width: int) -> None:
         self.height, self.width = int(height), int(width)
 
-    def warm(self, staged) -> int:
-        """Nothing is left to build: the conversions compiled when the stage was made."""
-        return 0
-
     def sync(self) -> None:
         """Wait for everything queued: a read waits for the work before it. (wgpu-py 0.32's
         `on_submitted_work_done_sync` fails on a callback signature.)"""
@@ -209,9 +204,6 @@ class EngineStage:
 
     def handoff(self) -> _Handoff:
         return _Handoff(self)
-
-    def pinned(self) -> dict[str, bool]:
-        return {name: True for name, _shape in self._rings}
 
     def step(self, net) -> Stepped:
         """The model's frame at the size shown, as BGRA8: the model's own buffer when it is

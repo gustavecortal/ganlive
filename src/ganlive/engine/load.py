@@ -38,18 +38,18 @@ def converted(checkpoint, floor: float = RANDOM_FLOOR, grain: bool = True) -> tu
     raise RuntimeError(f"{checkpoint.name}: nowhere to write its engine model")
 
 
-def open_model(path, gpu=None, floor: float = RANDOM_FLOOR,
-               grain: bool = True) -> tuple[EngineGenerator, object, PlayedDirections | None]:
+def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
+               backend: str | None = None) -> tuple[EngineGenerator, object, PlayedDirections | None]:
     """The model at `path` ready to play, with its dial layout and directions: on the wgpu
-    device `gpu`, or else on this machine's fastest backend for it, with the plans tuned for
-    that device (`ganlive tune`)."""
+    device `gpu`, or else on `backend` or this machine's fastest backend for it, with the plans
+    tuned for that device (`ganlive tune`)."""
     if is_engine(path):
         manifest, weights = read_folder(path)
     else:
         folder, manifest = converted(path, floor, grain)
         weights = (folder / WEIGHTS).read_bytes()
     if gpu is None:
-        model, report = fastest(manifest, weights)
+        model, report = fastest(manifest, weights, backend=backend)
         print(f"engine: {report['best']}", flush=True)
     else:
         model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))

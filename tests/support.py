@@ -122,12 +122,12 @@ def stub_cfg(nz: int, width: int, height: int):
 
 
 def walk(**kw) -> SlerpWalk:
-    return SlerpWalk(NZ, "cpu", WalkConfig(**kw))
+    return SlerpWalk(NZ, WalkConfig(**kw))
 
 
 def _step(w: SlerpWalk, n: int = 40) -> float:
     """Mean displacement between consecutive targets -- how far one segment actually travels."""
-    return sum(float((w.seed_for(k) - w.seed_for(k + 1)).norm()) for k in range(n)) / n
+    return sum(float(np.linalg.norm(w.seed_for(k) - w.seed_for(k + 1))) for k in range(n)) / n
 
 
 def _pulses(clock, bpm, seconds, t0=0.0, jitter=0.0, rng=None):

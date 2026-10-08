@@ -73,9 +73,9 @@ MIN_H = floor_height(GROUPS)
 def _travelled(walk, beats):
     """Where along its arc the walk really is at `beats`, recovered from the latent it returns."""
     k = position(walk.cfg, beats)[0]
-    z0 = walk.seed_for(k).numpy().astype(np.float64)
-    z1 = walk.seed_for(k + 1).numpy().astype(np.float64)
-    got = walk.latent(beats).numpy().reshape(-1).astype(np.float64)
+    z0 = walk.seed_for(k).astype(np.float64)
+    z1 = walk.seed_for(k + 1).astype(np.float64)
+    got = walk.latent(beats).reshape(-1).astype(np.float64)
     a, b = np.linalg.lstsq(np.stack([z0, z1], axis=1), got, rcond=None)[0]
     n0, n1 = z0 / np.linalg.norm(z0), z1 / np.linalg.norm(z1)
     omega = float(np.arccos(np.clip(float(n0 @ n1), -1.0, 1.0)))
@@ -326,7 +326,7 @@ def test_the_scope_draws_the_curve_the_walk_actually_travels():
     """The motion dials change nothing about a single frame, so the scope is where they show.
     It reads the walk's own shaping, so it cannot drift from what the walk does."""
     cfg = WalkConfig(beats_per_segment=4.0, hold=0.55, when=0.8, step_grid=0, base_seed=3)
-    walk = SlerpWalk(64, "cpu", cfg)
+    walk = SlerpWalk(64, cfg)
     drawn = scope_curve(cfg, samples=33)
 
     for i in range(1, 32):
@@ -335,7 +335,7 @@ def test_the_scope_draws_the_curve_the_walk_actually_travels():
         assert drawn[i] == pytest.approx(position(cfg, beats * 0.9999)[2], abs=2e-3)
 
     stepped = WalkConfig(beats_per_segment=4.0, step_grid=4, base_seed=3)
-    walk = SlerpWalk(64, "cpu", stepped)
+    walk = SlerpWalk(64, stepped)
     assert _travelled(walk, 0.4) == pytest.approx(_travelled(walk, 0.9), abs=2e-3)
     assert _travelled(walk, 0.4) != pytest.approx(_travelled(walk, 1.4), abs=2e-3)
     assert len(set(round(t, 6) for t in scope_curve(stepped, samples=40))) <= 5

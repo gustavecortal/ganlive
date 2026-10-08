@@ -143,11 +143,8 @@ class WalkConfig:
     #: this every frame from the `dir1..dirN` dials.
     amounts: Sequence[float] = ()
 
-    #: Whether the loaded generator reads its latent from host memory, as the ONNX backend does.
-    #: Then the walk hands over its host array and skips a device copy. Set by `bank._rewire`.
-    latent_on_host: bool = False
     #: Where a `w` push goes on a generator that steers style rather than latent: the
-    #: `(bands, w_dim)` tensor its mapping reads. `None` elsewhere, and the push folds into `z`.
+    #: `(bands, w_dim)` array its mapping reads. `None` elsewhere, and the push folds into `z`.
     push_into: object = None
 
 

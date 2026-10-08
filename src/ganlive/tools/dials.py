@@ -18,10 +18,17 @@ import time
 from pathlib import Path
 
 from ganlive import device as dev
-from ganlive.dials import derive
-from ganlive.families import open_stylegan2
+from ganlive import process
+from ganlive.dials import derive, steer
 from ganlive.models import stylegan2 as S2
 from ganlive.tools import add_device, parser
+
+
+def open_stylegan2(path, device, dtype):
+    """A converted StyleGAN2 in `dtype` with its dials installed: `(net, settings, push, bands)`."""
+    net = S2.from_file(path, device, half_from=S2.half_from_for(dtype, False))
+    settings = steer.install_stylegan2(net, device)
+    return net, settings, net.mapping.push, S2.style_bands(net)
 
 
 def main(argv=None) -> int:
@@ -43,7 +50,7 @@ def main(argv=None) -> int:
               f"no style ranges to read on anything else", file=sys.stderr)
         return 2
     device = args.device or dev.detect_backend()
-    if not dev.refuse_if_gpu_busy(device, "derivation"):
+    if not process.refuse_if_gpu_busy(device, "derivation"):
         return 1
 
     # The precision ganlive would play this model in on this device.

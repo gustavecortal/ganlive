@@ -11,6 +11,12 @@ import numpy as np
 
 from ganlive.files import size_mb
 
+
+def nv12_plane_views(frame, height: int, width: int):
+    """numpy views onto an nv12 frame's own buffers, honouring each plane's line size."""
+    return [np.frombuffer(p, dtype=np.uint8).reshape(rows, p.line_size)[:, :width]
+            for p, rows in ((frame.planes[0], height), (frame.planes[1], height // 2))]
+
 #: Hardware encoders, in the order they are tried. The first that opens on this machine
 #: wins; `libx264` always does, on the CPU, and costs most of the frame rate at 4K.
 CODECS = ("av1_qsv", "hevc_qsv", "h264_nvenc", "hevc_nvenc", "hevc_videotoolbox",
@@ -157,9 +163,6 @@ class Recorder:
         container = stream = None
         try:
             import av
-
-            # Deferred: `pixels` imports torch, and recording does not otherwise need it.
-            from ganlive.pixels import nv12_plane_views
 
             tb = Fraction(1, round(self.fps))
             self.codec = self._encoder(av, tb)

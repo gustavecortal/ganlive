@@ -9,6 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ganlive import process
 from ganlive.checkpoints import slug_for
 from ganlive.clock import MusicalClock
 from ganlive.control.audio import NoAudioDevice, input_stream, pick_input, require_sounddevice
@@ -44,7 +45,7 @@ from ganlive.strip import PRIORITY as HAND_PRIORITY
 from ganlive.strip import SOURCE as HAND
 from ganlive.strip import DialPanel
 from ganlive.timing import stat_ms
-from ganlive.tools import add_device, parser
+from ganlive.tools import parser
 from ganlive.window import Display, parse_height, screen_size
 
 OUT = Path("runs/ganlive")
@@ -178,7 +179,9 @@ def _parser():
                       help=f"which preset to start on. Saved with `s` into {SETTINGS}")
 
     how = ap.add_argument_group("how it runs")
-    add_device(how)
+    how.add_argument("--backend", default=None, metavar="vulkan|d3d12|metal",
+                     help="the wgpu backend to play on. Default: the fastest this machine "
+                          "measured for the model, remembered after its first load")
     how.add_argument("--height", type=parse_height, default=None,
                      metavar="auto|native|PIXELS",
                      help="what the window is sent -- the generator always runs at its native "
@@ -569,10 +572,7 @@ def main(argv=None) -> int:
         return 1
 
     # Imported here, after the arguments parse, so `--help` and a typo answer at once.
-    import torch
-
     from ganlive import bank
-    from ganlive import device as dev
     from ganlive.families import LoadOptions
 
     tracks, map_note = resolve_map(args.map, args.layout)
@@ -581,7 +581,7 @@ def main(argv=None) -> int:
     # Before anything opens the card: the affinity is for this process's submission thread,
     # and the compile that follows is the first thing to use it.
     if args.cpu == "fast":
-        dev.prioritise_gpu_feeder()
+        process.prioritise_gpu_feeder()
 
     note_channels = parse_track_channels(args.midi_channels) if args.midi_channels else None
     notes = parse_notes(args.notes)
@@ -628,9 +628,9 @@ def main(argv=None) -> int:
 
     screen = screen_size()
     floor = {} if args.direction_floor is None else {"direction_floor": args.direction_floor}
-    r = bank.build(args.checkpoint, args.device,
-                   height=args.height, screen=screen,
-                   options=LoadOptions(measure_grain=args.measure_grain, **floor))
+    r = bank.build(args.checkpoint, height=args.height, screen=screen,
+                   options=LoadOptions(measure_grain=args.measure_grain, backend=args.backend,
+                                       **floor))
     print(f"generator: {r.report()}", flush=True)
     if args.height is None and r.height < r.cfg.ladder.height:
         print(f"  fitted to the {screen[0]}x{screen[1]} screen -- a take will be this size too; "
@@ -759,7 +759,7 @@ def main(argv=None) -> int:
         land()                  # the frame in flight belongs to the take it was taped for
         if rec is not None:
             report = rec.stop()
-            print(f"take: {report}  staging {r.stage.pinned()}", flush=True)
+            print(f"take: {report}", flush=True)
             if guide.running:
                 print(f"  sync: {guide.describe(guide.stop(report))}", flush=True)
             rec = None
@@ -789,8 +789,6 @@ def main(argv=None) -> int:
         if not rec.drain():
             print("  the encoder did not start; the take may be short", flush=True)
 
-    print(f"host staging: {r.stage.pinned()}", flush=True)
-
     if card is not None:
         card.start()
 
@@ -814,76 +812,75 @@ def main(argv=None) -> int:
           + (f" for {args.seconds:g}s" if total else " -- stop it with the window"),
           flush=True)
     try:
-        with torch.no_grad():
-            while ((not total or frames < total)
-                   and (not deadline or time.perf_counter() < deadline)):
-                serve_models(shelf, requests, r, rec is not None, switch_model)
+        while ((not total or frames < total)
+               and (not deadline or time.perf_counter() < deadline)):
+            serve_models(shelf, requests, r, rec is not None, switch_model)
 
-                t0 = time.perf_counter()
-                # Before anything writes this frame's inputs: a captured generator reads its
-                # latent and settings from host buffers, and writes every frame into one
-                # buffer the last frame's conversions may still be reading.
-                r.stage.release()
-                model = r.current
-                if ticks is not None:
-                    ticks(t0)
-                if not hits_checked and reactive and t0 - start > HIT_GRACE_S:
-                    hits_checked = True
-                    report_unheard(extractor, kind, fix, notes, note_channels)
-                runner.observe(extractor.drain())
-                runner.apply(extractor.since, extractor.features(), model.settings)
-                # By the time that passed, not by `period`: a model that cannot hold the frame
-                # rate would otherwise play the music slower, and faster again after a switch.
-                clock.advance(min(t0 - ticked, LONGEST_STEP_S))
-                ticked = t0
-                guide.mark(clock.beats)
-                out = model.net(walk.latent(clock.beats))
-                frame = r.stage.step(out)
-                if requests.take("record"):
-                    toggle_take(t0)
-                with r.stage.handoff() as sent:
-                    shown = (to_window(frame)
-                             if display is not None and display.wants else None)
-                    taped = None
-                    if rec is not None:
-                        if rec.wants:
-                            taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
-                        else:
-                            rec.skip()
-                # The last frame's, whose downloads ran while this one was being generated.
+            t0 = time.perf_counter()
+            # Before anything writes this frame's inputs: a captured generator reads its
+            # latent and settings from host buffers, and writes every frame into one
+            # buffer the last frame's conversions may still be reading.
+            r.stage.release()
+            model = r.current
+            if ticks is not None:
+                ticks(t0)
+            if not hits_checked and reactive and t0 - start > HIT_GRACE_S:
+                hits_checked = True
+                report_unheard(extractor, kind, fix, notes, note_channels)
+            runner.observe(extractor.drain())
+            runner.apply(extractor.since, extractor.features(), model.settings)
+            # By the time that passed, not by `period`: a model that cannot hold the frame
+            # rate would otherwise play the music slower, and faster again after a switch.
+            clock.advance(min(t0 - ticked, LONGEST_STEP_S))
+            ticked = t0
+            guide.mark(clock.beats)
+            out = model.net(walk.latent(clock.beats))
+            frame = r.stage.step(out)
+            if requests.take("record"):
+                toggle_take(t0)
+            with r.stage.handoff() as sent:
+                shown = (to_window(frame)
+                         if display is not None and display.wants else None)
+                taped = None
+                if rec is not None:
+                    if rec.wants:
+                        taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
+                    else:
+                        rec.skip()
+            # The last frame's, whose downloads ran while this one was being generated.
+            land()
+            in_flight = (sent.ticket, shown, taped)
+            if requests.take("still"):
+                shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
+                stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
+                print(f"still: {shot}", flush=True)
+            # A frame on time goes up now. Overlapping its download with the next frame
+            # costs a frame of lag, worth paying only on a frame that missed its slot.
+            if not args.pipeline or time.perf_counter() < start + (frames + 1) * period:
                 land()
-                in_flight = (sent.ticket, shown, taped)
-                if requests.take("still"):
-                    shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
-                    stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
-                    print(f"still: {shot}", flush=True)
-                # A frame on time goes up now. Overlapping its download with the next frame
-                # costs a frame of lag, worth paying only on a frame that missed its slot.
-                if not args.pipeline or time.perf_counter() < start + (frames + 1) * period:
-                    land()
-                now = time.perf_counter()
-                took = (now - t0) * 1000
-                ms.append(took)
-                recent.append(took)
-                if model.name not in by_model:
-                    by_model[model.name] = deque(maxlen=SAMPLE_CAP)
-                by_model[model.name].append(took)
-                frames += 1
-                if panel is not None:
-                    panel.beats = clock.beats
-                    if frames % 15 == 0:
-                        elapsed = now - start
-                        share = 1.0 if hears is None else (hears() - heard0) / max(elapsed, 1e-6)
-                        panel.status = status_line(frames, elapsed, recent, clock, rec, share)
+            now = time.perf_counter()
+            took = (now - t0) * 1000
+            ms.append(took)
+            recent.append(took)
+            if model.name not in by_model:
+                by_model[model.name] = deque(maxlen=SAMPLE_CAP)
+            by_model[model.name].append(took)
+            frames += 1
+            if panel is not None:
+                panel.beats = clock.beats
+                if frames % 15 == 0:
+                    elapsed = now - start
+                    share = 1.0 if hears is None else (hears() - heard0) / max(elapsed, 1e-6)
+                    panel.status = status_line(frames, elapsed, recent, clock, rec, share)
 
-                slack = start + frames * period - time.perf_counter()
-                if slack > 0:
-                    time.sleep(slack)
-                else:
-                    late += 1
-                if display is not None and display.stopped:
-                    print("stopped from the window", flush=True)
-                    break
+            slack = start + frames * period - time.perf_counter()
+            if slack > 0:
+                time.sleep(slack)
+            else:
+                late += 1
+            if display is not None and display.stopped:
+                print("stopped from the window", flush=True)
+                break
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
     finally:

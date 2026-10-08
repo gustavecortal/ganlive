@@ -113,7 +113,7 @@ def test_the_shelf_lists_what_is_on_disk_and_every_readable_model_can_join(tmp_p
     (tmp_path / "not-a-run").mkdir()                          # no checkpoint: not listed
 
     loaded = _StubModel(path=here, name="gv-here 82000", cfg=stub_cfg(256, 1536, 1024))
-    bank = Bank(models=[loaded], stage=_Stage(1024, 1536), device="cpu")
+    bank = Bank(models=[loaded], stage=_Stage(1024, 1536))
     shelf = Shelf(bank, tmp_path)
 
     by_name = {e.name: e for e in shelf.entries()}
@@ -249,10 +249,10 @@ def test_switching_models_repoints_the_directions_at_the_new_one():
     first = np.eye(2, 8, dtype=np.float32)
     second = np.full((2, 8), 0.5, dtype=np.float32)
     models = [_StubModel(rows=first), _StubModel(rows=second)]
-    bank = Bank(models=models, stage=_Stage(64, 96), device="cpu")
+    bank = Bank(models=models, stage=_Stage(64, 96))
 
     cfg = WalkConfig()
-    bank.walk(cfg, dtype=torch.float32)
+    bank.walk(cfg)
     assert cfg.directions is first
 
     bank.use(1)
@@ -282,7 +282,7 @@ def test_a_switch_moves_the_stage_to_the_incoming_models_size():
         return _StubModel(path=pathlib.Path("m.pt"), cfg=stub_cfg(8, w, h))
 
     big, small = model(48, 32), model(24, 16)
-    r = Bank(models=[big, small], stage=_Stage(32, 48), device="cpu")
+    r = Bank(models=[big, small], stage=_Stage(32, 48))
     assert (r.height, r.width) == (32, 48)
     r.use(1)
     assert (r.height, r.width) == (16, 24), "the stage did not follow the switch"

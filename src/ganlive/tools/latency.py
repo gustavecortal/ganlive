@@ -14,7 +14,7 @@ import itertools
 import time
 from pathlib import Path
 
-import torch
+import numpy as np
 
 from ganlive import bank
 from ganlive.control.features import FeatureExtractor
@@ -26,7 +26,7 @@ from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
 from ganlive.strip import DialPanel
 from ganlive.timing import drift_ms, stat_ms
-from ganlive.tools import add_device, parser
+from ganlive.tools import parser
 from ganlive.window import Display, parse_height, screen_size
 
 
@@ -56,11 +56,9 @@ def worst_case(layout=None) -> Preset:
     )
 
 
-def latent_for(model, r):
-    """A fixed latent where this generator reads it: on the host for a graph that reads it
-    there, as the walk hands it over; on the device otherwise."""
-    z = torch.randn(1, model.cfg.nz).to(r.dtype)
-    return z.numpy() if getattr(model.net, "latent_on_host", False) else z.to(r.device)
+def latent_for(model) -> np.ndarray:
+    """A fixed latent, a host array as the walk hands it over."""
+    return np.random.default_rng(0).standard_normal((1, model.cfg.nz)).astype(np.float32)
 
 
 def _time_frames(frames: int, step) -> list[float]:
@@ -134,9 +132,6 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     return out, per
 
 
-# Without gradients, as `play` runs it: a compiled generator called with them on is a second,
-# slower graph, and timing that read 31 ms frames as 41 on an M5.
-@torch.no_grad()
 def main(argv=None) -> int:
     ap = parser("latency", __doc__)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
@@ -144,7 +139,9 @@ def main(argv=None) -> int:
                          "loads them, and every one of them is timed: a bank holds "
                          "them all resident at once, and each has its own frame time. The "
                          "full loops run on the first. Required.")
-    add_device(ap)
+    ap.add_argument("--backend", default=None, metavar="vulkan|d3d12|metal",
+                    help="the wgpu backend to play on. Default: the fastest this machine "
+                         "measured for the model, remembered after its first load")
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--height", type=parse_height, default=0,
@@ -170,9 +167,9 @@ def main(argv=None) -> int:
     print(f"audio: {pcm.shape[0]} ch, {take.seconds:.1f}s, blocksize {args.blocksize} "
           f"({args.blocksize / take.samplerate * 1000:.2f} ms)", flush=True)
 
-    r = bank.build(args.checkpoint, args.device, height=args.height,
+    r = bank.build(args.checkpoint, height=args.height,
                    screen=screen_size(),
-                   options=LoadOptions())
+                   options=LoadOptions(backend=args.backend))
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)
@@ -183,7 +180,7 @@ def main(argv=None) -> int:
                      "bank": [m.name for m in r.models]}
 
     model = r.current
-    z_fixed = latent_for(model, r)
+    z_fixed = latent_for(model)
     r.stage.nv12_bytes(r.stage.step(model.net(z_fixed)))
     r.sync()
 
@@ -266,7 +263,7 @@ def main(argv=None) -> int:
         was = r.index
         for i, m in enumerate(r.models):
             r.use(i)
-            z = latent_for(m, r)
+            z = latent_for(m)
 
             def step(m=m, z=z):
                 r.stage.nv12_bytes(r.stage.step(m.net(z)))

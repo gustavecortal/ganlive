@@ -48,7 +48,7 @@ uv run --no-sync ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
 uv run --no-sync ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --no-audio --no-midi
 ```
 
-Drag the dials beside the image. The first launch may take a minute or two to compile.
+Drag the dials beside the image. The first launch converts the model once, which may take a minute or two.
 
 ## Controls
 

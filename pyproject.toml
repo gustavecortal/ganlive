@@ -28,7 +28,8 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: MIDI",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# torch is not listed: the right build depends on your GPU, so the README installs it first.
+# Playing needs no PyTorch: models run on WebGPU. Converting a checkpoint does, so `convert`
+# installs the default build, and the README installs the one for your GPU instead.
 dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6", "wgpu>=0.32"]
 
 [project.urls]
@@ -39,7 +40,8 @@ Issues = "https://github.com/gustavecortal/ganlive/issues"
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
 record = ["av>=13"]
-all = ["ganlive[audio,record]"]
+convert = ["torch>=2.4"]
+all = ["ganlive[audio,record,convert]"]
 dev = ["ganlive[all]", "pytest>=8", "ruff>=0.6", "pillow>=10"]
 
 [project.scripts]
