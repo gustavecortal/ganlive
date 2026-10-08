@@ -15,6 +15,8 @@ import { SlerpWalk } from "./walk.mjs";
 const LONGEST_STEP_S = 0.25;
 /** Frames on the card at most, so a GPU slower than the screen never builds a queue. */
 const DEPTH = 2;
+/** Frames of a take drawn in one animation frame at most, catching up after a late one. */
+const CATCH_UP = 4;
 /** The holder the page's sliders hold dials under, above knobs and pads. */
 export const HAND = "console";
 export const HAND_PRIORITY = 10;
@@ -101,7 +103,7 @@ export class Player {
     this.lag = 0;
     this.last = null;
     this.shown = null;
-    /** Whatever else wants frames drawn (a take): `{wants(now), draw(encoder, entry, now), drawn(now)}`. */
+    /** A take, while recording: `{fps, next(now), ready(), draw(encoder, entry, at), drawn()}`. */
     this.tap = null;
     this.redraw = true;
     this.stats = { frames: 0, since: performance.now(), fps: 0, ms: 0 };
@@ -178,11 +180,28 @@ export class Player {
     if (Object.keys(found).length) this.runner.hold(HAND, { ...this.runner.heldBy(HAND), ...found }, HAND_PRIORITY);
   }
 
-  /** One frame at `now` (ms, a requestAnimationFrame time): the drums, the dials, the beat,
-   *  then the picture, unless the card is behind or nothing changed. Returns whether it drew. */
+  /** The animation frame at `now` (ms, a requestAnimationFrame time). Returns whether it drew.
+   *
+   *  While recording, the take sets the time: one picture for each frame of the take, made at
+   *  that frame's own time (`take.next`), so the video has every frame, evenly spaced, whatever
+   *  the screen's refresh rate. A frame the card or the encoder could not take yet waits for
+   *  the next animation frame rather than being lost, and a late one is caught up. */
   frame(now) {
     const m = this.current;
     if (!m) return false;
+    if (!this.tap) return this.step(m, now, false);
+    let drew = false;
+    for (let n = 0; n < CATCH_UP; n++) {
+      const at = this.tap.next(now);
+      if (at === null || !this.tap.ready() || this.pending >= DEPTH + Math.ceil((this.lag * this.tap.fps) / 1000)) break;
+      drew = this.step(m, at, true);
+    }
+    return drew;
+  }
+
+  /** The drums, the dials and the beat at `now`, then the picture: unless the card is behind
+   *  or nothing changed, or always for a take's frame (`taped`). */
+  step(m, now, taped) {
     const dt = this.last === null ? 0 : (now - this.last) / 1000;
     this.last = now;
     const features = this.features;
@@ -191,13 +210,12 @@ export class Player {
     this.runner.apply(features.since, features.features(), m.settings);
     this.clock.advance(Math.min(dt, LONGEST_STEP_S));
     const latent = this.walk.latent(this.clock.beats);
-    // While recording, draw only the frames the take keeps: the card does no work the take
-    // would throw away, and the take gets every slot it can.
-    if (this.tap && !this.tap.wants(now)) return false;
-    // The card is behind: skip rather than queue, which would hold up the page around it.
-    if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(dt * 1000, 4))) return false;
-    const same = !this.redraw && !m.settings.changed && this.shown && this.shown.every((v, i) => v === latent[i]);
-    if (same && !this.tap) return false;
+    if (!taped) {
+      // The card is behind: skip rather than queue, which would hold up the page around it.
+      if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(dt * 1000, 4))) return false;
+      const same = !this.redraw && !m.settings.changed && this.shown && this.shown.every((v, i) => v === latent[i]);
+      if (same) return false;
+    }
     this.redraw = false;
     this.shown = latent;
     m.model.setLatent(latent);
@@ -208,9 +226,9 @@ export class Player {
     const encoder = this.device.createCommandEncoder();
     m.model.encode(encoder);
     m.onto.draw(encoder, this.context.getCurrentTexture());
-    this.tap?.draw(encoder, m, now);
+    if (taped) this.tap.draw(encoder, m, now);
     this.device.queue.submit([encoder.finish()]);
-    this.tap?.drawn(now);
+    if (taped) this.tap.drawn();
     this.pending++;
     const t = performance.now();
     this.device.queue.onSubmittedWorkDone().then(() => {
