@@ -199,9 +199,6 @@ class EngineStage:
         self.flush()
         self.device.queue.read_buffer(self._buffer("sync", 16), 0, 4)
 
-    def release(self) -> None:
-        """Nothing to wait for: a conversion is queued before the next frame's generation."""
-
     def handoff(self) -> _Handoff:
         return _Handoff(self)
 

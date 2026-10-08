@@ -28,7 +28,7 @@ from ganlive.strip import (
     WIDTH,
     DialPanel,
 )
-from ganlive.tools import add_device
+from ganlive.tools import add_backend
 
 MODES = (MODE_DIALS, MODE_ROUTING, MODE_MODELS)
 
@@ -70,10 +70,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", nargs="+", type=Path,
-                    help="a checkpoint, a run directory, or an exported graph. Several loads a "
+                    help="a checkpoint, a run directory, or an engine model. Several loads a "
                          "bank, and the strip is shot on each")
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/strip"))
-    add_device(ap)
+    add_backend(ap)
     ap.add_argument("--heights", type=int, nargs="*", default=None,
                     help="window heights. The default is the layout's own floor and 1200: the "
                          "floor is where a block runs off the bottom, and nothing enforces it "
@@ -88,9 +88,10 @@ def main(argv=None) -> int:
     from pygame._sdl2.video import Renderer, Window
 
     from ganlive import bank
+    from ganlive.families import LoadOptions
 
     args.out.mkdir(parents=True, exist_ok=True)
-    r = bank.build(args.checkpoint, args.device)
+    r = bank.build(args.checkpoint, options=LoadOptions(backend=args.backend))
     runner = PresetRunner(DEFAULT, channel_map(args.layout) or INDEX, 60.0)
     shelf = bank.Shelf(r, Path("runs"))
 

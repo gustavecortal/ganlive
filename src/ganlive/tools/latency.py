@@ -26,7 +26,7 @@ from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
 from ganlive.strip import DialPanel
 from ganlive.timing import drift_ms, stat_ms
-from ganlive.tools import parser
+from ganlive.tools import add_backend, parser
 from ganlive.window import Display, parse_height, screen_size
 
 
@@ -139,9 +139,7 @@ def main(argv=None) -> int:
                          "loads them, and every one of them is timed: a bank holds "
                          "them all resident at once, and each has its own frame time. The "
                          "full loops run on the first. Required.")
-    ap.add_argument("--backend", default=None, metavar="vulkan|d3d12|metal",
-                    help="the wgpu backend to play on. Default: the fastest this machine "
-                         "measured for the model, remembered after its first load")
+    add_backend(ap)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--height", type=parse_height, default=0,

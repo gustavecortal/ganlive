@@ -7,13 +7,11 @@ checkpoint is opened with PyTorch only while it has no conversion beside it.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
-from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, is_engine
-from ganlive.engine.load import open_model
+from ganlive.checkpoints import is_engine
+from ganlive.engine.load import conversion_of, needs_torch, open_model, read_manifest
 from ganlive.engine.player import EngineConfig
 from ganlive.levels import RANDOM_FLOOR
 
@@ -49,51 +47,38 @@ class Prepared:
     push: object = None
 
 
-def _manifest(folder: Path) -> dict | None:
-    """The manifest of the engine model in `folder`, or None if there is none."""
-    try:
-        return json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def _beside(path) -> dict | None:
-    """The manifest of a checkpoint's conversion beside it, if it has one."""
-    return _manifest(Path(path).with_suffix(ENGINE_SUFFIX))
-
-
 def is_stylegan2(path) -> bool:
     """Whether this is a converted StyleGAN2. It shares the `.pt` suffix with FastGAN, so the
     file's own tag says, or its conversion's manifest."""
-    known = _beside(path)
+    known = conversion_of(path)
     if known is not None:
         return known.get("family") == "stylegan2"
-    from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
-
+    with needs_torch():
+        from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
     return S2.is_stylegan2(path)
 
 
 def engine_config_of(path) -> EngineConfig:
-    return EngineConfig.of(_manifest(Path(path)) or {})
+    return EngineConfig.of(read_manifest(path))
 
 
 def _checkpoint_config(read: Callable) -> Callable:
     """A checkpoint's config off its conversion when it has one, else off the file."""
     def config_of(path):
-        known = _beside(path)
+        known = conversion_of(path)
         return EngineConfig.of(known) if known is not None else read(path)
     return config_of
 
 
 def _fastgan_config(path):
-    from ganlive.models import fastgan  # PyTorch: an unconverted checkpoint
-
+    with needs_torch():
+        from ganlive.models import fastgan  # PyTorch: an unconverted checkpoint
     return fastgan.config_of(path)
 
 
 def _stylegan2_config(path):
-    from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
-
+    with needs_torch():
+        from ganlive.models import stylegan2 as S2  # PyTorch: an unconverted checkpoint
     return S2.config_of(path)
 
 

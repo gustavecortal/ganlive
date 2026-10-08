@@ -4,7 +4,10 @@ them."""
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
+import subprocess
+import sys
 import types
 
 import numpy as np
@@ -51,6 +54,24 @@ class _Stage:
 
     def resize(self, height: int, width: int) -> None:
         self.height, self.width = height, width
+
+
+def test_a_converted_checkpoint_is_known_without_pytorch(tmp_path):
+    """With its conversion beside it, a checkpoint's family and size come off the conversion's
+    manifest, so a machine without PyTorch plays it and lists it on the shelf."""
+    checkpoint = tmp_path / "faces.pt"
+    checkpoint.write_bytes(b"a checkpoint this test never opens")
+    st = checkpoint.stat()
+    beside = tmp_path / "faces.engine"
+    beside.mkdir()
+    (beside / "manifest.json").write_text(json.dumps({
+        "family": "stylegan2", "nz": 512, "height": 256, "width": 256,
+        "stamp": {"size": st.st_size, "mtime_ns": st.st_mtime_ns}}))
+    script = ("import sys; from ganlive.families import config_of, family_of; "
+              f"p = {str(checkpoint)!r}; c = config_of(p); "
+              "print(family_of(p).name, c.nz, c.ladder.width, 'torch' in sys.modules)")
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert done.stdout.split() == ["stylegan2", "512", "256", "False"], done.stdout + done.stderr
 
 
 def test_a_published_model_named_after_its_folder_is_called_by_that_name_alone():

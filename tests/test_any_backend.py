@@ -77,7 +77,9 @@ def test_an_editors_python_is_not_taken_for_a_job_on_the_card():
         return out
 
     lint = ["python", "/x/.vscode/extensions/ms-python.flake8/bundled/tool/lsp_server.py"]
-    assert not process._holds_torch(a_process(lint))
-    assert process._holds_torch(a_process(["python", "-m", "ganlive", "play"]))
-    assert process._holds_torch(a_process(lint, maps=["/venv/lib/torch/lib/libtorch_cpu.so"]))
-    assert not process._holds_torch(a_process(["python", "train.py"], maps=["/usr/lib/libc.so"]))
+    assert not process._holds_card(a_process(lint))
+    assert process._holds_card(a_process(["python", "-m", "ganlive", "play"]))
+    assert process._holds_card(a_process(lint, maps=["/venv/lib/torch/lib/libtorch_cpu.so"]))
+    assert not process._holds_card(a_process(["python", "train.py"], maps=["/usr/lib/libc.so"]))
+    assert process._holds_card(a_process(lint, maps=["C:/venv/Lib/site-packages/wgpu/resources/wgpu_native-release.dll"])), (
+        "a player draws through wgpu, without torch")

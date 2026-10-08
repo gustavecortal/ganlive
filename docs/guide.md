@@ -192,8 +192,8 @@ Reported measurements on a $350 Intel Arc A770, through Vulkan, before `ganlive 
 | FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 10.0 ms | 100 |
 | FastGAN amber | 1536×1024 | 5.5 ms | 183 |
 
-These measure generation and frame preparation. `ganlive tune` took 5 to 10% off each
-model's frame on this card.
+These measure generation and frame preparation. On this card, `ganlive tune` brought the
+frame it times from 4.94 to 4.71 ms for amber and from 33.3 to 30.0 ms for FFHQ.
 
 Results depend on your model, hardware, and runtime.
 
@@ -206,9 +206,10 @@ ganlive measures which of these draws it right and fastest on your machine and r
 the choice. `--backend` picks one instead, and `ganlive tune` finds how each layer runs fastest
 on your GPU.
 
-PyTorch is needed only to convert a checkpoint, which happens once, at its first load.
-Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/), or the
-`convert` extra for the default build.
+PyTorch is needed only to convert a checkpoint, which happens once, at its first load, and
+for `import-stylegan2` and `dials`. Install
+[PyTorch for your hardware](https://pytorch.org/get-started/locally/), or the `convert` extra
+for the default build.
 
 Add optional features with `uv pip install -e ".[EXTRA]"`:
 

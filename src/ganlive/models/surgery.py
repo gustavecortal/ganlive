@@ -2,7 +2,7 @@
 
 A rule is a function of the next three modules. It returns `(replacements, consumed, tag)`
 -- what to put in their place, how many it used up, and a name for the count -- or `None` to
-leave the first one alone. `fold.fold_norms` and `onnx_rewrite.split_gated_convs` are the
+leave the first one alone. `fold.fold_norms` and `rewrite.split_gated_convs` are the
 two rules.
 """
 

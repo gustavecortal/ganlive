@@ -25,6 +25,13 @@ def parser(name: str, doc: str) -> argparse.ArgumentParser:
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
 
 
+def add_backend(ap):
+    """The `--backend` option every tool that plays a model takes."""
+    return ap.add_argument("--backend", default=None, choices=("vulkan", "d3d12", "metal"),
+                           help="the wgpu backend to play on. Default: the fastest this machine "
+                                "measured for the model, remembered after its first load")
+
+
 def add_device(ap, help: str = "default: whichever accelerator is there, else the CPU", **kw):
     """The `--device` option every tool that runs a generator takes. `kw` overrides the
     default and metavar for a tool whose devices are not torch's."""

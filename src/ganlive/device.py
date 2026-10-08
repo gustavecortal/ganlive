@@ -47,10 +47,6 @@ def playback_dtype(device: str | torch.device) -> torch.dtype:
     return torch.float32 if str(device).split(":")[0] == "cpu" else torch.float16
 
 
-_ALLOCATOR = ("memory_allocated", "memory_reserved", "max_memory_allocated",
-              "max_memory_reserved")
-
-
 def synchronize(name: str | None = None) -> None:
     """Wait for the device to finish. Pass the device a copy was issued to; see `_mod`."""
     m = _mod(name)

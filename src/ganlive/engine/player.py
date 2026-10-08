@@ -83,7 +83,6 @@ class EngineGenerator:
     `model.output` on the GPU until the next call, and `screen.EngineStage` reads it there."""
 
     #: The walk hands over its host view, which is what the engine uploads.
-    latent_on_host = True
 
     def __init__(self, model: Model) -> None:
         self.model = model

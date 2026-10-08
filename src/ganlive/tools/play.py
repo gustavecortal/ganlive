@@ -45,7 +45,7 @@ from ganlive.strip import PRIORITY as HAND_PRIORITY
 from ganlive.strip import SOURCE as HAND
 from ganlive.strip import DialPanel
 from ganlive.timing import stat_ms
-from ganlive.tools import parser
+from ganlive.tools import add_backend, parser
 from ganlive.window import Display, parse_height, screen_size
 
 OUT = Path("runs/ganlive")
@@ -168,7 +168,7 @@ def _parser():
 
     what = ap.add_argument_group("what to play")
     what.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
-                      help="a checkpoint, a run directory for its newest, or an exported .onnx. "
+                      help="a checkpoint, a run directory for its newest, or an engine model. "
                            "Repeatable: `[` and `]` switch between them on the next frame, and "
                            "they may differ in latent width, native size and aspect")
     what.add_argument("--runs", type=Path, default=Path("runs"),
@@ -179,9 +179,7 @@ def _parser():
                       help=f"which preset to start on. Saved with `s` into {SETTINGS}")
 
     how = ap.add_argument_group("how it runs")
-    how.add_argument("--backend", default=None, metavar="vulkan|d3d12|metal",
-                     help="the wgpu backend to play on. Default: the fastest this machine "
-                          "measured for the model, remembered after its first load")
+    add_backend(how)
     how.add_argument("--height", type=parse_height, default=None,
                      metavar="auto|native|PIXELS",
                      help="what the window is sent -- the generator always runs at its native "
@@ -817,10 +815,6 @@ def main(argv=None) -> int:
             serve_models(shelf, requests, r, rec is not None, switch_model)
 
             t0 = time.perf_counter()
-            # Before anything writes this frame's inputs: a captured generator reads its
-            # latent and settings from host buffers, and writes every frame into one
-            # buffer the last frame's conversions may still be reading.
-            r.stage.release()
             model = r.current
             if ticks is not None:
                 ticks(t0)

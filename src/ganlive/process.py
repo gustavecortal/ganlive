@@ -68,22 +68,25 @@ def prioritise_gpu_feeder() -> None:
 
 #: Words in a command line that mark a process that drives the card, where the platform does
 #: not list a process's loaded libraries (macOS).
-TORCH_WORDS = ("ganlive", "gantrain", "torch")
+CARD_WORDS = ("ganlive", "gantrain", "torch")
+#: Libraries whose presence in a process marks it as driving the card: PyTorch, or wgpu, which
+#: `ganlive play` draws through.
+CARD_LIBRARIES = ("torch", "wgpu_native")
 
 
-def _holds_torch(process) -> bool:
-    """Whether a python process has PyTorch loaded: read off its memory maps where the platform
-    lists them (Linux, Windows), off its command line where it does not (macOS). An editor's
-    linter server is a python process too, and holds no card."""
+def _holds_card(process) -> bool:
+    """Whether a python process drives the card, PyTorch or wgpu loaded: read off its memory
+    maps where the platform lists them (Linux, Windows), off its command line where it does
+    not (macOS). An editor's linter server is a python process too, and holds no card."""
     maps = getattr(process, "memory_maps", None)
     if maps is not None:
-        return any("torch" in (m.path or "").lower() for m in maps())
-    return any(word in " ".join(process.cmdline()).lower() for word in TORCH_WORDS)
+        return any(lib in (m.path or "").lower() for m in maps() for lib in CARD_LIBRARIES)
+    return any(word in " ".join(process.cmdline()).lower() for word in CARD_WORDS)
 
 
 def other_gpu_pythons() -> list[int] | None:
-    """PIDs of python processes with PyTorch loaded that are not this one or one of its
-    ancestors.
+    """PIDs of python processes driving the card (`_holds_card`) that are not this one or one
+    of its ancestors.
 
     `None` when `psutil` is not installed -- which a caller must report rather than read as
     "nothing is running". Even with it this is "none found": another user's processes are
@@ -107,18 +110,9 @@ def other_gpu_pythons() -> list[int] | None:
     holding = []
     for pid in sorted(set(parents) - seen):
         with contextlib.suppress(psutil.Error):
-            if _holds_torch(processes[pid]):
+            if _holds_card(processes[pid]):
                 holding.append(pid)
     return holding
-
-
-def host_ram_free_gb() -> float:
-    """Host RAM available right now, in GB, or `nan` where it cannot be asked."""
-    try:
-        import psutil
-    except ImportError:
-        return float("nan")
-    return round(psutil.virtual_memory().available / 1e9, 2)
 
 
 def refuse_if_gpu_busy(device: str, what: str) -> bool:
