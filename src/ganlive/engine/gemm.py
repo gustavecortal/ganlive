@@ -3,8 +3,8 @@ gathered on the fly) by one or more B [K x N] (weights) sharing A, tiled through
 memory, the sum split into S slices so that even a small map fills the GPU. A second pass,
 the caller's, adds the slices and finishes the layer.
 
-Each workgroup is 8x8 threads; each thread holds `rm` rows by 4 * `rn` columns of every B,
-reading 4 rows of A and 4 columns of a B per workgroup-memory read.
+Each workgroup is 8x8 threads, and each thread holds `rm` rows by 4 * `rn` columns of every
+B, reading 4 rows of A and 4 columns of a B per workgroup-memory read.
 """
 
 from __future__ import annotations

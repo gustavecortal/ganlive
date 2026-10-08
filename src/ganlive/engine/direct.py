@@ -17,7 +17,7 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
             finish: Callable[[dict[str, str]], str], scale: str | None = None,
             helpers: str = "") -> None:
     """Add the conv as `step`. `mats` maps each weight set's name to its offset in P, laid out
-    [cin][3*3][cout]; `entries` are the bindings (name, type, buffer), X being the input and Y
+    [cin][3*3][cout]. `entries` are the bindings (name, type, buffer), X being the input and Y
     the output. `finish` is given each set's sum of channels c..c+3 at pixel `px` and returns
     the WGSL that stores them; `scale`, a vec2f expression of `c2`, scales an input pair."""
     BY, BX, oct = plan["by"], plan["bx"], plan["oct"]

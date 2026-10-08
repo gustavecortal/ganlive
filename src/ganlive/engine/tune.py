@@ -1,7 +1,7 @@
 """Find, on this machine, how each layer of a model runs fastest: for each layer in turn, try
 the plans it can take (`plan_choices`) and keep one when a whole frame gets faster and the
 probe still matches. The plans found are remembered per adapter, beside `fastest`'s choice of
-backend, and every later load uses them (`runner.program_for`)."""
+backend, and every later load uses them (`runner.built`)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from ganlive.engine.runner import (
     Model,
     _choices,
     _device,
-    _names,
+    adapter_name,
     cache_dir,
     model_key,
 )
@@ -57,7 +57,7 @@ def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] 
     def timed(plans: dict) -> float:
         model = Model(device, compile_manifest(manifest, plans, OUTPUT), weights, pipelines=pipelines)
         try:
-            if model.strays() > PROBE_LEVELS:
+            if "probe" in model.program and model.strays() > PROBE_LEVELS:
                 return float("inf")
             return frame_ms(model)
         finally:
@@ -80,7 +80,7 @@ def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] 
     path = choices or cache_dir() / "backends.json"
     saved = _choices(path)
     entry = saved.setdefault(model_key(manifest), {})
-    entry.setdefault("plans", {})[_names([adapter])[0]] = plans
+    entry.setdefault("plans", {})[adapter_name(adapter)] = plans
     entry.pop("measured", None)          # backends compare again, each with its plans
     remember(path, json.dumps(saved, indent=2))
     return plans, best, start

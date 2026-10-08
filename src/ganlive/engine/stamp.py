@@ -38,12 +38,17 @@ def _sources(module: str, seen: set[str]) -> None:
                 _sources(name, seen)
 
 
-@functools.cache
 def made_by() -> str:
-    """The converter's identity: a hash of every ganlive module the converter imports. Read
-    from the files, not from what is loaded, so `ganlive convert` and `ganlive play` agree."""
+    """The converter's identity (`code_hash`)."""
+    return code_hash("ganlive.engine.convert")
+
+
+@functools.cache
+def code_hash(module: str) -> str:
+    """A hash of every ganlive module `module` imports, itself included. Read from the files,
+    not from what is loaded, so that every tool computes the same one."""
     seen: set[str] = set()
-    _sources("ganlive.engine.convert", seen)
+    _sources(module, seen)
     digest = hashlib.sha1()
     for module in sorted(seen):
         path = PACKAGE.parent / Path(*module.split("."))

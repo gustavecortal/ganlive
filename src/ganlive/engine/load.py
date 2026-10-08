@@ -13,7 +13,7 @@ from pathlib import Path
 from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, WEIGHTS, is_engine, slug_for
 from ganlive.engine import stamp
 from ganlive.engine.player import EngineGenerator, PlayedDirections, dials_of
-from ganlive.engine.runner import cache_dir, checked, fastest, program_for
+from ganlive.engine.runner import built, cache_dir, fastest, tuned_plans
 from ganlive.levels import RANDOM_FLOOR
 
 
@@ -53,7 +53,7 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR,
         model, report = fastest(manifest, weights)
         print(f"engine: {report['best']}", flush=True)
     else:
-        model = checked(gpu, program_for(manifest, gpu.adapter), weights, own_device=False)
+        model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter), own_device=False)
     net = EngineGenerator(model)
     print(net.report(), flush=True)
     layout, directions = dials_of(model.program)

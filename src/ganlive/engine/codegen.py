@@ -42,7 +42,7 @@ def wgsl(text: str, **values) -> str:
 
 
 def storage(entries) -> str:
-    """`@binding` declarations for (name, type) pairs in order; `Y` is the one written."""
+    """`@binding` declarations for (name, type) pairs in order, `Y` being the one written."""
     return "\n".join(
         f"@group(0) @binding({i}) var<storage, {'read_write' if name == 'Y' else 'read'}> "
         f"{name}: {kind};" for i, (name, kind) in enumerate(entries))

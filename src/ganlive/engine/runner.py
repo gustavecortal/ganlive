@@ -25,11 +25,12 @@ from ganlive.checkpoints import MANIFEST, WEIGHTS
 from ganlive.engine.codegen import FORMAT
 from ganlive.engine.compile import compile_manifest
 from ganlive.engine.probe import PROBE_LEVELS, probe_error
+from ganlive.engine.stamp import code_hash
 from ganlive.files import remember
 
 USAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
 #: Lets a shader write straight into a buffer the host maps (`EngineStage.nv12_bytes`). wgpu
-#: warns that every buffer might then live in host memory; only those created mappable do.
+#: warns that every buffer might then live in host memory, but only those created mappable do.
 MAPPABLE = "mappable-primary-buffers"
 logging.getLogger("wgpu").addFilter(lambda record: "MAPPABLE_PRIMARY_BUFFERS" not in record.getMessage())
 
@@ -48,8 +49,9 @@ class Model:
     """One loaded program: its buffers, compiled pipelines and the steps of a frame.
 
     `pipelines` (shader code -> pipeline) shares compiled pipelines between models on one
-    device; a build still compiling at `deadline` (a `time.perf_counter()` value) stops with
-    `BuildTimeout`."""
+    device. A build still compiling at `deadline` (a `time.perf_counter()` value) stops with
+    `BuildTimeout` before its next shader: one shader's compile is not interrupted. A model
+    that fails to build frees what it made."""
 
     def __init__(self, device, program: dict, weights: bytes, *, pipelines: dict | None = None,
                  deadline: float | None = None) -> None:
@@ -60,8 +62,16 @@ class Model:
                              f"{program['buffers']['P']['size']}: they come from different conversions")
         self.device, self.program = device, program
         self.height, self.width = program["height"], program["width"]
-        limit = min(device.limits["max-storage-buffer-binding-size"], device.limits["max-buffer-size"])
         self.buffers: dict[str, wgpu.GPUBuffer] = {}
+        try:
+            self._build(weights, pipelines, deadline)
+        except BaseException:
+            self.destroy()
+            raise
+
+    def _build(self, weights: bytes, pipelines: dict | None, deadline: float | None) -> None:
+        device, program = self.device, self.program
+        limit = min(device.limits["max-storage-buffer-binding-size"], device.limits["max-buffer-size"])
         for name, spec in program["buffers"].items():
             if spec["size"] > limit:
                 raise ValueError(f"{name}: a {spec['size'] / 2**20:.0f} MiB buffer is over this "
@@ -81,7 +91,6 @@ class Model:
             code = program["shaders"][spec["shader"]]
             if code not in pipelines:
                 if deadline is not None and time.perf_counter() > deadline:
-                    self.destroy()
                     raise BuildTimeout(f"{device.adapter.info['backend_type']} compiles too slowly")
                 pipelines[code] = device.create_compute_pipeline(layout="auto", compute={
                     "module": device.create_shader_module(code=code), "entry_point": "main"})
@@ -104,7 +113,7 @@ class Model:
         manifest, weights = read_folder(folder)
         if device is None:
             return fastest(manifest, weights, **options)[0]
-        return checked(device, program_for(manifest, device.adapter), weights, own_device=False)
+        return built(device, manifest, weights, tuned_plans(manifest, device.adapter), own_device=False)
 
     def destroy(self) -> None:
         """Free this model's buffers. Its device may be shared, so it stays."""
@@ -183,15 +192,41 @@ OUTPUT = "bgra8"
 
 
 def model_key(manifest: dict) -> str:
-    """What `choices` keeps a model's measurements under: its default program's shaders, so
-    that a change to the model or to the shader generator measures again."""
-    return hashlib.sha1("\n".join(compile_manifest(manifest)["shaders"]).encode()).hexdigest()[:12]
+    """What `choices` keeps a model's measurements under: the manifest and the shader
+    generator's code, so that a change to either measures and tunes again."""
+    digest = hashlib.sha1(json.dumps(manifest, sort_keys=True).encode())
+    digest.update(code_hash("ganlive.engine.compile").encode())
+    return digest.hexdigest()[:12]
 
 
-def program_for(manifest: dict, adapter, choices: Path | None = None) -> dict:
-    """`manifest` compiled with the plans tuned for `adapter`, if it has been (`ganlive tune`)."""
+def adapter_name(adapter) -> str:
+    """An adapter as its backend, GPU and driver, the name tuned plans are kept under: two
+    identical cards share them."""
+    return _names([adapter])[0]
+
+
+def tuned_plans(manifest: dict, adapter, choices: Path | None = None) -> dict | None:
+    """The plans `ganlive tune` found for `manifest` on `adapter`, if it did."""
     saved = _choices(choices or cache_dir() / "backends.json").get(model_key(manifest), {})
-    return compile_manifest(manifest, saved.get("plans", {}).get(_names([adapter])[0]), OUTPUT)
+    return saved.get("plans", {}).get(adapter_name(adapter))
+
+
+def built(device, manifest: dict, weights: bytes, plans: dict | None = None, *, own_device: bool,
+          deadline: float | None = None) -> Model:
+    """`manifest` built on `device` and checked against its probe (`checked`): with `plans`,
+    or with the defaults if those no longer compile or draw right."""
+    if plans:
+        try:
+            return checked(device, compile_manifest(manifest, plans, OUTPUT), weights,
+                           own_device=False, deadline=deadline)
+        except BuildTimeout:
+            if own_device:
+                device.destroy()
+            raise
+        except (ValueError, RuntimeError, wgpu.GPUError):
+            pass                            # plans from an older generator: the defaults
+    return checked(device, compile_manifest(manifest, None, OUTPUT), weights,
+                   own_device=own_device, deadline=deadline)
 
 
 def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frames: int = 20,
@@ -213,32 +248,40 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
     known = saved.get(key, {})
     plans = known.get("plans", {})
 
-    def build(name, adapter, deadline=None):
-        return _checked(adapter, compile_manifest(manifest, plans.get(name), OUTPUT), weights, deadline)
+    def build(adapter, deadline=None):
+        return built(_device(adapter), manifest, weights, plans.get(adapter_name(adapter)),
+                     own_device=True, deadline=deadline)
 
     if backend or len(adapters) == 1:
-        return build(names[0], adapters[0]), {"best": names[0]}
+        return build(adapters[0]), {"best": names[0]}
     if sorted(known.get("measured", ())) == sorted(names) and known.get("best") in names:
         try:
-            return build(known["best"], adapters[names.index(known["best"])]), known
+            return build(adapters[names.index(known["best"])]), known
         except (RuntimeError, ValueError, wgpu.GPUError):
             pass                            # the remembered backend fails today: measure again
 
-    measured, built, slow = {}, {}, set()
-    for name, adapter in zip(names, adapters, strict=True):
+    measured, made, slow = {}, {}, []
+    for i, (name, adapter) in enumerate(zip(names, adapters, strict=True)):
         try:
-            built[name] = build(name, adapter, time.perf_counter() + budget if built else None)
+            made[name] = build(adapter, time.perf_counter() + budget if i else None)
         except BuildTimeout:
             measured[name] = {"error": f"builds in over {budget:.0f} s"}
-            slow.add(name)
+            slow.append((name, adapter))
+        except (RuntimeError, ValueError, wgpu.GPUError) as exc:
+            measured[name] = {"error": str(exc)[:200]}
+    if not made and slow:                   # nothing else draws it: wait for a slow one
+        name, adapter = slow.pop(0)
+        try:
+            made[name] = build(adapter)
+            del measured[name]
         except (RuntimeError, ValueError, wgpu.GPUError) as exc:
             measured[name] = {"error": str(exc)[:200]}
     # Rounds alternate between backends and each keeps its best, so a moment when something
     # else holds the GPU cannot decide the choice. A backend that fails mid-way drops out.
-    best_ms = dict.fromkeys(built, math.inf)
+    best_ms = dict.fromkeys(made, math.inf)
     for _ in range(3):
         for name in list(best_ms):
-            model = built[name]
+            model = made[name]
             try:
                 model.frame()
                 model.wait()
@@ -248,24 +291,24 @@ def fastest(manifest: dict, weights: bytes, *, backend: str | None = None, frame
                 model.wait()
             except (RuntimeError, wgpu.GPUError) as exc:
                 measured[name] = {"error": str(exc)[:200]}
-                del built[name], best_ms[name]
+                del made[name], best_ms[name]
                 continue
             best_ms[name] = min(best_ms[name], (time.perf_counter() - started) / frames * 1000)
-    if not built:
+    if not made:
         raise RuntimeError(f"no backend draws this model: {measured}")
     measured.update({n: {"ms": round(ms, 2)} for n, ms in best_ms.items()})
     best = min(best_ms, key=best_ms.get)
-    for name, model in built.items():
+    for name, model in made.items():
         if name != best:                    # each was built on a device of its own
             model.destroy()
             model.device.destroy()
     report = {"best": best, "measured": measured}
-    # A failure may be passing (memory held elsewhere), so only a clean measurement is kept;
-    # a slow compiler stays slow, and is not waited for again.
+    # A failure may be passing (memory held elsewhere), so only a clean measurement is kept.
+    # A slow compiler stays slow, and is not waited for again.
     if len(best_ms) + len(slow) == len(names):
         saved[key] = {**known, **report}
         remember(choices, json.dumps(saved, indent=2))
-    return built[best], report
+    return made[best], report
 
 
 def checked(device, program, weights, *, own_device: bool, deadline: float | None = None,
@@ -274,7 +317,7 @@ def checked(device, program, weights, *, own_device: bool, deadline: float | Non
     model owns goes with it, and a shared one stays."""
     try:
         model = Model(device, program, weights, deadline=deadline, pipelines=pipelines)
-    except BuildTimeout:
+    except BaseException:
         if own_device:
             device.destroy()
         raise
@@ -288,13 +331,9 @@ def checked(device, program, weights, *, own_device: bool, deadline: float | Non
     return model
 
 
-def _checked(adapter, program, weights, deadline=None) -> Model:
-    return checked(_device(adapter), program, weights, own_device=True, deadline=deadline)
-
-
 def _gpus(backend: str | None) -> list:
     """The GPU adapters worth measuring: not the CPU one, nor OpenGL, whose compute is the
-    least complete; any adapter if nothing else is there."""
+    least complete, or any adapter if nothing else is there."""
     every = wgpu.gpu.enumerate_adapters_sync()
     gpus = [a for a in every if a.info["adapter_type"] != "CPU"
             and not a.info["backend_type"].startswith("OpenGL")]

@@ -209,6 +209,9 @@ def _conv(b: Builder, op: dict, src: str, dst: str) -> None:
     side = 2 if h % 2 == 0 else 1
     plan = {"by": side, "bx": side, "oct": 8 if cout % 8 == 0 else 4,
             **{k: v for k, v in b.overrides.get(op["name"], {}).items() if k != "gemm"}}
+    if (not set(plan) <= {"by", "bx", "oct", "f32", "slm"} or plan["oct"] % 4 or cout % plan["oct"]
+            or h % plan["by"] or w % plan["bx"]):
+        raise ValueError(f"{op['name']}: {plan} does not fit {cout} channels at {h}x{w}")
     entries = [("P", "array<u32>", "P"), ("X", "array<u32>", src), ("Y", "array<u32>", dst),
                ("S", "array<f32>", "S"), ("D", "array<f32>", "D"), ("K", "array<f32>", "K")]
 
@@ -280,8 +283,8 @@ def _as_product(b: Builder, op: dict) -> bool:
 
 
 def plan_choices(manifest: dict) -> dict[str, list[dict]]:
-    """Each step's plans worth trying on a new machine: for a matrix product (by its name), rows
-    and columns a thread and splits; for a direct conv (by its layer's name), the tiles that
+    """Each step's plans worth trying on a new machine. A matrix product (by its name) tries
+    rows and columns a thread and splits, a direct conv (by its layer's name) the tiles that
     do not spill registers, with f32 weights and workgroup memory or without."""
     b = Builder(manifest, {})
     out = {}
@@ -310,7 +313,9 @@ def _scratch(b: Builder, op: dict) -> int:
         products = [_plain(op)]
     else:
         return 16
-    return max(_mm_plan(b, op, g)["S"] * g["M"] * op["cout"] * 4 for g in products)
+    # A product of one slice finishes its layer itself and keeps no partial sums.
+    return max([S * g["M"] * op["cout"] * 4 for g in products
+                if (S := _mm_plan(b, op, g)["S"]) > 1], default=16)
 
 
 def _mm(b: Builder, op: dict, src: str, dst: str, g: dict) -> None:

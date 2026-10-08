@@ -4,7 +4,7 @@ the dispatches of one frame. Every host runs the same program (`runner.py` throu
 
 A model is a manifest (ops in run order, tensor shapes, offsets into one fp16 weight blob)
 and the blob. Activations are fp16 channel pairs packed in u32 (channel 2i in the low half),
-so no shader needs the shader-f16 feature; every sum accumulates in f32.
+so no shader needs the shader-f16 feature, and every sum accumulates in f32.
 
 FastGAN ops, one shader each, generated for their exact shapes so that loops unroll:
   init  z -> dense -> BatchNorm -> GLU, the 4x6 base map
@@ -44,7 +44,7 @@ def compile_program(manifest: dict, plans: dict | None = None, output: str = "rg
     plans = {op["out"]: _plan(b, op) for op in convs}
     scratch = 0
     for op in convs:
-        if plans[op["out"]].get("gemm"):        # one slice: value and gate for every pixel
+        if plans[op["out"]].get("S", 1) > 1:    # one slice: value and gate for every pixel
             cout, ho, wo = b.shape(op["out"])
             scratch = max(scratch, plans[op["out"]]["S"] * ho * wo * 2 * cout * 4)
     b.buffer("scratch", scratch)
@@ -79,7 +79,7 @@ def _plan(b: Builder, op: dict) -> dict:
     has at most GEMM_MAX pixels runs as a matrix product: {"gemm": True, "rm", "rn", "S"};
     a larger one directly, each thread a tile of pixels: {"by", "bx", "oct"}, and for a plain
     conv optionally "f32" (weights made f32 at load) and "slm" (inputs through workgroup
-    memory). The defaults were measured on an Arc A770; `plans` overrides them by layer."""
+    memory). The defaults were measured on an Arc A770, and `plans` overrides them by layer."""
     cout, ho, wo = b.shape(op["out"])
     cin = b.shape(op["in"])[0]
     up = op["up"]
@@ -101,8 +101,9 @@ def _plan(b: Builder, op: dict) -> dict:
         return {"gemm": True, "rm": rm, "rn": rn, "S": S}
     plan = dict(forced or {"by": 1, "bx": 2, "oct": 4} if up else forced or {"by": 2, "bx": 2, "oct": 4})
     known = {"by", "bx", "oct"} | (set() if up else {"f32", "slm"})
+    rows_in, cols_in = (ho // 2, wo // 2) if up else (ho, wo)   # the pixels a thread tiles
     if (not set(plan) <= known or plan["oct"] % 4 or cout % plan["oct"]
-            or (not up and (ho % plan["by"] or wo % plan["bx"]))):
+            or rows_in % plan["by"] or cols_in % plan["bx"]):
         raise ValueError(f"{op['out']}: {plan} does not fit {cout} channels at {ho}x{wo}")
     return plan
 
@@ -215,8 +216,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 ${HELPERS}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  // Thread = output channel, so neighbouring threads read neighbouring weights; workgroup row
-  // y sums one 256-term part of the ${n}, which fc2 adds up.
+  // Thread = output channel, so neighbouring threads read neighbouring weights. Workgroup
+  // row y sums one 256-term part of the ${n}, which the SiLU step adds up.
   if (id.x >= ${ch}u) { return; }
   var s = 0.0;
   let end = min(${n}u, (id.y + 1u) * 256u);
