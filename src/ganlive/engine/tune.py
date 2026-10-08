@@ -43,15 +43,16 @@ def quick(manifest: dict, weights: bytes, device, *, log: Callable[[str], None] 
     options = {layer: [o for o in found if o.get("gemm") or o in QUICK_DIRECT or len(o) == 3]
                for layer, found in plan_choices(manifest).items() if layer in layers}
     return tune(manifest, weights, device.adapter, log=log, choices=choices, device=device,
-                options=options, frames=8)
+                options=options, frames=8, compare=False)
 
 
 def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] = print,
          choices: Path | None = None, device=None, options: dict | None = None,
-         frames: int = 15) -> tuple[dict, float, float]:
+         frames: int = 15, compare: bool = True) -> tuple[dict, float, float]:
     """The plans found for `adapter`, the frame time they give and the defaults' (ms), also
     remembered in `choices`: over `options` (layer -> plans), every layer's by default, on
-    `device` or a device of its own, timing `frames` frames a round."""
+    `device` or a device of its own, timing `frames` frames a round. With `compare`, the
+    backends are measured again at the next load (`remember_plans`)."""
     own = device is None
     device = _device(adapter) if own else device
     pipelines: dict = {}                 # each trial compiles only the shaders it changes
@@ -87,5 +88,5 @@ def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] 
                 log(f"  {layer} {json.dumps(option)}: {ms:.2f} ms")
     if own:
         device.destroy()
-    remember_plans(manifest, adapter, plans, choices)
+    remember_plans(manifest, adapter, plans, choices, compare)
     return plans, best, start

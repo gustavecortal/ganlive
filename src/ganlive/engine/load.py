@@ -92,7 +92,7 @@ def _tuned(model, manifest: dict, weights: bytes, path):
     time this model plays there. Remembered, so it happens once."""
     device = model.device
     started = time.perf_counter()
-    print("  plans: tuning this model's heaviest layers for this GPU, once", flush=True)
+    print("  plans: a first load on this GPU, so its heaviest layers are tuned", flush=True)
     plans, best, start = quick(manifest, weights, device, log=lambda _line: None)
     print(f"  plans: {start:.2f} -> {best:.2f} ms a frame in {time.perf_counter() - started:.0f} s. "
           f"`ganlive tune {path}` searches every layer", flush=True)
@@ -103,10 +103,11 @@ def _tuned(model, manifest: dict, weights: bytes, path):
 
 
 def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
-               backend: str | None = None) -> tuple[EngineGenerator, object, PlayedDirections | None]:
+               backend: str | None = None,
+               tune: bool = True) -> tuple[EngineGenerator, object, PlayedDirections | None]:
     """The model at `path` ready to play, with its dial layout and directions: on the wgpu
     device `gpu`, or else on `backend` or this machine's fastest backend for it, with the plans
-    tuned for that device (`ganlive tune`)."""
+    tuned for that device (`ganlive tune`), or tuned now if it has none and `tune` allows."""
     if is_engine(path):
         manifest, weights = read_folder(path)
     else:
@@ -119,8 +120,8 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
         model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))
     # A FastGAN on a GPU: a software adapter gains nothing from it, and StyleGAN2 has `tune`.
     adapter = model.device.adapter
-    if (manifest.get("family", "fastgan") == "fastgan" and adapter.info["adapter_type"] != "CPU"
-            and tuned_plans(manifest, adapter) is None):
+    if (tune and manifest.get("family", "fastgan") == "fastgan"
+            and adapter.info["adapter_type"] != "CPU" and tuned_plans(manifest, adapter) is None):
         model = _tuned(model, manifest, weights, path)
     net = EngineGenerator(model)
     print(net.report(), flush=True)

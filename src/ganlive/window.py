@@ -10,6 +10,7 @@ import ctypes
 import os
 import sys
 import threading
+import time
 import traceback
 
 from ganlive.curves import clamp01
@@ -85,6 +86,11 @@ def window_size(w: int, h: int, screen_w: int, screen_h: int, overlay=None) -> t
             min(screen_h, max(240, round(h * s), floor)))
 
 
+#: The most often the strip is composed, and the longest the window thread goes without taking
+#: the window's messages, in seconds.
+STRIP_S = 1 / 60
+TEND_S = 0.02
+
 #: Whether the window gets a thread of its own. Not on macOS, where a window and its events
 #: belong to the main thread; there each `publish` draws on the caller's thread instead.
 THREADED = sys.platform != "darwin"
@@ -134,12 +140,14 @@ class Display:
         #: `(pixels, scale, picture, strip)` as its thread last laid it out.
         self._strip = None
         self._areas = None
+        self._composed = 0.0
+        self._sent = None
         if not threaded:
             try:
                 self._open(title)
             except Exception as e:  # noqa: BLE001  no display, no SDL, no pygame
                 self._destroy()
-                raise RuntimeError(f"display window failed to open: {type(e).__name__}: {e}; "
+                raise RuntimeError(f"display window failed to open ({type(e).__name__}: {e}). "
                                f"--headless plays without one") from e
             return
         thread = threading.Thread(target=self._run, args=(title,), daemon=True)
@@ -147,7 +155,7 @@ class Display:
         self._ready.wait(timeout=20)
         if self._error:
             thread.join(timeout=5)
-            raise RuntimeError(f"display window failed to open: {self._error}; --headless "
+            raise RuntimeError(f"display window failed to open ({self._error}). --headless "
                                f"plays without one")
 
     def publish(self, frame) -> None:
@@ -211,11 +219,13 @@ class Display:
 
     def _serve(self) -> None:
         """The window thread: after each frame is presented, paint the strip for the next and
-        take the events, until `close`."""
+        take the events, until `close`. It takes the window's messages at least every
+        `TEND_S` even with no frame coming, so presenting from the frame loop never waits on
+        a window whose own thread is not listening (a resize, a fullscreen switch)."""
         seq = 0
         while True:
             with self._cond:
-                self._cond.wait_for(lambda at=seq: self._seq != at or self._closed)
+                self._cond.wait_for(lambda at=seq: self._seq != at or self._closed, TEND_S)
                 if self._closed:
                     return
                 seq = self._seq
@@ -236,9 +246,14 @@ class Display:
         """Between frames: lay the window out, paint the strip, and take the events that
         arrived."""
         picture, rect = self._layout()
-        if rect[2]:
+        now = time.perf_counter()
+        if rect[2] and now - self._composed >= STRIP_S:
+            self._composed = now
             surface = self.overlay.compose(rect[2], rect[3])
-            self._strip = (surface.get_buffer().raw, surface.get_pitch(), *surface.get_size())
+            pixels = surface.get_buffer().raw
+            if pixels != self._sent:            # only a strip that changed is uploaded
+                self._sent = pixels
+                self._strip = (pixels, surface.get_pitch(), *surface.get_size())
         pixels = self.screen.pixels(self._win)
         self._areas = (pixels, pixels[0] / max(1, self._win.size[0]), picture, rect)
         self._events(rect)

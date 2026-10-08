@@ -72,15 +72,16 @@ class Model:
         return label_for(self.path)
 
 
-def _prepare(path, gpu, options: LoadOptions) -> Model:
+def _prepare(path, gpu, options: LoadOptions, tune: bool = True) -> Model:
     """One model made ready to play on the engine, on the wgpu device `gpu` (the bank's), or
     on this machine's fastest for it when the bank has none yet. Its dials were measured when
-    it was converted, so which of them are live is read off the program, not measured."""
+    it was converted, so which of them are live is read off the program, not measured. A model
+    loaded at launch may be tuned (`tune`); one loaded mid-set, with the picture stopped, is not."""
     started = time.perf_counter()
     # Grain is a FastGAN question: a StyleGAN2's conversion is stamped without it.
     grain = options.measure_grain if family_of(path) == "fastgan" else True
     net, layout, directions = open_model(path, gpu, options.direction_floor, grain,
-                                         backend=options.backend)
+                                         backend=options.backend, tune=tune)
     return Model(path=Path(path), net=net, cfg=net.cfg, settings=net.settings, layout=layout,
                  load_s=time.perf_counter() - started, directions=directions, push=net.push,
                  dials_live=live_dials(net.settings, directions, layout))
@@ -169,7 +170,7 @@ class Bank:
         path = checkpoint_for(Path(target))
         admit(self.models, path)
         playing = (self.height, self.width)
-        model = _prepare(path, self.gpu, self.options)
+        model = _prepare(path, self.gpu, self.options, tune=False)
         try:
             _warm(self.stage, model, self.size_of(model))
         finally:

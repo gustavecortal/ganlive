@@ -224,13 +224,15 @@ def tuned_plans(manifest: dict, adapter, choices: Path | None = None) -> dict | 
     return saved.get("plans", {}).get(adapter_name(adapter))
 
 
-def remember_plans(manifest: dict, adapter, plans: dict, choices: Path | None = None) -> None:
-    """Keep `plans` for `manifest` on `adapter`, so that backends compare again, each with
-    its own plans, at the next load."""
+def remember_plans(manifest: dict, adapter, plans: dict, choices: Path | None = None,
+                   compare: bool = True) -> None:
+    """Keep `plans` for `manifest` on `adapter`, and with `compare` have the backends compare
+    again, each with its own plans, at the next load."""
     saved = _choices(choices)
     entry = saved.setdefault(model_key(manifest), {})
     entry.setdefault("plans", {})[adapter_name(adapter)] = plans
-    entry.pop("measured", None)
+    if compare:
+        entry.pop("measured", None)
     remember(_choices_path(choices), json.dumps(saved, indent=2))
 
 

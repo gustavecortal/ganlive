@@ -84,7 +84,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
 
     The recorded loop ends at `nv12_bytes`, with no window on screen. A played frame ends
     with a `publish`, which presents the frame and wakes the window thread to paint the strip
-    and take the events -- work that holds the GIL and lands on this thread's next frame, so
+    and take the events. That work holds the GIL and lands on this thread's next frame, so
     it has to be measured with the window really open."""
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
     display = Display((r.height, r.width), r.gpu, title="ganlive - latency", overlay=panel,

@@ -4,9 +4,8 @@ A developer script, for layout checks and README screenshots:
 
     python scripts/shoot_strip.py runs/my-run --out runs/strip
 
-Layout defects are easier to see in a picture than in code. The shots draw through the real
-renderer, since the bars, routing cells and lights are drawn there rather than into the strip's
-own surface, and use a real bank, so the dark dials are the model's own.
+Layout defects are easier to see in a picture than in code. The shots are the strip the window
+draws (`DialPanel.compose`), and use a real bank, so the dark dials are the model's own.
 """
 from __future__ import annotations
 
@@ -50,19 +49,13 @@ def dressed(runner, model, knobs=None) -> None:
         knobs.controls = {(-1, 16): live[-1], (1, 17): live[1]}
 
 
-def shoot(panel, renderer, tall: int, out: Path, name: str) -> Path:
-    """Draw the strip `tall` pixels high and save it as `out/name`."""
+def shoot(panel, tall: int, out: Path, name: str) -> Path:
+    """Compose the strip `tall` pixels high and save it as `out/name`."""
     import pygame
 
-    strip = (0, 0, WIDTH, tall)
     panel._dirty = True
-    renderer.draw_color = (0, 0, 0, 255)
-    renderer.clear()
-    panel.draw(renderer, strip)
-    shot = pygame.Surface((WIDTH, tall))
-    shot.blit(renderer.to_surface(), (0, 0), pygame.Rect(0, 0, WIDTH, tall))
     path = out / name
-    pygame.image.save(shot, str(path))
+    pygame.image.save(panel.compose(WIDTH, tall), str(path))
     return path
 
 
@@ -85,7 +78,6 @@ def main(argv=None) -> int:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     import numpy as np
     import pygame
-    from pygame._sdl2.video import Renderer, Window
 
     from ganlive import bank
     from ganlive.families import LoadOptions
@@ -96,8 +88,6 @@ def main(argv=None) -> int:
     shelf = bank.Shelf(r, Path("runs"))
 
     pygame.display.init()
-    window = Window("ganlive strip", size=(WIDTH + 40, 1500))
-    renderer = Renderer(window, vsync=False)
     since = np.full(runner.channels, NEVER, dtype=np.float32)
 
     knobs = EncoderMap({})
@@ -112,7 +102,7 @@ def main(argv=None) -> int:
                               actions={"preset": lambda d: None, "save": lambda f: None,
                                        "record": lambda: None, "still": lambda: None,
                                        "model": lambda delta=0, to=None: None})
-            panel.attach(renderer)
+            panel.attach()
         dressed(runner, model, knobs)
         # Re-read the rules `dressed` wired, as `_grid_gesture` does after a click.
         panel.reload()
@@ -123,7 +113,7 @@ def main(argv=None) -> int:
         for mode in MODES:
             panel.mode = mode
             for tall in heights:
-                print(f"  {shoot(panel, renderer, tall, args.out, f'{slug}-{mode}-{tall}.png')}",
+                print(f"  {shoot(panel, tall, args.out, f'{slug}-{mode}-{tall}.png')}",
                       flush=True)
     print(f"\n{len(r.models) * len(MODES) * len(heights)} shots in {args.out}")
     return 0

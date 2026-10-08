@@ -9,8 +9,8 @@ same frame would cost twice over (25 MB a frame for a 3072x2048 model).
 from __future__ import annotations
 
 import ctypes
-import glob
 import os
+import sys
 
 import numpy as np
 import wgpu
@@ -51,7 +51,6 @@ fn px(y: u32, x: u32) -> vec3f { return unpack4x8unorm(X[y * u32(V.size.x) + x])
 }
 """
 
-FORMAT = "bgra8unorm"
 
 
 class _WMInfo(ctypes.Structure):
@@ -61,15 +60,14 @@ class _WMInfo(ctypes.Structure):
 
 
 def _sdl():
-    """The SDL library pygame was built with."""
+    """The SDL library pygame itself uses. On Windows its own DLL, beside pygame. Elsewhere
+    pygame's video module, whose symbols include those of the SDL it links."""
     import pygame
+    import pygame._sdl2.video
 
-    here = os.path.dirname(pygame.__file__)
-    for pattern in ("SDL2.dll", ".dylibs/libSDL2*", "../pygame.libs/libSDL2*", "libSDL2*"):
-        found = glob.glob(os.path.join(here, pattern))
-        if found:
-            return ctypes.CDLL(found[0])
-    return ctypes.CDLL("SDL2")
+    if sys.platform == "win32":
+        return ctypes.CDLL(os.path.join(os.path.dirname(pygame.__file__), "SDL2.dll"))
+    return ctypes.CDLL(pygame._sdl2.video.__file__)
 
 
 def native_window(window) -> tuple[dict, object]:
@@ -104,12 +102,15 @@ class Screen:
         self.context = wgpu.gpu.get_canvas_context(handle)
         self._size = self.pixels(window)
         self.context.set_physical_size(*self._size)
-        self.context.configure(device=device, format=FORMAT,
+        # The surface's own format, not its sRGB view: the shader writes the frame's values
+        # as they are. Whichever channel order it has, the format stores the colour right.
+        self.format = self.context.get_preferred_format(device.adapter).removesuffix("-srgb")
+        self.context.configure(device=device, format=self.format,
                                usage=wgpu.TextureUsage.RENDER_ATTACHMENT, alpha_mode="opaque")
         module = device.create_shader_module(code=SHADER)
         self._pipeline = device.create_render_pipeline(
             layout="auto", vertex={"module": module, "entry_point": "vs"},
-            fragment={"module": module, "entry_point": "fs", "targets": [{"format": FORMAT}]},
+            fragment={"module": module, "entry_point": "fs", "targets": [{"format": self.format}]},
             primitive={"topology": "triangle-list"})
         self._view = device.create_buffer(size=64, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
         self._strip = self._texture(1, 1)
@@ -139,7 +140,8 @@ class Screen:
 
     def present(self, frame, size: tuple[int, int], dst, src, strip) -> None:
         """Draw `frame` (a `screen.Stepped`), its `src` rect (x, y, w, h in frame pixels) into
-        `dst`, and the strip into `strip`, both rects in window units of a window `size` big."""
+        `dst`, and the strip into `strip`, both rects in the pixels of a window `size` big. A
+        window with no frame to draw into (minimised, covered) skips it."""
         pixels = self._size
         if size and size != pixels:
             self.context.set_physical_size(*size)
@@ -157,7 +159,10 @@ class Screen:
                     {"binding": 0, "resource": {"buffer": frame.buffer, "offset": 0, "size": frame.buffer.size}},
                     {"binding": 1, "resource": self._strip.create_view()},
                     {"binding": 2, "resource": {"buffer": self._view, "offset": 0, "size": 64}}])
-        target = self.context.get_current_texture()
+        try:
+            target = self.context.get_current_texture()
+        except wgpu.DrawCancelled:
+            return              # minimised, covered or being resized: no frame to draw into
         encoder = self.device.create_command_encoder()
         draw = encoder.begin_render_pass(color_attachments=[{
             "view": target.create_view(), "load_op": "clear", "store_op": "store",

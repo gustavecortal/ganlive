@@ -184,11 +184,18 @@ class EngineDriven(Driven):
 
 
 def on_engine(manifest: dict, blob: Blob):
-    """The converted model built on this machine's GPU to measure its dials, or None where it
-    cannot be, or does not draw the probe PyTorch drew."""
+    """The converted model built on this machine's GPU to measure its dials, or None where
+    there is none (a software adapter would be slower than PyTorch), or it does not draw the
+    probe PyTorch drew."""
+    device = None
     try:
-        return checked(default_device(), compile_manifest(manifest, output="f32"), bytes(blob.data))
-    except Exception as exc:  # noqa: BLE001  no adapter, or a backend that draws it wrong
+        device = default_device()
+        if device.adapter.info["adapter_type"] == "CPU":
+            raise RuntimeError("only a software adapter")
+        return checked(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
+    except Exception as exc:  # noqa: BLE001  no GPU, or a backend that draws it wrong
+        if device is not None:
+            device.destroy()
         print(f"dials measured with PyTorch: the engine cannot here ({exc})", flush=True)
         return None
 

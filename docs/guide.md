@@ -203,8 +203,8 @@ Follow the [README quick start](../README.md#quick-start).
 
 Models play on WebGPU through Vulkan, Metal, or Direct3D 12. At a model's first load,
 ganlive measures which of these draws it right and fastest on your machine and remembers
-the choice. A FastGAN's first load on a GPU also tunes its heaviest layers for it, in about
-10 seconds. `--backend` picks a backend instead, and `ganlive tune` finds how every layer runs
+the choice. A FastGAN's first load on a GPU also spends about 10 seconds tuning its heaviest
+layers there. `--backend` picks a backend instead, and `ganlive tune` finds how every layer runs
 fastest on your GPU.
 
 PyTorch is needed only to convert a checkpoint, which happens once, at its first load, and
