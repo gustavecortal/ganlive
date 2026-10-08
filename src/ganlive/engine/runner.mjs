@@ -70,7 +70,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
 
     return {
       output: buffers.out, height: program.height, width: program.width, format: program.output,
-      steps, destroy,
+      screen: program.screen, steps, destroy,
       setLatent: (z) => device.queue.writeBuffer(buffers.Z, 0, z),
       setSettings: (k) => device.queue.writeBuffer(buffers.K, 0, k),
       /** Records one frame. With `timestamps` (a GPUQuerySet), one timed pass per step,
@@ -118,38 +118,12 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
   }
 }
 
-// A frame onto a canvas of any size and format, as ganlive's desktop window draws one
-// (engine/present.py): shrinking averages the frame pixels a canvas pixel covers, growing is
-// bilinear. Drawn rather than copied, so the canvas takes the format its browser prefers and
-// the size it is shown at.
-const SCREEN = (order) => `
-@group(0) @binding(0) var<storage, read> X: array<u32>;
-@group(0) @binding(1) var<uniform> V: vec4f;      // frame width, height, canvas width, height
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
-}
-fn px(y: u32, x: u32) -> vec3f { return unpack4x8unorm(X[y * u32(V.x) + x]).${order}; }
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  let W = u32(V.x); let H = u32(V.y);
-  let s = V.xy / V.zw;                               // frame pixels per canvas pixel
-  if (s.x >= 1.0 && s.y >= 1.0) {
-    let lo = (pos.xy - 0.5) * s;
-    let x0 = u32(lo.x); let y0 = u32(lo.y);
-    let x1 = min(W, max(x0 + 1u, u32(ceil(lo.x + s.x)))); let y1 = min(H, max(y0 + 1u, u32(ceil(lo.y + s.y))));
-    var c = vec3f(0.0);
-    for (var y = y0; y < y1; y++) { for (var x = x0; x < x1; x++) { c += px(y, x); } }
-    return vec4f(c / f32((y1 - y0) * (x1 - x0)), 1.0);
-  }
-  let f = clamp(pos.xy * s - 0.5, vec2f(0.0), V.xy - 1.0);
-  let x0 = u32(f.x); let y0 = u32(f.y); let x1 = min(x0 + 1u, W - 1u); let y1 = min(y0 + 1u, H - 1u);
-  let t = f - floor(f);
-  return vec4f(mix(mix(px(y0, x0), px(y0, x1), t.x), mix(px(y1, x0), px(y1, x1), t.x), t.y), 1.0);
-}`;
-
-/** Draws `model`'s frame onto canvas textures of `format`: `draw(encoder, texture)`. */
+/** Draws `model`'s frame onto canvas textures of `format`, with the program's own screen shader
+ *  (engine/fit.py, as the desktop window draws): `draw(encoder, texture)`. Drawn rather than
+ *  copied, so the canvas takes the format its browser prefers and the size it is shown at. */
 export function screen(device, model, format) {
-  if (model.format === "f32") throw new Error("an f32 program draws planes, not pixels");
-  const module = device.createShaderModule({ code: SCREEN(model.format === "bgra8" ? "zyx" : "xyz") });
+  if (!model.screen) throw new Error(`a ${model.format} program draws no screen`);
+  const module = device.createShaderModule({ code: model.screen });
   const pipeline = device.createRenderPipeline({ layout: "auto",
     vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: [{ format }] } });
   const view = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -160,7 +134,7 @@ export function screen(device, model, format) {
     draw(encoder, texture) {
       if (size !== `${texture.width}x${texture.height}`) {
         size = `${texture.width}x${texture.height}`;
-        device.queue.writeBuffer(view, 0, new Float32Array([model.width, model.height, texture.width, texture.height]));
+        device.queue.writeBuffer(view, 0, new Uint32Array([model.width, model.height, texture.width, texture.height]));
       }
       const pass = encoder.beginRenderPass({ colorAttachments: [{ view: texture.createView(),
         loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 1] }] });

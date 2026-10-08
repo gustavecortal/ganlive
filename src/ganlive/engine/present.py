@@ -15,18 +15,17 @@ import sys
 import numpy as np
 import wgpu
 
-# One triangle over the window. A pixel is the strip's, the picture's or black. Shrinking
-# averages the source pixels a window pixel covers (as `screen.RESIZE` does), growing is
-# bilinear. X is the frame as packed BGRA8, which unpacks to (b, g, r, a).
+from ganlive.engine.fit import COVER, FIT
+
+# One triangle over the window. A pixel is the strip's, the picture's (`fit.FIT`) or black.
+# X is the frame as packed BGRA8, which unpacks to (b, g, r, a).
 SHADER = """
 struct View { dst: vec4f, src: vec4f, strip: vec4f, size: vec4f }   // size: frame w, h, strip w, h
 @group(0) @binding(0) var<storage, read> X: array<u32>;
 @group(0) @binding(1) var S: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> V: View;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
-}
-fn px(y: u32, x: u32) -> vec3f { return unpack4x8unorm(X[y * u32(V.size.x) + x]).zyx; }
+fn px(y: u32, x: u32) -> vec4f { return unpack4x8unorm(X[y * u32(V.size.x) + x]); }
+""" + FIT + COVER + """
 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let p = pos.xy;
   if (p.x >= V.strip.x && p.x < V.strip.x + V.strip.z && p.y < V.strip.y + V.strip.w) {
@@ -34,20 +33,8 @@ fn px(y: u32, x: u32) -> vec3f { return unpack4x8unorm(X[y * u32(V.size.x) + x])
     return vec4f(textureLoad(S, min(q, vec2u(V.size.zw) - 1u), 0).xyz, 1.0);
   }
   if (any(p < V.dst.xy) || any(p >= V.dst.xy + V.dst.zw)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
-  let W = u32(V.size.x); let H = u32(V.size.y);
-  let s = V.src.zw / V.dst.zw;                       // frame pixels per window pixel
-  if (s.x >= 1.0 && s.y >= 1.0) {
-    let lo = V.src.xy + (p - 0.5 - V.dst.xy) * s;
-    let x0 = u32(lo.x); let y0 = u32(lo.y);
-    let x1 = min(W, max(x0 + 1u, u32(ceil(lo.x + s.x)))); let y1 = min(H, max(y0 + 1u, u32(ceil(lo.y + s.y))));
-    var c = vec3f(0.0);
-    for (var y = y0; y < y1; y++) { for (var x = x0; x < x1; x++) { c += px(y, x); } }
-    return vec4f(c / f32((y1 - y0) * (x1 - x0)), 1.0);
-  }
-  let f = clamp(V.src.xy + (p - V.dst.xy) * s - 0.5, vec2f(0.0), vec2f(f32(W - 1u), f32(H - 1u)));
-  let x0 = u32(f.x); let y0 = u32(f.y); let x1 = min(x0 + 1u, W - 1u); let y1 = min(y0 + 1u, H - 1u);
-  let t = f - floor(f);
-  return vec4f(mix(mix(px(y0, x0), px(y0, x1), t.x), mix(px(y1, x0), px(y1, x1), t.x), t.y), 1.0);
+  let c = fit(vec2u(p - V.dst.xy), vec2u(V.dst.zw), vec4u(V.src), vec2u(V.size.xy));
+  return vec4f(c.zyx, 1.0);
 }
 """
 

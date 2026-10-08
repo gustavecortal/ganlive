@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ganlive.engine import program, program_stylegan2
+from ganlive.engine import fit, program, program_stylegan2
 from ganlive.engine.program import compile_program
 from ganlive.engine.program_stylegan2 import compile_stylegan2
 
@@ -19,6 +19,8 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
     for key in ("family", "probe", "dials", "stamp"):
         if key in manifest:
             program[key] = manifest[key]
+    if output != "f32":         # how a browser draws the pixels onto a canvas
+        program["screen"] = fit.screen(output)
     return program
 
 

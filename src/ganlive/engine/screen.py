@@ -14,36 +14,23 @@ import numpy as np
 import wgpu
 
 from ganlive.engine.codegen import linear
+from ganlive.engine.fit import FIT
 from ganlive.engine.runner import MAPPABLE
 
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
-# The model's BGRA8 frame -> a take's size, as BGRA8. Shrinking
-# averages the same windows as torch's `area` (adaptive average pooling). Growing is bilinear.
+# The model's BGRA8 frame -> a take's size, as BGRA8 (`fit.FIT`).
 RESIZE = """
 @group(0) @binding(0) var<storage, read> X: array<u32>;
 @group(0) @binding(1) var<storage, read_write> Y: array<u32>;
 @group(0) @binding(2) var<storage, read> U: array<u32>;      // H, W, h, w
 fn px(y: u32, x: u32) -> vec4f { return unpack4x8unorm(X[y * U[1] + x]); }   // BGRA
+""" + FIT + """
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  let H = U[0]; let W = U[1]; let h = U[2]; let w = U[3];
-  if (id.x >= w || id.y >= h) { return; }
-  var c = vec4f(0.0);
-  if (h * w <= H * W) {
-    let y0 = id.y * H / h; let y1 = ((id.y + 1u) * H + h - 1u) / h;
-    let x0 = id.x * W / w; let x1 = ((id.x + 1u) * W + w - 1u) / w;
-    for (var y = y0; y < y1; y++) { for (var x = x0; x < x1; x++) { c += px(y, x); } }
-    c /= f32((y1 - y0) * (x1 - x0));
-  } else {
-    let sy = clamp((f32(id.y) + 0.5) * f32(H) / f32(h) - 0.5, 0.0, f32(H - 1u));
-    let sx = clamp((f32(id.x) + 0.5) * f32(W) / f32(w) - 0.5, 0.0, f32(W - 1u));
-    let y0 = u32(sy); let x0 = u32(sx);
-    let y1 = min(y0 + 1u, H - 1u); let x1 = min(x0 + 1u, W - 1u);
-    let fy = sy - f32(y0); let fx = sx - f32(x0);
-    c = mix(mix(px(y0, x0), px(y0, x1), fx), mix(px(y1, x0), px(y1, x1), fx), fy);
-  }
-  Y[id.y * w + id.x] = pack4x8unorm(vec4f(c.xyz, 1.0));
+  let size = vec2u(U[1], U[0]); let out = vec2u(U[3], U[2]);
+  if (id.x >= out.x || id.y >= out.y) { return; }
+  Y[id.y * out.x + id.x] = pack4x8unorm(vec4f(fit(id.xy, out, vec4u(0u, 0u, size), size).xyz, 1.0));
 }
 """
 
