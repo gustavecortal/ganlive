@@ -12,8 +12,9 @@ const FORMAT = "ganlive-engine/1";
 /**
  * `weights`: an ArrayBuffer, or a fetch Response streamed straight into GPU memory
  * (`onProgress(bytes)` reports it). `cache`: a Map of compiled pipelines to share between loads.
+ * `onStage(name)` is told when "download" and then "compile" begin.
  */
-export async function loadModel(device, program, weights, { cache = new Map(), onProgress } = {}) {
+export async function loadModel(device, program, weights, { cache = new Map(), onProgress, onStage } = {}) {
   if (program.format !== FORMAT) throw new Error(`a ${program.format} program; this runner plays ${FORMAT}`);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
   const limit = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize);
@@ -22,6 +23,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
 
   device.pushErrorScope("validation");
   try {
+    onStage?.("download");
     for (const [name, spec] of Object.entries(program.buffers)) {
       if (spec.size > limit) {
         throw new Error(`${name}: a ${Math.round(spec.size / 2 ** 20)} MiB buffer is over this ` +
@@ -33,6 +35,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
       else if (spec.init === "ones") device.queue.writeBuffer(b, 0, new Float32Array(spec.size / 4).fill(1));
       else if (spec.init === "words") device.queue.writeBuffer(b, 0, new Uint32Array(spec.words));
     }
+    onStage?.("compile");
     // Every shader compiles in parallel; identical sources share one compile.
     const pipeline = (index) => {
       const code = program.shaders[index];
