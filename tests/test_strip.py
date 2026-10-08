@@ -59,7 +59,6 @@ from tests.support import (
     _runner,
     _StubModel,
     dummy_display,
-    headless_renderer,
     since,
     stub_bank,
 )
@@ -254,17 +253,14 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
     holder = stub_bank(current)
     runner.use_model(current)
 
-    with headless_renderer((WIDTH + 200, 900), "rows") as renderer:
+    with dummy_display():
         panel = DialPanel(runner, bank=holder)
-        panel.attach(renderer)
+        panel.attach()
         strip = (0, 0, WIDTH, 900)
 
         def frame():
-            """One, exactly as `Display` draws it -- clear, draw, present."""
-            renderer.draw_color = (0, 0, 0, 255)
-            renderer.clear()
-            panel.draw(renderer, strip)
-            renderer.present()
+            """One, exactly as `Display` asks for it."""
+            panel.compose(strip[2], strip[3])
 
         frame()
         assert {n for n, _t, _h in panel._rows} == set(ours), "the model it opened on"
@@ -418,9 +414,9 @@ def test_every_routing_column_label_fits_the_column_it_names():
     drums on one channel labels them `MT/HT`. Centring a label wider than its column pushes it
     into the next one: `MT/HT CH/OH CY/CB` rendered as a single run of characters."""
 
-    with headless_renderer((WIDTH, 900), "fit") as renderer:
+    with dummy_display():
         panel = DialPanel(_runner(DEFAULT, channel_of=channel_map("voices")))
-        panel.attach(renderer)
+        panel.attach()
         columns = grid_columns(WIDTH, len(panel.kit))
         labels = ["/".join(names) for _channel, names in panel.kit]
         too_wide = [(label, panel._micro.size(label)[0], cw)
@@ -444,9 +440,9 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
     foreign = set(stub.layout.rests) - set(runner.surface.values)
     assert foreign, "this test needs the two layouts to actually disagree"
 
-    with headless_renderer((WIDTH, 900), "dark") as renderer:
+    with dummy_display():
         panel = DialPanel(runner, bank=stub_bank(stub))
-        panel.attach(renderer)
+        panel.attach()
         panel._resize(WIDTH, 900)
         panel._paint()
 
@@ -461,9 +457,8 @@ def test_a_thousand_gestures_across_model_switches_break_nothing():
     the real paint path. Seeded, so a fault is reproducible with
     `python -m tests.fuzz_surface --seeds 1`."""
 
-    size = (fuzz_surface.WIDTH + 200, max(fuzz_surface.HEIGHTS))
-    with headless_renderer(size, "fuzz") as renderer:
-        faults, reached = fuzz_surface.run(renderer, 500, seed=0)
+    with dummy_display():
+        faults, reached = fuzz_surface.run(500, seed=0)
 
     assert not faults, fuzz_surface.report(faults) or [f[5] for f in faults]
     # A fuzzer that never reaches the state is a fuzzer that proves nothing, and this is the
@@ -508,7 +503,7 @@ def test_the_help_line_only_names_keys_the_strip_itself_handles():
     panel = DialPanel(_runner(),
                       actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object(), encoders=EncoderMap({}))
-    panel.attach(None)
+    panel.attach()
     panel._size = (400, 900)
     offered = " ".join(panel._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -530,7 +525,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     """A key whose action the host did not supply is neither listed nor taken: `play` supplies
     no model action for a single loaded model, so `[ ]` must not appear."""
     bare = DialPanel(_runner())
-    bare.attach(None)
+    bare.attach()
     bare._size = (400, 900)
     offered = " ".join(bare._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -609,9 +604,9 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
     """`font.render` rasterises every glyph on every call, on the window's thread, and a
     repaint asks for the same few dozen lines as the last one."""
 
-    with headless_renderer((WIDTH, 400), "text") as renderer:
+    with dummy_display():
         panel = DialPanel(_runner())
-        panel.attach(renderer)
+        panel.attach()
 
         once = panel._say(panel._small, "se_256", (1, 2, 3))
         assert panel._say(panel._small, "se_256", (1, 2, 3)) is once, "kept, not drawn again"
@@ -676,7 +671,7 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
 
     panel = DialPanel(runner, actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object())
-    panel.attach(None)
+    panel.attach()
     panel._size = (WIDTH, 900)
     room = WIDTH - 2 * console.PAD
 

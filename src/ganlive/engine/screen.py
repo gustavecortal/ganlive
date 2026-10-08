@@ -89,6 +89,11 @@ class Stepped:
     def __init__(self, buffer, height: int, width: int) -> None:
         self.buffer, self.height, self.width = buffer, height, width
 
+    @classmethod
+    def native(cls, net) -> Stepped:
+        """An engine model's last frame at its own size, in the model's own buffer."""
+        return cls(net.model.output, net.cfg.ladder.height, net.cfg.ladder.width)
+
 
 class Ticket:
     """The downloads of one frame, started and not yet read. `wait` before reading them."""
@@ -208,7 +213,7 @@ class EngineStage:
         H, W = net.cfg.ladder.height, net.cfg.ladder.width
         h, w = self.height, self.width
         if (H, W) == (h, w):
-            return Stepped(net.model.output, h, w)
+            return Stepped.native(net)
         out = self._buffer("shown", h * w * 4)
         self._run(self._resize, [net.model.output, out, self._words("resize", H, W, h, w)],
                   (math.ceil(w / 8), math.ceil(h / 8), 1))

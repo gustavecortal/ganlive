@@ -37,6 +37,7 @@ from ganlive.control.midi import (
 )
 from ganlive.control.simulate import MachineSim, MonitorFeeder, StemFeeder
 from ganlive.dials.table import per_model
+from ganlive.engine.screen import Stepped
 from ganlive.files import CHANNEL_MAP, SETTINGS, next_path, remember
 from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 from ganlive.record import video
@@ -724,13 +725,23 @@ def main(argv=None) -> int:
             panel = DialPanel(runner, actions=actions, extractor=extractor, bank=r, shelf=shelf,
                               encoders=encoders)
         display = Display((r.height, r.width), title=f"ganlive - {preset.name}",
-                          overlay=panel, fullscreen=not args.console)
+                          overlay=panel, fullscreen=not args.console, device=r.gpu)
+        if display.note:
+            print(f"window: drawn through the host, as wgpu cannot draw it ({display.note})",
+                  flush=True)
         print("window open. Esc or Q to stop.", flush=True)
 
+    # A window the GPU draws is given the model's own frame, presented as it is made. Any
+    # other takes the frame's bytes, downloaded behind the next frame (`land`).
+    on_gpu = display is not None and display.on_gpu
     to_window = r.stage.bgra_bytes
 
-    first = r.stage.step(r.current.net(walk.latent(0.0)))
-    to_window(first)
+    made = r.current.net(walk.latent(0.0))
+    first = r.stage.step(made)
+    if on_gpu:
+        display.publish(Stepped.native(made))
+    else:
+        to_window(first)
     r.sync()
 
     rec = None
@@ -829,12 +840,17 @@ def main(argv=None) -> int:
             ticked = t0
             guide.mark(clock.beats)
             out = model.net(walk.latent(clock.beats))
-            frame = r.stage.step(out)
+            if on_gpu:
+                display.publish(Stepped.native(out))
+            # At the size shown, for the window's bytes, a take or a still.
+            frame = None if on_gpu else r.stage.step(out)
             if requests.take("record"):
                 toggle_take(t0)
+            if frame is None and rec is not None:
+                frame = r.stage.step(out)
             with r.stage.handoff() as sent:
                 shown = (to_window(frame)
-                         if display is not None and display.wants else None)
+                         if display is not None and not on_gpu and display.wants else None)
                 taped = None
                 if rec is not None:
                     if rec.wants:
@@ -846,7 +862,7 @@ def main(argv=None) -> int:
             in_flight = (sent.ticket, shown, taped)
             if requests.take("still"):
                 shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
-                stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
+                stills.append(video.save_still(shot, r.stage.rgb_still(frame or r.stage.step(out))))
                 print(f"still: {shot}", flush=True)
             # A frame on time goes up now. Overlapping its download with the next frame
             # costs a frame of lag, worth paying only on a frame that missed its slot.

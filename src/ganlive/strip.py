@@ -339,7 +339,8 @@ class DialPanel:
         self._learns_seen = 0
         self._size = (0, 0)
         self._track = (0, 0)
-        self._surf = self._tex = self._pg = self._ren = None
+        #: What is painted at `TEXT_HZ`, and the strip composed from it each frame.
+        self._surf = self._out = self._pg = None
         self._font = self._small = self._tiny = self._body = self._micro = None
         self._cells: list[tuple[str, str, int, int]] = []
         self._rows: list[tuple[str, int, int]] = []
@@ -467,13 +468,12 @@ class DialPanel:
         self._wired = _wired_amounts(self._drivers)
         self._dirty = self._dirty or repaint
 
-    def attach(self, renderer) -> None:
+    def attach(self) -> None:
         """Called once by `Display`, on the thread that owns the window."""
         import pygame
 
         pygame.font.init()
         self._pg = pygame
-        self._ren = renderer
         self._font = pygame.font.SysFont(SANS, 15)
         self._body = pygame.font.SysFont(SANS, 13)
         self._small = pygame.font.SysFont(MONO, 13)
@@ -484,12 +484,11 @@ class DialPanel:
         self._said.clear()
         self._wrapped.clear()
 
-    def draw(self, ren, strip) -> None:
-        """One frame of the strip into `strip`, a `(x, y, w, h)` rect of the window.
+    def compose(self, w: int, h: int):
+        """This frame's strip, `w` x `h`, as a pygame Surface the window draws.
 
-        The text is a texture repainted at `TEXT_HZ` or when something changes; the bars, the
-        held markers, the lights and the scope dot are rectangles drawn every frame."""
-        x0, y0, w, h = strip
+        The text is repainted at `TEXT_HZ` or when something changes; the bars, the held
+        markers, the lights and the scope dot are filled onto a copy of it every frame."""
         # Relaid out on a new window size or a new layout: a switch can change the dials
         # without changing the window.
         layout = self.dials
@@ -503,12 +502,11 @@ class DialPanel:
         now = time.perf_counter()
         if self._dirty or now - self._last_paint >= 1.0 / TEXT_HZ:
             self._paint()
-            self._tex.update(self._surf)
             self._dirty = False
             self._last_paint = now
-        self._tex.draw(dstrect=strip)
-
-        rect = self._pg.Rect
+        out = self._out
+        out.blit(self._surf, (0, 0))
+        fill = out.fill
         left, span = self._track
         hands = self.runner.hands
         values = self.runner.surface.values
@@ -516,37 +514,33 @@ class DialPanel:
         since = [] if since is None else since.tolist()
 
         if self.recording:
-            ren.draw_color = REC
-            ren.fill_rect(rect(x0 + self._size[0] - PAD - 9, y0 + PAD - 1, 9, 9))
+            fill(REC, (self._size[0] - PAD - 9, PAD - 1, 9, 9))
 
         if self.mode == MODE_MODELS:
-            self._draw_lights(ren, x0, y0, since)
-            return
+            self._draw_lights(fill, since)
+            return out
 
         if self.mode == MODE_ROUTING:
-            self._draw_routing(ren, x0, y0, since)
-            self._draw_scope(ren, x0, y0)
-            self._draw_lights(ren, x0, y0, since)
-            return
+            self._draw_routing(fill, since)
+            self._draw_scope(fill)
+            self._draw_lights(fill, since)
+            return out
 
         for name, top, tall in self._rows:
             if self._dead(name):
                 continue
-            ty = y0 + top + (tall - 8) // 2
-            ren.draw_color = self._colour(name)
-            ren.fill_rect(rect(x0 + left, ty, max(2, round(span * values[name])), 8))
+            ty = top + (tall - 8) // 2
+            fill(self._colour(name), (left, ty, max(2, round(span * values[name])), 8))
             held = hands.get(name)
             if held is not None:
-                ren.draw_color = HAND
-                ren.fill_rect(rect(x0 + left + min(span - 2, round(span * held)) - 1,
-                                   ty - 3, 3, 14))
+                fill(HAND, (left + min(span - 2, round(span * held)) - 1, ty - 3, 3, 14))
             drivers = self._drivers.get(name)
             if drivers is not None:
-                ren.draw_color = self._driver_colour(name, drivers, since)
-                ren.fill_rect(rect(x0 + PAD, ty + 1, 6, 6))
+                fill(self._driver_colour(name, drivers, since), (PAD, ty + 1, 6, 6))
 
-        self._draw_scope(ren, x0, y0)
-        self._draw_lights(ren, x0, y0, since)
+        self._draw_scope(fill)
+        self._draw_lights(fill, since)
+        return out
 
     def _follow_the_hand(self, layout) -> None:
         """Describe whatever was just grabbed, by whichever holder grabbed it."""
@@ -566,14 +560,11 @@ class DialPanel:
             self._focus = grabbed[0]
             self._dirty = True
 
-    def _draw_lights(self, ren, x0, y0, since):
-        """Which drum just played. Drawn every frame rather than painted into the texture."""
-        rect = self._pg.Rect
-        for (channel, _names), (lx, ly, lw, lh) in zip(self.kit, self._lights, strict=True):
+    def _draw_lights(self, fill, since):
+        """Which drum just played. Filled every frame rather than painted with the text."""
+        for (channel, _names), box in zip(self.kit, self._lights, strict=True):
             glow = lit(since, channel)
-            ren.draw_color = (round(36 + 192 * glow), round(44 + 43 * glow),
-                              round(50 - 4 * glow), 255)
-            ren.fill_rect(rect(x0 + lx, y0 + ly, lw, lh))
+            fill((round(36 + 192 * glow), round(44 + 43 * glow), round(50 - 4 * glow)), box)
 
     def _grid_gesture(self, ev, dial: str, column: int) -> None:
         """Click wires, wheel sets how hard, right click reverses."""
@@ -599,9 +590,8 @@ class DialPanel:
         self.runner.set_amount_on(dial, channel, new)
         self.reload(repaint=not wheel)
 
-    def _draw_routing(self, ren, x0, y0, since):
+    def _draw_routing(self, fill, since):
         """Only the cells that carry a rule, lit by how recently their drum fired."""
-        rect = self._pg.Rect
         columns = self._columns
         for name, top, tall in self._rows:
             channels = self._wired.get(name)
@@ -615,12 +605,12 @@ class DialPanel:
                     continue
                 fraction, push = wire
                 k = 0.45 + 0.55 * lit(since, channel)
-                ren.draw_color = (round(r * k), round(g * k), round(b * k), 255)
                 cx, cy, cw, ch = cell_box(*columns[i], top, tall)
                 half = cw // 2
                 span = max(1, round(half * fraction))
-                mid = x0 + cx + half
-                ren.fill_rect(rect(mid if push else mid - span, y0 + cy, span, ch))
+                mid = cx + half
+                fill((round(r * k), round(g * k), round(b * k)),
+                     (mid if push else mid - span, cy, span, ch))
 
     def _driver_colour(self, name, drivers, since):
         """The driver dot's colour: the group colour, as bright as the most recent hit on any
@@ -636,22 +626,19 @@ class DialPanel:
                 round(DOT_DARK[1] + (g - DOT_DARK[1]) * glow),
                 round(DOT_DARK[2] + (b - DOT_DARK[2]) * glow), 255)
 
-    def _draw_scope(self, ren, x0, y0):
-        """The dot travelling the curve. The curve itself is in the texture behind it."""
+    def _draw_scope(self, fill):
+        """The dot travelling the curve. The curve itself is painted with the text."""
         top, tall = self._blocks["scope"]
         x_lo, x_hi, base, inner = scope_box(self._size[0], top, tall)
         _k, u, t = position(self.runner.walk_cfg, self.beats)
         px = x_lo + round((x_hi - x_lo) * u)
         py = base + round(inner * (1.0 - t))
-        ren.draw_color = HAND
-        ren.fill_rect(self._pg.Rect(x0 + px, y0 + py - 2, 5, 5))
+        fill(HAND, (px, py - 2, 5, 5))
 
     def _resize(self, w: int, h: int) -> None:
-        """Rebuild the strip's own texture and geometry for a new size or layout."""
-        from pygame._sdl2.video import Texture
-
+        """Rebuild the strip's own surfaces and geometry for a new size or layout."""
         self._surf = self._pg.Surface((w, h))
-        self._tex = Texture(self._ren, (w, h), streaming=True)
+        self._out = self._pg.Surface((w, h))
         self._size = (w, h)
         self._track = track_span(w)
         groups = self._laid = self.dials.groups

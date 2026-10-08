@@ -21,6 +21,7 @@ from ganlive.control.features import FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.control.simulate import MachineSim, StemFeeder
 from ganlive.dials.fastgan_dials import fastgan
+from ganlive.engine.screen import Stepped
 from ganlive.families import LoadOptions
 from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
@@ -82,13 +83,21 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     """The played loop: the control loop, finishing where a played frame finishes.
 
     The recorded loop ends at `nv12_bytes`, with no window on screen. A played frame ends
-    with `bgra_bytes` and a `publish` that wakes the window thread, which then uploads a
-    texture, draws the strip and presents -- work that holds the GIL and lands on this
-    thread's next frame, so it has to be measured with the window really open."""
+    with a `publish`, which presents the frame and wakes the window thread to paint the strip
+    and take the events (or, where SDL draws the window, `bgra_bytes` first and the upload
+    on that thread) -- work that holds the GIL and lands on this thread's next frame, so it
+    has to be measured with the window really open."""
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
     display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
-                      fullscreen=False)
-    to_window = r.stage.bgra_bytes
+                      fullscreen=False, device=r.gpu)
+    print(f"window: drawn by {'the GPU' if display.on_gpu else 'SDL, ' + display.note}", flush=True)
+
+    def shown():
+        """What the window is given: the model's frame on the GPU, else the bytes shown."""
+        if display.on_gpu:
+            return Stepped.native(model.net)
+        return r.stage.bgra_bytes(r.stage.step(model.net))
+
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
                               "issue": [], "window": [], "publish": []}
     total_ms: list[float] = []
@@ -98,7 +107,8 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     time.sleep(0.25)
     try:
         for _ in range(8):                                  # the window's first texture
-            display.publish(to_window(r.stage.step(model.net(walk.latent(0.0)))))
+            model.net(walk.latent(0.0))
+            display.publish(shown())
         r.sync()
         for f in range(int(args.seconds * args.fps)):
             t0 = time.perf_counter()
@@ -108,11 +118,11 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
             t2 = time.perf_counter()
             z = walk.latent(f / args.fps * take.bpm / 60.0)
             t3 = time.perf_counter()
-            frame = r.stage.step(model.net(z))
+            model.net(z)
             t4 = time.perf_counter()
-            shown = to_window(frame)
+            frame = shown()
             t5 = time.perf_counter()
-            display.publish(shown)
+            display.publish(frame)
             t6 = time.perf_counter()
             panel.beats = f / args.fps * take.bpm / 60.0
             for name, dt in (("hit detection", t1 - t0), ("rules", t2 - t1),

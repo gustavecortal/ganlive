@@ -218,26 +218,15 @@ def _panel(dials_live=None, levels=None, runner=None):
 
 
 @contextlib.contextmanager
-def headless_renderer(size, title: str = "test"):
-    """A real SDL renderer on the dummy video driver, for drawing the strip with no screen."""
-    import pygame
-
-    with dummy_display():
-        from pygame._sdl2.video import Renderer, Window
-
-        pygame.display.init()
-        yield Renderer(Window(title, size=size), vsync=False)
-
-
-@contextlib.contextmanager
 def dummy_display():
-    """SDL on its dummy video driver for the duration, then the display closed and the
-    driver setting put back as it was."""
+    """SDL's display on its dummy video driver for the duration, then closed and the driver
+    setting put back as it was."""
     import pygame
 
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     try:
+        pygame.display.init()
         yield
     finally:
         pygame.display.quit()
