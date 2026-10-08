@@ -26,11 +26,14 @@ from ganlive.engine.gemm import GEMM_MAX, matmul, split, sum_slices
 from ganlive.engine.noise import NOISE, noise_seed
 
 
-def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8") -> dict:
+def compile_program(manifest: dict, plans: dict | None = None, output: str = "rgba8",
+                    browser: bool = False) -> dict:
     """The program for `manifest`, drawing packed RGBA8 pixels for a browser canvas, BGRA8
     (`output="bgra8"`) for the desktop app, or float planes in [-1, 1] (`"f32"`) for checks.
-    `plans` overrides how conv layers run, by name (see `_plan`)."""
+    `plans` overrides how conv layers run, by name (see `_plan`), and `browser` takes the
+    defaults for every browser rather than the desktop's."""
     b = Builder(manifest, plans or {})
+    b.browser = browser
     m = manifest
     b.buffer("P", m["bytes"], init="weights")
     b.buffer("Z", m["nz"] * 4)
@@ -78,7 +81,11 @@ def _plan(b: Builder, op: dict) -> dict:
     has at most GEMM_MAX pixels runs as a matrix product: {"gemm": True, "rm", "rn", "S"};
     a larger one directly, each thread a tile of pixels: {"by", "bx", "oct"}, and for a plain
     conv optionally "f32" (weights made f32 at load) and "slm" (inputs through workgroup
-    memory). The defaults were measured on an Arc A770, and `plans` overrides them by layer."""
+    memory). The defaults were measured on an Arc A770, and `plans` overrides them by layer.
+
+    A browser program reads a direct conv's inputs through workgroup memory: in Firefox that
+    halved lichen's frame (21.8 to 10.6 ms) and in Edge it cost 0.2 ms, while wgpu on the
+    desktop is 0.8 ms slower with it, where `ganlive tune` chooses per layer anyway."""
     cout, ho, wo = b.shape(op["out"])
     cin = b.shape(op["in"])[0]
     up = op["up"]
@@ -95,7 +102,8 @@ def _plan(b: Builder, op: dict) -> dict:
     if up:                                  # a thread tiles input pixels
         return direct.check(dict(forced or {"by": 1, "bx": 2, "oct": 4}), op["out"], cout,
                             ho // 2, wo // 2, keys=("by", "bx", "oct"))
-    return direct.check(dict(forced or {"by": 2, "bx": 2, "oct": 4}), op["out"], cout, ho, wo)
+    plain = {"by": 2, "bx": 2, "oct": 4, **({"slm": True} if b.browser else {})}
+    return direct.check(dict(forced or plain), op["out"], cout, ho, wo)
 
 
 def plan_choices(manifest: dict) -> dict[str, list[dict]]:

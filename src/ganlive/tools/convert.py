@@ -42,7 +42,7 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
-    program = compile_manifest(manifest)
+    program = compile_manifest(manifest, browser=True)
     program["knobs"] = browser_dials(program)
     write_json(out / PROGRAM, program, indent=None)
     print(f"{checkpoint.name} -> {out}: {program['width']}x{program['height']}, "

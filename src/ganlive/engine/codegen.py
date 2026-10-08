@@ -49,6 +49,8 @@ class Builder:
     def __init__(self, manifest: dict, plans: dict) -> None:
         self.m = manifest
         self.overrides = plans
+        #: Whether the program is for a browser, whose defaults differ (see `program._plan`).
+        self.browser = False
         self.shaders: list[str] = []
         self.index: dict[str, int] = {}
         self.buffers: dict[str, dict] = {}
