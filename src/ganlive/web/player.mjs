@@ -203,11 +203,12 @@ export class Player {
     for (let n = 0, at; n < MOST_LOGGED && (at = take.next(now)) !== null; n++) take.log(this.update(m, at));
     const room = DEPTH + Math.ceil((this.lag * take.fps) / 1000);
     let shown = false;
-    if (take.waiting.length <= LIVE_BEHIND_S * take.fps)
-      for (let n = 0; n < CATCH_UP && take.waiting.length && take.ready() && this.pending < room; n++) {
-        const f = take.waiting[0];
-        const newest = f === take.latest;
+    if (take.behind <= LIVE_BEHIND_S * take.fps)
+      for (let n = 0; n < CATCH_UP && take.behind && take.ready() && this.pending < room; n++) {
+        const f = take.oldest();
+        const newest = f.index === take.latest.index;
         this.draw(f, newest, take);
+        if (newest) this.onScreen = take.latest;
         shown ||= newest;
       }
     if (!shown && take.latest && take.latest !== this.onScreen && this.pending < room) {
@@ -280,14 +281,14 @@ export class Player {
   async endTake(onProgress) {
     const take = this.tap;
     this.tap = null;
-    const total = take.waiting.length;
-    while (take.waiting.length && !take.failed) {
+    const total = take.behind;
+    while (take.behind && !take.failed) {
       if (!take.ready() || this.pending >= DEPTH + Math.ceil((this.lag * take.fps) / 1000)) {
         await new Promise((r) => setTimeout(r, 4));
         continue;
       }
-      this.draw(take.waiting[0], false, take);
-      onProgress?.(1 - take.waiting.length / total);
+      this.draw(take.oldest(), false, take);
+      onProgress?.(1 - take.behind / total);
     }
     return take.stop();
   }

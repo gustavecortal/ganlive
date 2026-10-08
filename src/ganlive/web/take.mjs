@@ -2,8 +2,9 @@
 // shader turns each frame into I420 (the layout every WebCodecs encoder takes), a ring of
 // mapped buffers brings it back without stalling the page, and WebCodecs encodes it: the GPU's
 // H.264 encoder at a high bitrate where the browser offers one, else VP9, written into an MP4
-// here. A browser without WebCodecs records a canvas with MediaRecorder instead. The desktop's
-// takes are `record/video.py`.
+// here, on disk as it comes (the site's private storage), so an hour of lichen (about 26 GB)
+// never sits in memory. A browser without WebCodecs records a canvas with MediaRecorder
+// instead. The desktop's takes are `record/video.py`.
 
 import { screen } from "./runner.mjs";
 
@@ -97,23 +98,165 @@ export async function prepareTake(entry, { fps = 60 } = {}) {
 }
 
 /** Start a take of `entry` (a loaded model) at `fps`. While it is the player's `tap`, the player
- *  logs the frame due at each time `next` gives, and draws the frames `waiting` in order into it
- *  (`record`, then `recorded` after the submit); `stop` resolves to the video as a Blob. */
+ *  logs the frame due at each time `next` gives, and draws the logged frames in order into it
+ *  (`oldest`, `record`, then `recorded` after the submit); `stop` resolves to the video. */
 export async function startTake(device, entry, { fps = 60 } = {}) {
   // I420 halves each side for its colour planes, so an odd size goes through a canvas instead.
   const even = entry.width % 2 === 0 && entry.height % 2 === 0;
   const candidates = even ? configure(entry.width, entry.height, fps) : null;
   const first = await candidates?.next();
-  return first && !first.done ? new CodecTake(device, entry, fps, first.value, candidates) : new RecorderTake(device, entry, fps);
+  if (!first || first.done) return new RecorderTake(device, entry, fps);
+  return new CodecTake(device, entry, fps, first.value, candidates, await openFile());
 }
+
+// -- where a take's file goes ---------------------------------------------------------------
+
+/** Takes on disk are named so, in the site's private storage (OPFS). */
+const ON_DISK = "ganlive-take-";
+let visited = false;
+
+/** A file for the next take: on disk where the browser allows it, else in memory. A saved take
+ *  is the user's own copy, so the site's are removed: all of an earlier visit's, and of this
+ *  visit's all but the last, whose download may still be running. */
+async function openFile() {
+  try {
+    const dir = await navigator.storage.getDirectory();
+    const old = [];
+    for await (const name of dir.keys()) if (name.startsWith(ON_DISK)) old.push(name);
+    old.sort();
+    for (const name of visited ? old.slice(0, -1) : old) await dir.removeEntry(name).catch(() => {});
+    visited = true;
+    const name = `${ON_DISK}${Date.now()}.mp4`;
+    const handle = await dir.getFileHandle(name, { create: true });
+    const { quota = Infinity, usage = 0 } = await navigator.storage.estimate().catch(() => ({}));
+    return new DiskFile(dir, name, handle, await handle.createWritable(), quota - usage);
+  } catch {
+    return new MemoryFile();     // no OPFS, or no createWritable (Safari before 26)
+  }
+}
+
+/** A file written in order (`append`), with bytes patched in place (`patch`) before `close`. */
+class MemoryFile {
+  constructor() {
+    /** Bytes the take may still write. */
+    this.room = Infinity;
+    this.parts = [];
+    this.batch = [];
+    this.batchBytes = 0;
+    this.size = 0;
+  }
+  append(bytes) {
+    this.batch.push(bytes);
+    this.batchBytes += bytes.length;
+    this.size += bytes.length;
+    // A Blob a few tens of MB at a time, which a browser may keep on disk rather than in memory.
+    if (this.batchBytes > 32e6) this.flush();
+  }
+  flush() {
+    if (this.batch.length) this.parts.push(new Blob(this.batch));
+    this.batch = [];
+    this.batchBytes = 0;
+  }
+  /** Only the first bytes appended can be patched, which is all an MP4's header needs. */
+  patch(position, bytes) {
+    this.flush();
+    this.head ??= this.parts.shift();
+    this.patches = [...(this.patches ?? []), [position, bytes]];
+  }
+  async close(type) {
+    this.flush();
+    const head = new Uint8Array(await this.head.arrayBuffer());
+    for (const [position, bytes] of this.patches ?? []) head.set(bytes, position);
+    return new Blob([head, ...this.parts], { type });
+  }
+  discard() {
+    this.parts = [];
+  }
+}
+
+class DiskFile {
+  constructor(dir, name, handle, writable, room) {
+    Object.assign(this, { dir, name, handle, writable, room });
+    this.size = 0;
+    /** Writes in the order they were asked for; the first failure (a full disk) is kept. */
+    this.chain = Promise.resolve();
+    this.failed = null;
+  }
+  append(bytes) {
+    const position = this.size;
+    this.size += bytes.length;
+    this.write({ type: "write", position, data: bytes });
+  }
+  patch(position, bytes) {
+    this.write({ type: "write", position, data: bytes });
+  }
+  write(command) {
+    this.chain = this.chain.then(() => this.failed || this.writable.write(command)).catch((e) => (this.failed ??= e));
+  }
+  async close(type) {
+    await this.chain;
+    await this.writable.close().catch((e) => (this.failed ??= e));
+    if (this.failed) {
+      await this.dir.removeEntry(this.name).catch(() => {});
+      throw this.failed;
+    }
+    // A File on disk: the download reads it from there. Its type is set by the name.
+    return this.handle.getFile();
+  }
+  async discard() {
+    await this.chain;
+    await this.writable.abort().catch(() => {});
+    await this.dir.removeEntry(this.name).catch(() => {});
+  }
+}
+
+/** Frames to draw, oldest first, packed: each frame's latent and settings side by side in blocks
+ *  of one model, about 1 KB a frame for lichen and nothing else per frame. */
+class FrameLog {
+  constructor() {
+    this.blocks = [];
+    this.length = 0;
+  }
+  push(index, f) {
+    const width = f.latent.length + f.settings.length;
+    let block = this.blocks[this.blocks.length - 1];
+    if (!block || block.entry !== f.entry || block.width !== width || block.end === BLOCK) {
+      block = { entry: f.entry, width, nz: f.latent.length, first: index, start: 0, end: 0, data: new Float32Array(BLOCK * width) };
+      this.blocks.push(block);
+    }
+    block.data.set(f.latent, block.end * width);
+    block.data.set(f.settings, block.end * width + block.nz);
+    block.end++;
+    this.length++;
+  }
+  /** The oldest frame, viewed in its block: drawn before the next `shift`. */
+  oldest() {
+    const b = this.blocks[0];
+    const at = b.start * b.width;
+    return { index: b.first + b.start, entry: b.entry, latent: b.data.subarray(at, at + b.nz), settings: b.data.subarray(at + b.nz, at + b.width) };
+  }
+  shift() {
+    const b = this.blocks[0];
+    if (++b.start === b.end && (b.end === BLOCK || this.blocks.length > 1)) this.blocks.shift();
+    this.length--;
+  }
+  clear() {
+    this.blocks = [];
+    this.length = 0;
+  }
+}
+
+/** Frames a block of the log holds. */
+const BLOCK = 256;
 
 class TakeBase {
   constructor(entry, fps) {
     Object.assign(this, { entry, fps });
     this.start = null;
     this.slot = -1;
-    /** Frames logged and not drawn yet, oldest first: `{index, entry, latent, settings}`. */
-    this.waiting = [];
+    /** Frames logged and not drawn yet. */
+    this.backlog = new FrameLog();
+    /** The newest frame logged, as the player made it: the one the screen shows. */
     this.latest = null;
     this.frames = 0;
     this.dropped = 0;
@@ -122,6 +265,10 @@ class TakeBase {
   /** Seconds recorded so far. */
   get seconds() {
     return this.start === null ? 0 : (performance.now() - this.start) / 1000;
+  }
+  /** Frames logged and not drawn yet. */
+  get behind() {
+    return this.backlog.length;
   }
   /** The time (ms, as the player's) of the take's next frame, if it is due by the animation
    *  frame at `now`: up to half a frame early, so each animation frame of a screen at the
@@ -134,8 +281,12 @@ class TakeBase {
   /** Keep frame `f` (the player's `update`) as the take's next. */
   log(f) {
     f.index = ++this.slot;
-    this.waiting.push(f);
+    this.backlog.push(f.index, f);
     this.latest = f;
+  }
+  /** The oldest frame not drawn yet, `{index, entry, latent, settings}`. */
+  oldest() {
+    return this.backlog.oldest();
   }
   ready() {
     return true;
@@ -143,9 +294,9 @@ class TakeBase {
 }
 
 class CodecTake extends TakeBase {
-  constructor(device, entry, fps, first, candidates) {
+  constructor(device, entry, fps, first, candidates, file) {
     super(entry, fps);
-    Object.assign(this, { device, candidates });
+    Object.assign(this, { device, candidates, file });
     const { width: w, height: h } = entry;
     this.size = (w * h * 3) / 2;
     const bytes = Math.ceil(this.size / 4) * 4;
@@ -170,7 +321,7 @@ class CodecTake extends TakeBase {
    *  next candidate; frames wait meanwhile (`ready`). */
   open(candidate) {
     Object.assign(this, candidate, { keyed: 0, switching: false });
-    this.mux = new Mp4(this.kind, this.entry.width, this.entry.height);
+    this.mux = new Mp4(this.kind, this.entry.width, this.entry.height, this.file);
     const encoder = (this.encoder = new VideoEncoder({
       output: (chunk, meta) => this.mux.add(chunk, meta),
       error: (e) => {
@@ -194,6 +345,10 @@ class CodecTake extends TakeBase {
     }
     return this.binds.get(entry);
   }
+  /** Seconds of video the disk has room for, at this take's bitrate. */
+  get room() {
+    return this.file.room / ((this.config.bitrate ?? BITS_PER_PIXEL * this.entry.width * this.entry.height * this.fps) / 8);
+  }
   get label() {
     return `${this.config.codec}, ${this.config.bitrateMode === "quantizer" ? "constant quality" : "high bitrate"}`;
   }
@@ -211,7 +366,8 @@ class CodecTake extends TakeBase {
     pass.end();
     this.filling = this.ring.find((r) => !r.busy);
     this.filling.busy = true;
-    this.filling.index = this.waiting.shift().index;
+    this.filling.index = f.index;
+    this.backlog.shift();
     encoder.copyBufferToBuffer(this.out, 0, this.filling.buffer, 0, this.out.size);
   }
   /** After the player's submit: read the frame back, then hand it to the encoder. */
@@ -243,7 +399,10 @@ class CodecTake extends TakeBase {
     if (!this.failed) await this.encoder.flush().catch((e) => (this.failed ??= e));
     if (this.encoder.state !== "closed") this.encoder.close();
     for (const b of [this.out, this.shape, ...this.ring.map((r) => r.buffer)]) b.destroy();
-    if (this.failed) throw this.failed;
+    if (this.failed) {
+      await this.file.discard();
+      throw this.failed;
+    }
     return this.mux.finish(this.fps);
   }
 }
@@ -270,8 +429,8 @@ class RecorderTake extends TakeBase {
   /** MediaRecorder stamps each frame as it arrives, so a frame drawn late cannot be put back
    *  in its place: only the newest waits, and those it replaces count as `dropped`. */
   log(f) {
-    this.dropped += this.waiting.length;
-    this.waiting = [];
+    this.dropped += this.backlog.length;
+    this.backlog.clear();
     super.log(f);
   }
   use(entry) {
@@ -280,7 +439,7 @@ class RecorderTake extends TakeBase {
   }
   record(encoder, f) {
     this.use(f.entry);
-    this.waiting.shift();
+    this.backlog.shift();
     this.onto.draw(encoder, this.context.getCurrentTexture());
   }
   recorded() {
@@ -351,30 +510,25 @@ const box = (type, ...parts) => {
 const full = (type, version, flags, ...parts) => box(type, fields([8, version], [8, flags >> 16], [16, flags & 0xffff]), ...parts);
 const MATRIX = fields([32, 0x10000], [32, 0], [32, 0], [32, 0], [32, 0x10000], [32, 0], [32, 0], [32, 0], [32, 0x40000000]);
 
-/** An MP4 of one video track, its samples kept in memory as Blobs until `finish`. */
+/** Bytes before the first sample: `ftyp` (32), then the `mdat` header with a 64-bit size (16),
+ *  written as zeros and filled in by `finish`, when the codec and the size are known. */
+const HEAD = 48;
+
+/** An MP4 of one video track, written onto `file` as the encoder hands out its chunks: the
+ *  samples, then the index (`moov`) after them, then the header patched in. */
 class Mp4 {
-  constructor(kind, width, height) {
-    Object.assign(this, { kind, width, height });
+  constructor(kind, width, height, file) {
+    Object.assign(this, { kind, width, height, file });
     this.samples = [];        // [size, timestamp in us, key]
-    this.parts = [];
-    this.batch = [];
-    this.batchBytes = 0;
     this.description = null;
+    if (!file.size) file.append(new Uint8Array(HEAD));
   }
   add(chunk, meta) {
     if (meta?.decoderConfig?.description) this.description = new Uint8Array(meta.decoderConfig.description);
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
     this.samples.push([data.length, chunk.timestamp, chunk.type === "key"]);
-    this.batch.push(data);
-    this.batchBytes += data.length;
-    // A Blob a few tens of MB at a time, which a browser may keep on disk rather than in memory.
-    if (this.batchBytes > 32e6) this.flush();
-  }
-  flush() {
-    if (this.batch.length) this.parts.push(new Blob(this.batch));
-    this.batch = [];
-    this.batchBytes = 0;
+    this.file.append(data);
   }
   sampleEntry() {
     const visual = concat([fields([32, 0], [16, 0], [16, 1], [16, 0], [16, 0], [32, 0], [32, 0], [32, 0],
@@ -391,8 +545,7 @@ class Mp4 {
    *  order with presentation timestamps, so decoding times are the timestamps sorted, each
    *  sample's offset to its presentation is `ctts`, and an edit list starts the track at the
    *  first presented frame. */
-  finish(fps) {
-    this.flush();
+  async finish(fps) {
     const n = this.samples.length;
     const timescale = 90000;
     const first = this.samples.reduce((a, [, t]) => Math.min(a, t), Infinity);
@@ -408,7 +561,7 @@ class Mp4 {
     const ftyp = box("ftyp", ascii("isom"), fields([32, 512]), ascii("isomiso2mp41"), ascii(this.kind === "avc" ? "avc1" : "vp09"));
     const mdatSize = 16 + this.samples.reduce((a, [size]) => a + size, 0);
     const mdatHead = concat([fields([32, 1]), ascii("mdat"), fields([64, mdatSize])]);
-    let offset = ftyp.length + 16;
+    let offset = HEAD;
     const placed = this.samples.map(([size]) => {
       const at = offset;
       offset += size;
@@ -435,6 +588,8 @@ class Mp4 {
     // Reordered frames start presenting `delay` in: the edit list skips it.
     const edts = delay ? [box("edts", full("elst", 0, 0, fields([32, 1], [32, duration], [32, delay], [16, 1], [16, 0])))] : [];
     const moov = box("moov", mvhd, box("trak", tkhd, ...edts, mdia));
-    return new Blob([ftyp, mdatHead, ...this.parts, moov], { type: "video/mp4" });
+    this.file.append(moov);
+    this.file.patch(0, concat([ftyp, mdatHead]));
+    return this.file.close("video/mp4");
   }
 }
