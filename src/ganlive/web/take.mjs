@@ -66,11 +66,21 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   Y[word] = out;
 }`;
 
+/** What this browser answered for each configuration asked about. Edge takes 1.3 s over its
+ *  first answer, so the page asks ahead (`prepareTake`) and Record starts at once. */
+const answers = new Map();
+const supported = (config) => {
+  const key = JSON.stringify(config);
+  if (!answers.has(key))
+    answers.set(key, VideoEncoder.isConfigSupported(config).then((r) => r.supported, () => false));
+  return answers.get(key);
+};
+
 /** The encoder configurations this browser says it takes for a `width` x `height` take at
- *  `fps`, best first: hardware before software, a bitrate before a constant quality. */
-async function configure(width, height, fps) {
-  const found = [];
-  if (typeof VideoEncoder === "undefined") return found;
+ *  `fps`, best first: hardware before software, a bitrate before a constant quality. Each is
+ *  asked about only when the one before is not enough. */
+async function* configure(width, height, fps) {
+  if (typeof VideoEncoder === "undefined") return;
   for (const hardwareAcceleration of ["prefer-hardware", "no-preference"])
     for (const [kind, codec] of CODECS)
       for (const bitrateMode of ["variable", "quantizer"]) {
@@ -79,13 +89,14 @@ async function configure(width, height, fps) {
           ...(bitrateMode === "variable" ? { bitrate: Math.round(BITS_PER_PIXEL * width * height * fps) } : {}),
           ...(kind === "avc" ? { avc: { format: "avc" } } : {}),
         };
-        try {
-          if ((await VideoEncoder.isConfigSupported(config)).supported) found.push({ kind, config });
-        } catch {
-          // a configuration this browser cannot parse is one it does not support
-        }
+        // A configuration this browser cannot parse is one it does not support.
+        if (await supported(config)) yield { kind, config };
       }
-  return found;
+}
+
+/** Ask, in the background, what a take of `entry` at `fps` will encode with. */
+export async function prepareTake(entry, { fps = 60 } = {}) {
+  for await (const _ of configure(entry.width, entry.height, fps)) break;
 }
 
 /** Start a take of `entry` (a loaded model) at `fps`. While it is the player's `tap`, the
@@ -94,8 +105,9 @@ async function configure(width, height, fps) {
 export async function startTake(device, entry, { fps = 60 } = {}) {
   // I420 halves each side for its colour planes, so an odd size goes through a canvas instead.
   const even = entry.width % 2 === 0 && entry.height % 2 === 0;
-  const found = even ? await configure(entry.width, entry.height, fps) : [];
-  return found.length ? new CodecTake(device, entry, fps, found) : new RecorderTake(device, entry, fps);
+  const candidates = even ? configure(entry.width, entry.height, fps) : null;
+  const first = await candidates?.next();
+  return first && !first.done ? new CodecTake(device, entry, fps, first.value, candidates) : new RecorderTake(device, entry, fps);
 }
 
 class TakeBase {
@@ -137,7 +149,7 @@ class TakeBase {
 }
 
 class CodecTake extends TakeBase {
-  constructor(device, entry, fps, candidates) {
+  constructor(device, entry, fps, first, candidates) {
     super(entry, fps);
     Object.assign(this, { device, candidates });
     const { width: w, height: h } = entry;
@@ -157,20 +169,21 @@ class CodecTake extends TakeBase {
     /** Each frame's encode waits for the one before, so frames reach the encoder in order. */
     this.chain = Promise.resolve();
     this.failed = null;
-    this.open(0);
+    this.open(first);
   }
-  /** Encode with candidate `i`. An encoder can claim a configuration and then refuse its first
+  /** Encode with `candidate`. An encoder can claim a configuration and then refuse its first
    *  frame (Firefox did with NV12), so one that fails before writing anything gives way to the
-   *  next candidate. */
-  open(i) {
-    Object.assign(this, this.candidates[i], { choice: i, keyed: 0 });
+   *  next candidate; frames wait meanwhile (`ready`). */
+  open(candidate) {
+    Object.assign(this, candidate, { keyed: 0, switching: false });
     this.mux = new Mp4(this.kind, this.entry.width, this.entry.height);
     const encoder = (this.encoder = new VideoEncoder({
       output: (chunk, meta) => this.mux.add(chunk, meta),
       error: (e) => {
         if (encoder !== this.encoder) return;
-        if (!this.mux.samples.length && i + 1 < this.candidates.length) this.open(i + 1);
-        else this.failed ??= e;
+        if (this.mux.samples.length) return void (this.failed ??= e);
+        this.switching = true;
+        this.reopened = this.candidates.next().then(({ value, done }) => (done ? (this.failed ??= e) : this.open(value)));
       },
     }));
     encoder.configure(this.config);
@@ -188,7 +201,7 @@ class CodecTake extends TakeBase {
     return `${this.config.codec}, ${this.config.bitrateMode === "quantizer" ? "constant quality" : "high bitrate"}`;
   }
   ready() {
-    return !this.failed && this.encoder.encodeQueueSize < QUEUE && this.ring.some((r) => !r.busy);
+    return !this.failed && !this.switching && this.encoder.encodeQueueSize < QUEUE && this.ring.some((r) => !r.busy);
   }
   /** The frame as I420, into a free buffer of the ring. */
   record(encoder) {
@@ -206,7 +219,8 @@ class CodecTake extends TakeBase {
     const r = this.filling;
     const slot = this.slot;
     const mapped = r.buffer.mapAsync(GPUMapMode.READ);
-    this.chain = this.chain.then(() => mapped).then(() => {
+    this.chain = this.chain.then(() => mapped).then(async () => {
+      if (this.switching) await this.reopened;      // a frame read back while the encoder changes
       if (!this.failed) {
         const frame = new VideoFrame(new Uint8Array(r.buffer.getMappedRange(), 0, this.size), {
           format: "I420", codedWidth: this.entry.width, codedHeight: this.entry.height, colorSpace: BT709,
