@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wgpu
 
 from ganlive.device import detect_backend
 from ganlive.dials import fastgan_dials, steer
@@ -23,7 +24,7 @@ from ganlive.engine.blob import Blob
 from ganlive.engine.compile import compile_manifest
 from ganlive.engine.noise import noise_seed, seeded_noise
 from ganlive.engine.probe import box_means
-from ganlive.engine.runner import checked, default_device
+from ganlive.engine.runner import _device, _gpus, checked, is_software
 from ganlive.levels import EXACT_LEVELS, RANDOM_FLOOR
 from ganlive.models.common import host_latent
 from ganlive.models.fastgan import freeze_noise, load
@@ -187,34 +188,26 @@ def on_engine(manifest: dict, blob: Blob):
     """The converted model built on this machine's GPU to measure its dials, or None where
     there is none (a software adapter would be slower than PyTorch), or it does not draw the
     probe PyTorch drew."""
-    device = None
+    adapter = _gpus(None)[0]
+    if is_software(adapter):
+        print("dials measured with PyTorch: this machine has no GPU adapter", flush=True)
+        return None
+    device = _device(adapter)
     try:
-        device = default_device()
-        if device.adapter.info["adapter_type"] == "CPU":
-            raise RuntimeError("only a software adapter")
         return checked(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
-    except Exception as exc:  # noqa: BLE001  no GPU, or a backend that draws it wrong
-        if device is not None:
-            device.destroy()
+    except (RuntimeError, ValueError, wgpu.GPUError) as exc:      # it draws the probe wrong
+        device.destroy()
         print(f"dials measured with PyTorch: the engine cannot here ({exc})", flush=True)
         return None
 
 
-def measured_dials(steerable, cfg, names: list[str], device=None, checkpoint=None, *,
-                   floor: float = RANDOM_FLOOR, grain: bool = True, engine=None) -> dict:
-    """The dials of this net, measured once here so that playing measures nothing: the noise
-    gains each band needs (the stock ones without `grain`), the latent directions that beat a
-    random one `floor` times over (ranked), and how far each MODEL dial moves the picture,
-    which decides which dials are live. Drawn by `engine` (`on_engine`) when given, which
-    takes a fraction of the time PyTorch does at a FastGAN's full size, or else by PyTorch on
-    `device` (the fastest here unless given). Either way with the engine's own noise."""
-    if engine is not None:
-        device = "cpu"
-        net = EngineDriven(steerable, Settings(names, device, torch.float32), engine).eval()
-    else:
-        device = device or detect_backend()
-        net = Driven(copy.deepcopy(steerable).to(device),
-                     Settings(names, device, torch.float32)).eval()
+def measured_dials(net, cfg, device, checkpoint=None, *, floor: float = RANDOM_FLOOR,
+                   grain: bool = True) -> dict:
+    """The dials of `net` (`Driven` or `EngineDriven`, its tensors on `device`), measured once
+    here so that playing measures nothing: the noise gains each band needs (the stock ones
+    without `grain`), the latent directions that beat a random one `floor` times over
+    (ranked), and how far each MODEL dial moves the picture, which decides which dials are
+    live. Either way with the engine's own noise."""
     with torch.no_grad():
         gains = (steer.calibrate_noise(net, net.settings, cfg.nz, device, torch.float32)
                  if grain else None)
@@ -234,10 +227,18 @@ def measure(checkpoint, device=None, *, floor: float = RANDOM_FLOOR,
     steerable, cfg, names = prepared(checkpoint)
     manifest, blob = manifest_of(steerable, cfg, names)
     manifest["probe"] = probe(steerable, cfg, names)
+    # Drawn by the engine where it can, a fraction of PyTorch's time at a FastGAN's full
+    # size, or else by PyTorch on `device`, the fastest here unless given.
     engine = on_engine(manifest, blob) if device is None else None
+    if engine is not None:
+        device = "cpu"
+        net = EngineDriven(steerable, Settings(names, device, torch.float32), engine)
+    else:
+        device = device or detect_backend()
+        net = Driven(copy.deepcopy(steerable).to(device), Settings(names, device, torch.float32))
     try:
-        manifest["dials"] = measured_dials(steerable, cfg, names, device, checkpoint=checkpoint,
-                                           floor=floor, grain=grain, engine=engine)
+        manifest["dials"] = measured_dials(net.eval(), cfg, device, checkpoint=checkpoint,
+                                           floor=floor, grain=grain)
     finally:
         if engine is not None:
             engine.destroy()

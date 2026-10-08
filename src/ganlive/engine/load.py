@@ -14,8 +14,17 @@ from pathlib import Path
 
 from ganlive.checkpoints import ENGINE_SUFFIX, MANIFEST, WEIGHTS, is_engine, slug_for
 from ganlive.engine import stamp
+from ganlive.engine.compile import quick_choices
 from ganlive.engine.player import EngineGenerator, PlayedDirections, dials_of
-from ganlive.engine.runner import built, cache_dir, fastest, read_folder, tuned_plans
+from ganlive.engine.runner import (
+    built,
+    cache_dir,
+    fastest,
+    is_software,
+    read_folder,
+    remember_plans,
+    tuned_plans,
+)
 from ganlive.engine.tune import quick
 from ganlive.levels import RANDOM_FLOOR
 
@@ -88,18 +97,16 @@ def converted(checkpoint, floor: float = RANDOM_FLOOR, grain: bool = True) -> tu
 
 
 def _tuned(model, manifest: dict, weights: bytes, path):
-    """`model` rebuilt with the plans a quick tune finds for its GPU (`tune.quick`), the first
-    time this model plays there. Remembered, so it happens once."""
-    device = model.device
+    """`model`, or the faster one a quick tune builds from it for its GPU (`tune.quick`), the
+    first time this model plays there. The plans are remembered, so it happens once, and the
+    backends' measurements are kept."""
     started = time.perf_counter()
     print("  plans: a first load on this GPU, so its heaviest layers are tuned", flush=True)
-    plans, best, start = quick(manifest, weights, device, log=lambda _line: None)
+    plans, best, start, model = quick(manifest, weights, model)
+    remember_plans(manifest, model.device.adapter, plans, compare=False)
     print(f"  plans: {start:.2f} -> {best:.2f} ms a frame in {time.perf_counter() - started:.0f} s. "
           f"`ganlive tune {path}` searches every layer", flush=True)
-    if not plans:
-        return model
-    model.destroy()
-    return built(device, manifest, weights, plans)
+    return model
 
 
 def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
@@ -118,10 +125,10 @@ def open_model(path, gpu=None, floor: float = RANDOM_FLOOR, grain: bool = True,
         print(f"engine: {report['best']}", flush=True)
     else:
         model = built(gpu, manifest, weights, tuned_plans(manifest, gpu.adapter))
-    # A FastGAN on a GPU: a software adapter gains nothing from it, and StyleGAN2 has `tune`.
+    # Not on a software adapter, which gains nothing from it.
     adapter = model.device.adapter
-    if (tune and manifest.get("family", "fastgan") == "fastgan"
-            and adapter.info["adapter_type"] != "CPU" and tuned_plans(manifest, adapter) is None):
+    if (tune and not is_software(adapter) and quick_choices(manifest)
+            and tuned_plans(manifest, adapter) is None):
         model = _tuned(model, manifest, weights, path)
     net = EngineGenerator(model)
     print(net.report(), flush=True)

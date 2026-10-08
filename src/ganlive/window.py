@@ -122,7 +122,7 @@ class Display:
 
     def __init__(self, size, device, title: str = "ganlive", overlay=None,
                  fullscreen: bool = True, threaded: bool = THREADED):
-        self.size = size                      # (h, w) of the frames it will be given
+        self.size = size                      # (h, w) the window is first sized for
         self.threaded = threaded
         self.stopped = False
         self.overlay = overlay
@@ -141,7 +141,6 @@ class Display:
         self._strip = None
         self._areas = None
         self._composed = 0.0
-        self._sent = None
         if not threaded:
             try:
                 self._open(title)
@@ -250,10 +249,7 @@ class Display:
         if rect[2] and now - self._composed >= STRIP_S:
             self._composed = now
             surface = self.overlay.compose(rect[2], rect[3])
-            pixels = surface.get_buffer().raw
-            if pixels != self._sent:            # only a strip that changed is uploaded
-                self._sent = pixels
-                self._strip = (pixels, surface.get_pitch(), *surface.get_size())
+            self._strip = (surface.get_buffer().raw, surface.get_pitch(), *surface.get_size())
         pixels = self.screen.pixels(self._win)
         self._areas = (pixels, pixels[0] / max(1, self._win.size[0]), picture, rect)
         self._events(rect)

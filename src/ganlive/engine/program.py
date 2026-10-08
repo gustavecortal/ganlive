@@ -32,8 +32,7 @@ def compile_program(manifest: dict, plans: dict | None = None, output: str = "rg
     (`output="bgra8"`) for the desktop app, or float planes in [-1, 1] (`"f32"`) for checks.
     `plans` overrides how conv layers run, by name (see `_plan`), and `browser` takes the
     defaults for every browser rather than the desktop's."""
-    b = Builder(manifest, plans or {})
-    b.browser = browser
+    b = Builder(manifest, plans or {}, browser=browser)
     m = manifest
     b.buffer("P", m["bytes"], init="weights")
     b.buffer("Z", m["nz"] * 4)
@@ -128,6 +127,30 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
             options += direct.CHOICES
         out[op["out"]] = options
     return out
+
+
+#: What a first launch tunes (`tune.quick`): the convolutions that cost the most, a direct one
+#: at the tiles `ganlive tune` chose most often (plain, f32 weights or workgroup memory), an
+#: upsampling one at every tile it takes.
+QUICK_LAYERS = 3
+QUICK_DIRECT = [{"by": by, "bx": bx, "oct": oct, **extra}
+                for by, bx, oct in ((2, 2, 4), (2, 2, 8), (1, 2, 8))
+                for extra in ({}, {"f32": True}, {"slm": True})]
+
+
+def quick_choices(manifest: dict) -> dict[str, list[dict]]:
+    """`plan_choices` for the `QUICK_LAYERS` convolutions with the most multiply-adds."""
+    t = manifest["tensors"]
+    convs = {op["out"]: op for op in manifest["ops"] if op["op"] == "conv"}
+
+    def work(op):
+        cout, h, w = t[op["out"]]
+        return h * w * (4 if op["up"] else 9) * t[op["in"]][0] * 2 * cout
+
+    heavy = sorted(convs.values(), key=work, reverse=True)[:QUICK_LAYERS]
+    found = plan_choices(manifest)
+    return {op["out"]: [o for o in found[op["out"]] if op["up"] or o in QUICK_DIRECT]
+            for op in heavy}
 
 
 def _allocate(b: Builder) -> dict[str, str]:
@@ -504,6 +527,6 @@ def _noise(b: Builder, key: str, h: int, w: int) -> None:
     """A noise layer's buffer, filled once at load by `NOISE` with the layer's own seed."""
     n = h * w
     b.buffer(f"noise.{key}", n * 4)
-    b.buffer(f"noise.{key}.n", 16, init="words", words=[n, noise_seed(key)])
+    _params(b, f"noise.{key}.n", n, noise_seed(key))
     b.step(f"noise.{key}", NOISE, [f"noise.{key}", f"noise.{key}.n"], linear(n, 256)[0],
            load=True)

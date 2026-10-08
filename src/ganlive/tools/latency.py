@@ -90,7 +90,7 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     display = Display((r.height, r.width), r.gpu, title="ganlive - latency", overlay=panel,
                       fullscreen=False)
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
-                              "issue": [], "window": [], "publish": []}
+                              "issue": [], "publish": []}
     total_ms: list[float] = []
     # A feeder of its own: the recorded loop's has finished, and the drums must be playing.
     feeder = StemFeeder(ex, pcm, take.samplerate, args.blocksize)
@@ -111,14 +111,11 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
             t3 = time.perf_counter()
             model.net(z)
             t4 = time.perf_counter()
-            frame = Stepped.native(model.net)
-            t5 = time.perf_counter()
-            display.publish(frame)
+            display.publish(Stepped.native(model.net))
             t6 = time.perf_counter()
             panel.beats = f / args.fps * take.bpm / 60.0
             for name, dt in (("hit detection", t1 - t0), ("rules", t2 - t1),
-                             ("walk", t3 - t2), ("issue", t4 - t3),
-                             ("window", t5 - t4), ("publish", t6 - t5)):
+                             ("walk", t3 - t2), ("issue", t4 - t3), ("publish", t6 - t4)):
                 stages[name].append(dt * 1000)
             total_ms.append((t6 - t0) * 1000)
     finally:

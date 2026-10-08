@@ -68,6 +68,9 @@ class Model:
         self.device, self.program = device, program
         self.height, self.width = program["height"], program["width"]
         self.buffers: dict[str, wgpu.GPUBuffer] = {}
+        #: Where `read` maps the frame, made at the first read and reused (a measurement reads
+        #: hundreds of frames).
+        self._readback = None
         try:
             self._build(weights, pipelines, deadline)
         except BaseException:
@@ -90,7 +93,8 @@ class Model:
             elif init == "words":
                 device.queue.write_buffer(buf, 0, np.array(spec["words"], np.uint32))
         self.output = self.buffers["out"]
-        pipelines = {} if pipelines is None else pipelines
+        #: Shader code -> compiled pipeline, which a rebuild with other plans can share.
+        self.pipelines = pipelines = {} if pipelines is None else pipelines
 
         def compile_one(code):
             if deadline is not None and time.perf_counter() > deadline:
@@ -128,8 +132,9 @@ class Model:
 
     def destroy(self) -> None:
         """Free this model's buffers. Its device may be shared, so it stays."""
-        for buf in self.buffers.values():
-            buf.destroy()
+        for buf in [*self.buffers.values(), self._readback]:
+            if buf is not None:
+                buf.destroy()
 
     def set_latent(self, z) -> None:
         self.device.queue.write_buffer(self.buffers["Z"], 0, np.ascontiguousarray(z, np.float32))
@@ -149,7 +154,15 @@ class Model:
     def read(self) -> np.ndarray:
         """The last frame, waited for: (H, W, 4) uint8 RGBA (whichever order the program
         draws), or (3, H, W) float32 in [-1, 1]."""
-        data = self.device.queue.read_buffer(self.output)
+        if self._readback is None:
+            self._readback = self.device.create_buffer(
+                size=self.output.size, usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST)
+        encoder = self.device.create_command_encoder()
+        encoder.copy_buffer_to_buffer(self.output, 0, self._readback, 0, self.output.size)
+        self.device.queue.submit([encoder.finish()])
+        self._readback.map_sync(wgpu.MapMode.READ)
+        data = self._readback.read_mapped()
+        self._readback.unmap()
         if self.program["output"] == "f32":
             return np.frombuffer(data, np.float32).reshape(3, self.height, self.width)
         pixels = np.frombuffer(data, np.uint8).reshape(self.height, self.width, 4)
@@ -356,11 +369,16 @@ def checked(device, program, weights, *, deadline: float | None = None,
     return model
 
 
+def is_software(adapter) -> bool:
+    """Whether the adapter draws on the CPU (WARP, lavapipe, SwiftShader)."""
+    return adapter.info["adapter_type"] == "CPU"
+
+
 def _gpus(backend: str | None) -> list:
     """The GPU adapters worth measuring: not the CPU one, nor OpenGL, whose compute is the
     least complete, or any adapter if nothing else is there."""
     every = wgpu.gpu.enumerate_adapters_sync()
-    gpus = [a for a in every if a.info["adapter_type"] != "CPU"
+    gpus = [a for a in every if not is_software(a)
             and not a.info["backend_type"].startswith("OpenGL")]
     if backend:
         gpus = [a for a in every if a.info["backend_type"].lower() == backend.lower()]

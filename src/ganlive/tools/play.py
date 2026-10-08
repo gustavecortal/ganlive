@@ -730,7 +730,6 @@ def main(argv=None) -> int:
 
     # The window is given the model's own frame, presented as it is made.
     made = r.current.net(walk.latent(0.0))
-    first = r.stage.step(made)
     if display is not None:
         display.publish(Stepped.native(made))
     r.sync()
@@ -748,7 +747,7 @@ def main(argv=None) -> int:
             return
         (ticket, taped), in_flight = in_flight, None
         ticket.wait()
-        if taped is not None and rec is not None:
+        if rec is not None:
             rec.offer(taped)
 
     def toggle_take(at=None):
@@ -783,7 +782,7 @@ def main(argv=None) -> int:
 
     if args.record:
         toggle_take()
-        rec.offer(r.stage.nv12_bytes(first, "take", TAKE_RING))
+        rec.offer(r.stage.nv12_bytes(r.stage.step(made), "take", TAKE_RING))
         if not rec.drain():
             print("  the encoder did not start; the take may be short", flush=True)
 
@@ -835,17 +834,15 @@ def main(argv=None) -> int:
                 toggle_take(t0)
             # At the take's size, for a take or a still.
             frame = None
-            with r.stage.handoff() as sent:
-                taped = None
-                if rec is not None:
-                    if rec.wants:
-                        frame = r.stage.step(out)
-                        taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
-                    else:
-                        rec.skip()
-            # The last frame's, whose download ran while this one was being generated.
-            land()
-            in_flight = (sent.ticket, taped)
+            if rec is not None and not rec.wants:
+                rec.skip()
+            elif rec is not None:
+                with r.stage.handoff() as sent:
+                    frame = r.stage.step(out)
+                    taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
+                # The last frame's, whose download ran while this one was being generated.
+                land()
+                in_flight = (sent.ticket, taped)
             if requests.take("still"):
                 shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
                 stills.append(video.save_still(shot, r.stage.rgb_still(frame or r.stage.step(out))))

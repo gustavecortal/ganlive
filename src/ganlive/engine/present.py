@@ -52,7 +52,6 @@ fn px(y: u32, x: u32) -> vec3f { return unpack4x8unorm(X[y * u32(V.size.x) + x])
 """
 
 
-
 class _WMInfo(ctypes.Structure):
     """SDL_SysWMinfo: SDL's version, the windowing system, and its handles."""
     _fields_ = [("major", ctypes.c_uint8), ("minor", ctypes.c_uint8), ("patch", ctypes.c_uint8),
@@ -115,6 +114,7 @@ class Screen:
         self._view = device.create_buffer(size=64, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
         self._strip = self._texture(1, 1)
         self._binds: dict = {}
+        self._shown = None                      # the view last written, rewritten on a change
 
     def pixels(self, window) -> tuple[int, int]:
         """The window's size in pixels, which a high-density screen makes larger than its size."""
@@ -142,13 +142,13 @@ class Screen:
         """Draw `frame` (a `screen.Stepped`), its `src` rect (x, y, w, h in frame pixels) into
         `dst`, and the strip into `strip`, both rects in the pixels of a window `size` big. A
         window with no frame to draw into (minimised, covered) skips it."""
-        pixels = self._size
-        if size and size != pixels:
+        if size != self._size:
             self.context.set_physical_size(*size)
-            self._size = pixels = size
-        view = np.array([*dst, *src, *strip, frame.width, frame.height,
-                         self._strip.width, self._strip.height], np.float32)
-        self.device.queue.write_buffer(self._view, 0, view)
+            self._size = size
+        view = (*dst, *src, *strip, frame.width, frame.height, self._strip.width, self._strip.height)
+        if view != self._shown:
+            self._shown = view
+            self.device.queue.write_buffer(self._view, 0, np.array(view, np.float32))
         key = (id(frame.buffer), id(self._strip))
         bind = self._binds.get(key)
         if bind is None:

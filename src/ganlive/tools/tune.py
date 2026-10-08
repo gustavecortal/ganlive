@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ganlive.checkpoints import is_engine
 from ganlive.engine.load import converted
-from ganlive.engine.runner import fastest, read_folder
+from ganlive.engine.runner import _device, fastest, read_folder, remember_plans
 from ganlive.engine.tune import tune
 from ganlive.tools import add_backend, parser
 
@@ -36,6 +36,11 @@ def main(argv=None) -> int:
     model.destroy()
     model.device.destroy()
     print(f"tuning {folder.name} on {report['best']}", flush=True)
-    plans, best, start = tune(manifest, weights, adapter, log=lambda line: print(line, flush=True))
-    print(f"{start:.2f} -> {best:.2f} ms a frame, {len(plans)} layers changed; remembered")
+    device = _device(adapter)
+    plans, best, start, model = tune(manifest, weights, device,
+                                     log=lambda line: print(line, flush=True))
+    model.destroy()
+    device.destroy()
+    remember_plans(manifest, adapter, plans)
+    print(f"{start:.2f} -> {best:.2f} ms a frame, {len(plans)} layers changed. Remembered.")
     return 0

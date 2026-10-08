@@ -6,87 +6,62 @@ backend, and every later load uses them (`runner.built`)."""
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable
-from pathlib import Path
 
 import wgpu
 
-from ganlive.engine.compile import compile_manifest, plan_choices
-from ganlive.engine.runner import OUTPUT, _device, checked, frame_ms, remember_plans
-
-#: What a first launch tunes (`quick`): the layers that cost the most, at the direct tiles
-#: chosen most often where `tune` was run, plain, with f32 weights or through workgroup memory.
-QUICK_LAYERS = 3
-QUICK_DIRECT = [{"by": by, "bx": bx, "oct": oct, **extra}
-                for by, bx, oct in ((2, 2, 4), (2, 2, 8), (1, 2, 8))
-                for extra in ({}, {"f32": True}, {"slm": True})]
+from ganlive.engine.compile import compile_manifest, plan_choices, quick_choices
+from ganlive.engine.runner import OUTPUT, checked, frame_ms
 
 
-def heaviest(manifest: dict, count: int) -> list[str]:
-    """The `count` convolutions of `manifest` with the most multiply-adds a frame."""
-    t = manifest["tensors"]
+def tune(manifest: dict, weights: bytes, device, *, log: Callable[[str], None] = print,
+         options: dict | None = None, frames: int = 15, base=None) -> tuple[dict, float, float, object]:
+    """`(plans, ms, defaults' ms, model)`: the plans that draw `manifest` fastest on `device`,
+    over `options` (layer -> plans, every layer's by default), timing `frames` frames a round,
+    and the model built with them, which the caller owns. `base`, the model already built with
+    the defaults, is timed rather than built again, and is the one returned or destroyed."""
+    pipelines = getattr(base, "pipelines", None) or {}   # a trial compiles what it changes
+    seen: set[str] = set()                               # programs already timed
 
-    def work(op):
-        cout, h, w = t[op["out"]]
-        return h * w * (4 if op["up"] else 9) * t[op["in"]][0] * 2 * cout
-
-    convs = [op for op in manifest["ops"] if op["op"] == "conv"]
-    return [op["out"] for op in sorted(convs, key=work, reverse=True)[:count]]
-
-
-def quick(manifest: dict, weights: bytes, device, *, log: Callable[[str], None] = print,
-          choices: Path | None = None) -> tuple[dict, float, float]:
-    """`tune` over the heaviest layers alone, each at a few plans, in fewer frames: what a
-    model's first launch on a GPU runs, in seconds rather than minutes."""
-    layers = heaviest(manifest, QUICK_LAYERS)
-    options = {layer: [o for o in found if o.get("gemm") or o in QUICK_DIRECT or len(o) == 3]
-               for layer, found in plan_choices(manifest).items() if layer in layers}
-    return tune(manifest, weights, device.adapter, log=log, choices=choices, device=device,
-                options=options, frames=8, compare=False)
-
-
-def tune(manifest: dict, weights: bytes, adapter, *, log: Callable[[str], None] = print,
-         choices: Path | None = None, device=None, options: dict | None = None,
-         frames: int = 15, compare: bool = True) -> tuple[dict, float, float]:
-    """The plans found for `adapter`, the frame time they give and the defaults' (ms), also
-    remembered in `choices`: over `options` (layer -> plans), every layer's by default, on
-    `device` or a device of its own, timing `frames` frames a round. With `compare`, the
-    backends are measured again at the next load (`remember_plans`)."""
-    own = device is None
-    device = _device(adapter) if own else device
-    pipelines: dict = {}                 # each trial compiles only the shaders it changes
-    seen: set[str] = set()               # options that compile to a program already timed
-
-    def timed(plans: dict) -> float:
+    def built(plans: dict):
         program = compile_manifest(manifest, plans, OUTPUT)
         shape = json.dumps([program["shaders"], program["steps"], program["load"]])
         if shape in seen:
-            return math.inf
+            return None
         seen.add(shape)
-        try:
-            model = checked(device, program, weights, pipelines=pipelines)
-        except RuntimeError:             # draws the probe wrong
-            return math.inf
-        try:
-            return frame_ms(model, frames)
-        finally:
-            model.destroy()
+        return checked(device, program, weights, pipelines=pipelines)
 
     plans: dict = {}
-    start = best = timed(plans)
+    if base is None:
+        best_model = built(plans)
+    else:
+        best_model = base
+        defaults = compile_manifest(manifest, None, OUTPUT)
+        seen.add(json.dumps([defaults["shaders"], defaults["steps"], defaults["load"]]))
+    start = best = frame_ms(best_model, frames)
     log(f"defaults: {start:.2f} ms")
-    for layer, tried in (options or plan_choices(manifest)).items():
+    for layer, tried in (options if options is not None else plan_choices(manifest)).items():
         for option in tried:
             trial = {**plans, layer: option}
             try:
-                ms = timed(trial)
-            except (ValueError, wgpu.GPUError):
-                continue                 # a plan this layer cannot take
+                model = built(trial)
+            except (ValueError, RuntimeError, wgpu.GPUError):
+                continue                 # a plan this layer cannot take, or one drawn wrong
+            if model is None:
+                continue
+            ms = frame_ms(model, frames)
             if ms < best * 0.995:
-                plans, best = trial, ms
+                best_model.destroy()
+                plans, best, best_model = trial, ms, model
                 log(f"  {layer} {json.dumps(option)}: {ms:.2f} ms")
-    if own:
-        device.destroy()
-    remember_plans(manifest, adapter, plans, choices, compare)
-    return plans, best, start
+            else:
+                model.destroy()
+    return plans, best, start, best_model
+
+
+def quick(manifest: dict, weights: bytes, base) -> tuple[dict, float, float, object]:
+    """`tune` over a model's heaviest layers alone, each at a few plans (`quick_choices`), in
+    fewer frames, starting from `base`, the model as built: what a model's first launch on a
+    GPU runs, in seconds rather than minutes."""
+    return tune(manifest, weights, base.device, log=lambda _line: None,
+                options=quick_choices(manifest), frames=8, base=base)

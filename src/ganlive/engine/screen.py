@@ -18,7 +18,7 @@ from ganlive.engine.runner import MAPPABLE
 
 STORAGE = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
 
-# The model's BGRA8 frame -> the size shown, as BGRA8 (what an SDL texture is). Shrinking
+# The model's BGRA8 frame -> a take's size, as BGRA8. Shrinking
 # averages the same windows as torch's `area` (adaptive average pooling). Growing is bilinear.
 RESIZE = """
 @group(0) @binding(0) var<storage, read> X: array<u32>;
@@ -84,7 +84,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
 
 class Stepped:
-    """A frame at the size shown, as BGRA8 in `buffer` on the GPU."""
+    """A frame as BGRA8 in `buffer` on the GPU: the model's own (`native`), or at a take's
+    size (`EngineStage.step`)."""
 
     def __init__(self, buffer, height: int, width: int) -> None:
         self.buffer, self.height, self.width = buffer, height, width
@@ -129,7 +130,7 @@ class _Handoff:
 
 
 class EngineStage:
-    """What comes after an engine model's frame: `step` it to the size shown, then
+    """What comes after an engine model's frame: `step` it to a take's size, then
     `nv12_bytes` or `rgb_still`, with `handoff` to read the downloads behind the
     next frame. Everything a frame asks of it is recorded into one command buffer."""
 
@@ -208,8 +209,8 @@ class EngineStage:
         return _Handoff(self)
 
     def step(self, net) -> Stepped:
-        """The model's frame at the size shown, as BGRA8: the model's own buffer when it is
-        shown at its size."""
+        """The model's frame at a take's size, as BGRA8: the model's own buffer when that is
+        its size."""
         H, W = net.cfg.ladder.height, net.cfg.ladder.width
         h, w = self.height, self.width
         if (H, W) == (h, w):

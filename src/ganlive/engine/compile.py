@@ -22,6 +22,12 @@ def compile_manifest(manifest: dict, plans: dict | None = None, output: str = "r
     return program
 
 
+def quick_choices(manifest: dict) -> dict[str, list[dict]]:
+    """The few plans a first launch tries on the layers that cost the most (`tune.quick`). A
+    StyleGAN2 has none: `ganlive tune` tunes it."""
+    return {} if manifest.get("family") == "stylegan2" else program.quick_choices(manifest)
+
+
 def plan_choices(manifest: dict) -> dict[str, list[dict]]:
     """Each layer's plans worth trying (`ganlive tune`), by the name a plan is given under."""
     family = program_stylegan2 if manifest.get("family") == "stylegan2" else program

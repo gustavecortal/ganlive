@@ -46,11 +46,11 @@ def bindings(entries) -> tuple[str, list[str]]:
 class Builder:
     """Collects shaders (deduplicated), buffers and steps while the ops are compiled."""
 
-    def __init__(self, manifest: dict, plans: dict) -> None:
+    def __init__(self, manifest: dict, plans: dict, browser: bool = False) -> None:
         self.m = manifest
         self.overrides = plans
         #: Whether the program is for a browser, whose defaults differ (see `program._plan`).
-        self.browser = False
+        self.browser = browser
         self.shaders: list[str] = []
         self.index: dict[str, int] = {}
         self.buffers: dict[str, dict] = {}
