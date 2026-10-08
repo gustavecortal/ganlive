@@ -23,6 +23,13 @@ CODECS = ("av1_qsv", "hevc_qsv", "h264_nvenc", "hevc_nvenc", "hevc_videotoolbox"
           "h264_amf", "libx264")
 DEFAULT_CODEC = "auto"
 
+#: Each encoder's constant-quality setting, so that a take keeps the picture's grain: Intel's
+#: quality mode at 22 recorded a 1620x1080 lichen walk at 10 Mbit/s and 3.3 levels from the
+#: frames, against 2.6 Mbit/s and 4.4 levels by default, in the same encode time. Encoders not
+#: tried on a card here keep their defaults, since an option one refuses would skip it.
+QUALITY = {"av1_qsv": {"global_quality": "22"}, "hevc_qsv": {"global_quality": "22"},
+           "libx264": {"crf": "18"}}
+
 #: Encoder frames reused in rotation, so the writer does not allocate one per frame.
 POOL = 4
 
@@ -140,23 +147,29 @@ class Recorder:
             out["error"] = f"{type(self.failed[0]).__name__}: {self.failed[0]}"
         return out
 
-    def _encoder(self, av, tb: Fraction) -> str:
-        """The first wanted encoder that actually opens at this size on this machine.
+    def _open(self, av, tb: Fraction):
+        """`(container, stream)` for the first wanted encoder that actually opens at this size
+        on this machine, its name kept in `codec`.
 
         Opened for real rather than looked up: `add_stream` only checks that the build knows
         the name, so an NVENC encoder on a machine without an NVIDIA card would be accepted
         and then fail at the first frame. `libx264` is last in `CODECS` and always opens, on
         the CPU, so `auto` records slowly rather than not at all."""
         wanted = CODECS if self.codec == "auto" else (self.codec,)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         for name in wanted:
+            container = av.open(str(self.path), "w")
             try:
-                ctx = av.CodecContext.create(name, "w")
-                ctx.width, ctx.height, ctx.pix_fmt = self.width, self.height, "nv12"
-                ctx.time_base, ctx.framerate = tb, round(self.fps)
-                ctx.open()
-                return name
+                stream = container.add_stream(name, rate=round(self.fps), options=QUALITY.get(name, {}))
+                stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
+                stream.codec_context.time_base = tb
+                stream.codec_context.open()
             except Exception:                                        # noqa: BLE001
+                container.close()
                 continue
+            self.codec = name
+            return container, stream
+        self.path.unlink(missing_ok=True)
         raise RuntimeError(f"no encoder opened, tried {', '.join(wanted)}")
 
     def _run(self) -> None:
@@ -165,13 +178,8 @@ class Recorder:
             import av
 
             tb = Fraction(1, round(self.fps))
-            self.codec = self._encoder(av, tb)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            container = av.open(str(self.path), "w")
-            stream = container.add_stream(self.codec, rate=round(self.fps))
-            stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
             # Opened now rather than at the first frame, so `wait_open` covers all of it.
-            stream.codec_context.open()
+            container, stream = self._open(av, tb)
             self._opened.set()
             pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]
             views = [nv12_plane_views(f, self.height, self.width) for f in pool]
