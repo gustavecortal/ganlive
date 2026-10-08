@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -25,11 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      # PortAudio for the `audio` extra; the Windows and macOS wheels carry their own.
+      # PortAudio for the `audio` extra; the Windows and macOS wheels carry their own. Mesa's
+      # software Vulkan, so the engine's tests have an adapter on a runner without a GPU.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 mesa-vulkan-drivers
       - run: uv venv --python ${{ matrix.python }}
       - run: uv pip install torch ${{ matrix.torch }}
       - run: uv pip install -e ".[dev]"
       - run: uv run --no-sync ruff check src tests scripts
-      - run: uv run --no-sync pytest tests -q
+      # Which adapters the engine's tests can run on here: Metal on macOS, WARP on Windows.
+      - run: uv run --no-sync python -c "import wgpu; [print(a.info['backend_type'], a.info['adapter_type'], a.info['device']) for a in wgpu.gpu.enumerate_adapters_sync()]"
+      - run: uv run --no-sync pytest tests -q -rs
