@@ -22,11 +22,12 @@ import math
 from ganlive.engine.program import (
     FORMAT,
     GEMM_MAX,
-    GEMM_TARGET,
     NOISE,
     WG,
     Builder,
+    linear,
     noise_seed,
+    split,
     storage,
     wgsl,
 )
@@ -200,8 +201,16 @@ def _epilogue(op: dict, acc: str, plane: int) -> list[str]:
         f"Y[(c / 2u + 1u) * {plane}u + px] = pack2x16float(o.zw);"]
 
 
+def _channels(op: dict) -> None:
+    """Refuse channel counts the direct paths cannot split: pairs in, groups of 4 out."""
+    if op["cin"] % 2 or op["cout"] % 4:
+        raise ValueError(f"{op['name']}: {op['cin']} -> {op['cout']} channels; the engine plays "
+                         f"even input and multiple-of-4 output channel counts")
+
+
 def _conv(b: Builder, op: dict, src: str, dst: str) -> None:
     """A modulated 3x3 convolution at one size: each thread 2x2 pixels and `oct` channels."""
+    _channels(op)
     cin, cout, h, w = op["cin"], op["cout"], op["h"], op["w"]
     BY = BX = 2 if h % 2 == 0 else 1
     oct = 8 if cout % 8 == 0 else 4
@@ -265,12 +274,7 @@ def _tiles(op: dict, M: int) -> bool:
 
 def _split(op: dict, M: int, taps: int) -> int:
     """How many slices the sum is split into, so even a 4x4 map fills the GPU."""
-    tiles = math.ceil(M / TM) * (op["cout"] // TN)
-    steps = op["cin"] * taps // TK
-    S = 1
-    while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
-        S *= 2
-    return S
+    return split(math.ceil(M / TM) * (op["cout"] // TN), op["cin"] * taps // TK)
 
 
 def _plain(op: dict) -> dict:
@@ -380,11 +384,13 @@ ${store}
     b.step(f"{g['name']}.mm", code, ["P", src, "scratch", "S"], [math.ceil(M / TM), cout // TN, S])
 
     n = M * (cout // 4)
+    groups, index = linear(n)
     head = f"""
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {{
-  if (id.x >= {n}u) {{ return; }}
-  let m = id.x % {M}u; let c = (id.x / {M}u) * 4u;
+  let i = {index};
+  if (i >= {n}u) {{ return; }}
+  let m = i % {M}u; let c = (i / {M}u) * 4u;
   var v = vec4f(0.0);
   for (var s = 0u; s < {S}u; s++) {{ v += X[(s * {M}u + m) * {cout // 4}u + c / 4u]; }}
   v *= vec4f(D[c], D[c + 1u], D[c + 2u], D[c + 3u]);"""
@@ -393,7 +399,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {{
         code = wgsl(storage([("P", "array<u32>"), ("X", "array<vec4f>"), ("Y", "array<u32>"),
                              ("D", "array<f32>"), ("K", "array<f32>")]) + "${HELPERS}\n${LRELU}" + head
                     + "\n  let px = m;\n" + body + "\n}", LRELU=LRELU)
-        b.step(op["name"], code, ["P", "scratch", dst, "D", "K"], [math.ceil(n / 64), 1, 1])
+        b.step(op["name"], code, ["P", "scratch", dst, "D", "K"], groups)
     else:                                           # a parity of the transposed convolution
         plane = g["plane"]
         code = wgsl(storage([("X", "array<vec4f>"), ("Y", "array<u32>"), ("D", "array<f32>")]) + head + f"""
@@ -401,7 +407,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {{
   Y[(c / 2u) * {plane}u + px] = pack2x16float(v.xy);
   Y[(c / 2u + 1u) * {plane}u + px] = pack2x16float(v.zw);
 }}""")
-        b.step(g["name"], code, ["scratch", "T", "D"], [math.ceil(n / 64), 1, 1])
+        b.step(g["name"], code, ["scratch", "T", "D"], groups)
 
 
 def _upconv(b: Builder, op: dict, src: str, dst: str) -> None:
@@ -416,6 +422,7 @@ def _upconv(b: Builder, op: dict, src: str, dst: str) -> None:
 
 
 def _upconv_direct(b: Builder, op: dict, src: str, dst: str) -> None:
+    _channels(op)
     """2x up: the stride-2 transposed 3x3 convolution of the styled input, demodulated, into T
     (2h+1 square), then the 4x4 blur with the epilogue into `dst` (2h square).
 

@@ -362,17 +362,3 @@ def test_export_takes_a_run_directory_as_every_other_command_does(tmp_path, monk
     assert asked == [(run / "0002000.pt", pathlib.Path("runs/onnx/my-run-2000.onnx"))], asked
     with contextlib.redirect_stderr(io.StringIO()):
         assert export_onnx.main(["--checkpoint", str(tmp_path / "nothing")]) == 2
-
-
-def test_an_exported_fastgan_plays_with_its_own_dials(steerable, tmp_path):
-    """`export-onnx` names the settings and measures no curves; the FastGAN's own dials know
-    what each setting takes, so the graph loads with them rather than with none."""
-    from ganlive.families import _onnx_layout
-
-    path = shutil.copy(steerable[0], tmp_path / "steer.onnx")
-    model = structure(path)
-    name_settings(model, steerable[2])
-    onnx.save(model, str(path))
-    layout = _onnx_layout(path)
-    model_dials = {k.name for k in layout.knobs if k.group == "MODEL"}
-    assert {"se_64", "se_128", "se_256", "noise"} <= model_dials

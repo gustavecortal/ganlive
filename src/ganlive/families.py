@@ -11,19 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch
-
 from ganlive.checkpoints import PROGRAM, is_engine, is_onnx
 from ganlive.device import playback_dtype
-from ganlive.dials import derive, fastgan_dials, steer, table
-from ganlive.dials.gate import directions_for
+from ganlive.dials import steer
 from ganlive.engine.load import open_model
 from ganlive.engine.player import EngineConfig
-from ganlive.models import calibrate, fastgan, onnx_file
+from ganlive.models import fastgan, onnx_file
 from ganlive.models import stylegan2 as S2
-from ganlive.models.capture import compile_and_count
-from ganlive.models.fold import prepare_for_inference
-from ganlive.models.onnx import OnnxGenerator
 from ganlive.pixels import RANDOM_FLOOR
 
 
@@ -83,63 +77,6 @@ def open_stylegan2(path, device, exact: bool = False, dtype=None):
     return net, settings, net.mapping.push, S2.style_bands(net)
 
 
-def _compiled(net, nz: int, device, dtype, options: LoadOptions):
-    """`(net, graphs, seconds)`: the net compiled if this load asks for it."""
-    if not options.compile_net:
-        return net, 0, 0.0
-    return compile_and_count(net, nz, device, dtype)
-
-
-def _onnx_layout(path):
-    said = onnx_file.dials_of(path)
-    if said["curves"]:
-        return table.adopted(said["settings"], said["rests"], said["curves"], said["levels"])
-    # `ganlive export-onnx` names a FastGAN's settings without measuring curves: its own dials
-    # already say what each setting takes, and the gate measures them on the graph at load.
-    if said["settings"] and set(said["settings"]) <= set(fastgan_dials.SETTINGS_WRITTEN):
-        return fastgan_dials.fastgan()
-    # A graph with no settings baked in is a plain graph with nothing to steer inside it.
-    return table.adopted((), (), (), ())
-
-
-def _prepare_onnx(path, device, dtype, options: LoadOptions) -> Prepared:
-    """One exported graph made ready to play, with whatever dials it carries."""
-    net = OnnxGenerator(path, device=device)
-    print(net.report(), flush=True)
-    found = directions_for(net, net.cfg.nz, device, dtype, floor=options.direction_floor,
-                           path=path,
-                           read=lambda _net, nz: derive.sefa_onnx(path, nz, count=derive.CANDIDATES))
-    return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=_onnx_layout(path),
-                    directions=found)
-
-
-def _prepare_stylegan2(path, device, dtype, options: LoadOptions) -> Prepared:
-    """A converted StyleGAN2 made ready to play, its dials swept rather than remembered."""
-    net, settings, push, bands = open_stylegan2(path, device, exact=options.exact, dtype=dtype)
-    cfg = net.cfg
-    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
-
-    # Directions before the layout: which style band a surviving direction belongs to, and
-    # the strip labels them by band, is only known once `rank` has dropped the rest.
-    found_dirs = directions_for(
-        net, cfg.nz, device, dtype, into=push, floor=options.direction_floor, path=path,
-        # `CANDIDATES` is per band.
-        read=lambda _net, nz: derive.sefa_banded(bands, (derive.CANDIDATES,) * len(bands), nz))
-    ranges = () if found_dirs is None or not found_dirs.ranges else tuple(
-        (name, S2.BAND_PIXELS[name]) for name in found_dirs.ranges)
-
-    # Not gated on `measure_grain`: this sweep is where a StyleGAN2's MODEL dials come from,
-    # since a derived dial's curve is its measurement.
-    found = calibrate.measured(calibrate.TorchProbe(net, settings, cfg.nz, device, dtype), settings.names,
-                       size=(cfg.ladder.height, cfg.ladder.width))
-    print(found.report(), flush=True)
-    layout = table.stylegan2(found.names, [d.rest for d in found.dials],
-                         [d.curve for d in found.dials],
-                         [d.moved for d in found.dials], ranges)
-    return Prepared(net=net, cfg=cfg, settings=settings, layout=layout, directions=found_dirs,
-                    graphs=graphs, compile_s=secs, push=push)
-
-
 def engine_config_of(path) -> EngineConfig:
     return EngineConfig.of(json.loads((Path(path) / PROGRAM).read_text(encoding="utf-8")))
 
@@ -147,25 +84,10 @@ def engine_config_of(path) -> EngineConfig:
 def _prepare_engine(path, device, dtype, options: LoadOptions) -> Prepared:
     """A model on the engine (see `engine.load`): on `device`, the wgpu device the bank plays
     on, or else on this machine's fastest backend. `dtype` is unused, since the engine is fp16."""
-    net, layout, directions = open_model(path, device, options.direction_floor,
-                                         options.measure_grain)
+    grain = options.measure_grain if family_of(path).name == "fastgan" else True
+    net, layout, directions = open_model(path, device, options.direction_floor, grain)
     return Prepared(net=net, cfg=net.cfg, settings=net.settings, layout=layout,
                     directions=directions, push=net.push)
-
-
-def _prepare_fastgan(path, device, dtype, options: LoadOptions) -> Prepared:
-    """This project's own generator made ready to play."""
-    net, cfg = fastgan.load(path, device)
-    fastgan.freeze_noise(net, seed=0)
-    net = prepare_for_inference(net, cfg.nz, device, half=dtype is torch.float16)["net"]
-
-    settings = steer.install(net, device, dtype)
-    net, graphs, secs = _compiled(net, cfg.nz, device, dtype, options)
-    gains = steer.calibrate_noise(net, settings, cfg.nz, device, dtype) if options.measure_grain else None
-    return Prepared(net=net, cfg=cfg, settings=settings, layout=fastgan_dials.fastgan(noise_gains=gains),
-                    directions=directions_for(net, cfg.nz, device, dtype, path=path,
-                                              floor=options.direction_floor),
-                    graphs=graphs, compile_s=secs)
 
 
 @dataclass(frozen=True)
@@ -187,7 +109,7 @@ class Family:
 #: Order matters: the suffix is decisive, then the file's own format tag, then what is left.
 FAMILIES = (
     Family("engine", is_engine, engine_config_of, _prepare_engine, capturable=False),
-    Family("onnx", is_onnx, onnx_file.config_of, _prepare_onnx, capturable=False),
+    Family("onnx", is_onnx, onnx_file.config_of, _prepare_engine, capturable=False),
     Family("stylegan2", is_stylegan2, S2.config_of, _prepare_engine, capturable=False),
     Family("fastgan", lambda _path: True, fastgan.config_of, _prepare_engine, capturable=False),
 )

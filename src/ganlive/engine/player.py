@@ -116,11 +116,11 @@ def dials_of(program: dict) -> tuple[table.Layout, PlayedDirections | None]:
     """The layout a converted model offers, with each MODEL dial's measured travel, and its
     directions. A program converted without dials offers the stock tables, unmeasured."""
     dials = program.get("dials") or {}
-    if dials.get("kind") == "stylegan2":
-        swept = dials["swept"]
-        layout = table.stylegan2(swept["names"], swept["rests"],
-                                 [tuple(c) for c in swept["curves"]], swept["levels"],
-                                 tuple(tuple(r) for r in swept["ranges"]))
+    if program.get("family") == "stylegan2":
+        swept = dials.get("swept")
+        layout = table.stylegan2() if swept is None else table.stylegan2(
+            swept["names"], swept["rests"], [tuple(c) for c in swept["curves"]],
+            swept["levels"], tuple(tuple(r) for r in swept["ranges"]))
     else:
         layout = fastgan_dials.fastgan(noise_gains=dials.get("noise_gains"))
     measured = dials.get("measured", {})

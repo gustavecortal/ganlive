@@ -261,6 +261,10 @@ def stylegan2_net(checkpoint, device="cpu"):
 def stylegan2_manifest(net, names: list[str]) -> tuple[dict, Blob]:
     """The ops of a StyleGAN2 in run order and the weights they read, every gain folded in."""
     cfg, blob = net.cfg, Blob()
+    if tuple(cfg.taps) != S2.TAPS or cfg.img_channels != 3 or cfg.c_dim:
+        raise ValueError(f"the engine plays unconditional RGB StyleGAN2s with the [1, 3, 3, 1] "
+                         f"resample filter; this one has {cfg.img_channels} channel(s), filter "
+                         f"{list(cfg.taps)} and {cfg.c_dim} class dimensions")
 
     def put(t) -> int:
         return blob.put(t.detach().float().cpu().numpy())
@@ -327,8 +331,8 @@ def stylegan2_probe(net, settings) -> dict:
 
 
 def stylegan2_dials(checkpoint, device=None, *, floor: float = RANDOM_FLOOR) -> dict:
-    """A StyleGAN2's dials, measured as `families` used to at load: w-space directions per style
-    range through the push buffer, ranked against random ones, and each MODEL dial's curve."""
+    """A StyleGAN2's dials: w-space directions per style range through the push buffer, ranked
+    against random ones, and each MODEL dial's swept curve."""
 
     device = device or detect_backend()
     net, settings, push = stylegan2_net(checkpoint, device)

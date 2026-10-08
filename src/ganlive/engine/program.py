@@ -39,6 +39,22 @@ fn sigmoid4(x: vec4f) -> vec4f { return 1.0 / (1.0 + exp(-x)); }
 """
 
 
+def linear(n: int, size: int = 64) -> tuple[list[int], str]:
+    """The workgroups for `n` invocations, `size` a group, in rows of at most 65535 groups (the
+    per-dimension limit), and the WGSL expression for an invocation's index among the `n`."""
+    groups = math.ceil(n / size)
+    return [min(groups, 65535), math.ceil(groups / 65535), 1], f"(id.y * {65535 * size}u + id.x)"
+
+
+def split(tiles: int, steps: int) -> int:
+    """How many slices a matrix product's sum is split into, so that `tiles` workgroups fill the
+    GPU: doubling while that leaves at least 4 of the `steps` of 16 in each slice."""
+    S = 1
+    while tiles * S < GEMM_TARGET and steps % (S * 2) == 0 and steps // (S * 2) >= 4:
+        S *= 2
+    return S
+
+
 def wgsl(text: str, **values) -> str:
     """WGSL is full of braces, so shaders are templates with `${name}` holes."""
     return Template(text).substitute(values, HELPERS=HELPERS)
@@ -149,11 +165,7 @@ def _plan(b: Builder, op: dict) -> dict:
         if not gemm_fits:
             raise ValueError(f"{op['out']}: {cin}->{cout} channels at {ho}x{wo} do not tile "
                              f"as a matrix product")
-        tiles, k16 = (M // 32) * (cout // 32), cin * 9 // 16
-        S = 1
-        while tiles * S < GEMM_TARGET and k16 % (S * 2) == 0 and k16 // (S * 2) >= 4:
-            S *= 2
-        return {"gemm": True, "S": S}
+        return {"gemm": True, "S": split((M // 32) * (cout // 32), cin * 9 // 16)}
     if forced:
         if not tile_fits(forced):
             raise ValueError(f"{op['out']}: a {forced['by']}x{forced['bx']} tile of "
@@ -359,20 +371,23 @@ ${store}
 
     decl, bind = _bindings(op, tensors, "scratch", "array<vec4f>")
     n = M * (cout // 4)
+    groups, index = linear(n)
     code = wgsl(decl + """
 ${HELPERS}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= ${n}u) { return; }
-  let px = id.x % ${M}u; let c = (id.x / ${M}u) * 4u;
+  let i = ${index};
+  if (i >= ${n}u) { return; }
+  let px = i % ${M}u; let c = (i / ${M}u) * 4u;
   var sv = vec4f(0.0); var sg = vec4f(0.0);
   for (var s = 0u; s < ${S}u; s++) {
     let row = (s * ${M}u + px) * ${c2}u + c / 4u;
     sv += X[row]; sg += X[row + ${c4}u];
   }
 ${epilogue}
-}""", n=n, M=M, S=S, c2=2 * cout // 4, c4=cout // 4, epilogue=_epilogue(op, "sv", "sg", M, "  "))
-    b.step(op["out"], code, bind, [math.ceil(n / 64), 1, 1], plan)
+}""", n=n, index=index, M=M, S=S, c2=2 * cout // 4, c4=cout // 4,
+                epilogue=_epilogue(op, "sv", "sg", M, "  "))
+    b.step(op["out"], code, bind, groups, plan)
 
 
 def _conv(b: Builder, op: dict, tensors: dict, plan: dict) -> None:
