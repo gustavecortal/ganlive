@@ -9,6 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ganlive import process
 from ganlive.checkpoints import slug_for
 from ganlive.clock import MusicalClock
 from ganlive.control.audio import NoAudioDevice, input_stream, pick_input, require_sounddevice
@@ -36,6 +37,7 @@ from ganlive.control.midi import (
 )
 from ganlive.control.simulate import MachineSim, MonitorFeeder, StemFeeder
 from ganlive.dials.table import per_model
+from ganlive.engine.screen import Stepped
 from ganlive.files import CHANNEL_MAP, SETTINGS, next_path, remember
 from ganlive.presets import POSITIONS_NAME, Library, Positions, PresetRunner
 from ganlive.record import video
@@ -44,7 +46,7 @@ from ganlive.strip import PRIORITY as HAND_PRIORITY
 from ganlive.strip import SOURCE as HAND
 from ganlive.strip import DialPanel
 from ganlive.timing import stat_ms
-from ganlive.tools import add_device, parser
+from ganlive.tools import add_backend, parser
 from ganlive.window import Display, parse_height, screen_size
 
 OUT = Path("runs/ganlive")
@@ -62,6 +64,11 @@ TAKE_DEPTH = 2
 #: Host buffers a take's frames cycle through: the recorder's queue, the frame being encoded,
 #: and the one still downloading behind the next frame's generation.
 TAKE_RING = TAKE_DEPTH + 3
+
+#: The frame rates a take may have, as fractions of `--fps`: a card that cannot draw the model
+#: at `--fps` records at the best of these it holds, every frame on time, rather than one with
+#: gaps. Each frame then lasts a whole number of the screen's refreshes.
+TAKE_RATES = (1, 2, 3)
 
 #: Seconds into a reactive run before saying that no hits have arrived.
 HIT_GRACE_S = 6.0
@@ -167,7 +174,7 @@ def _parser():
 
     what = ap.add_argument_group("what to play")
     what.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
-                      help="a checkpoint, a run directory for its newest, or an exported .onnx. "
+                      help="a checkpoint, a run directory for its newest, or an engine model. "
                            "Repeatable: `[` and `]` switch between them on the next frame, and "
                            "they may differ in latent width, native size and aspect")
     what.add_argument("--runs", type=Path, default=Path("runs"),
@@ -178,7 +185,7 @@ def _parser():
                       help=f"which preset to start on. Saved with `s` into {SETTINGS}")
 
     how = ap.add_argument_group("how it runs")
-    add_device(how)
+    add_backend(how)
     how.add_argument("--height", type=parse_height, default=None,
                      metavar="auto|native|PIXELS",
                      help="what the window is sent -- the generator always runs at its native "
@@ -191,20 +198,11 @@ def _parser():
                      help="`fast` pins to the performance cores of a hybrid CPU, which is worth "
                           "roughly a third of the frame rate because the loop is submission "
                           "bound. `all` leaves the scheduler alone")
-    how.add_argument("--no-compile-net", dest="compile_net", action="store_false",
-                     help="skip the ~45 s per-model compile. Slower frames; do not quote timings")
-    how.add_argument("--no-capture", dest="capture", action="store_false",
-                     help="do not record the forward as one device graph. The capture is exact "
-                          "and is checked against the forward at every load")
-    how.add_argument("--exact", action="store_true",
-                     help="run a converted StyleGAN2 in the precision its own file describes, "
-                          "rather than half wherever NVIDIA's rule allows. ~13%% slower, for "
-                          "when a frame is being compared against the original")
     how.add_argument("--no-pipeline", dest="pipeline", action="store_false",
-                     help="finish every frame before starting the next. By default a frame that "
-                          "has missed its slot leaves its download running behind the next "
-                          "frame's generation and is shown once that is under way; a frame on "
-                          "time is shown at once either way")
+                     help="while recording, finish every frame's download before starting the "
+                          "next. By default a frame that has missed its slot leaves its download "
+                          "running behind the next frame's generation; a frame on time is taped "
+                          "at once either way")
     how.add_argument("--headless", action="store_true",
                      help="no window: run the loop and report the timing")
     how.add_argument("--console", action="store_true",
@@ -556,13 +554,28 @@ def serve_models(shelf, requests, r, recording: bool, switch_model) -> None:
         switch_model(want)
 
 
+def take_rate(fps: float, passes, late) -> tuple[float, float]:
+    """`(rate, can)`: the frame rate a take keeps up with, `fps` or a whole fraction of it
+    (`TAKE_RATES`), and the passes a second the loop made, from the last second's start times
+    (`passes`, seconds) and whether each was late (`late`). A loop on time holds `fps`; a loop
+    running flat out shows the card's own rate, and the take keeps a tenth of it spare for
+    what recording adds."""
+    can = (len(passes) - 1) / (passes[-1] - passes[0]) if len(passes) > 1 else float("inf")
+    if not late or sum(late) < 0.1 * len(late):
+        return fps, can
+    for k in TAKE_RATES:
+        if can * 0.9 >= fps / k:
+            return fps / k, can
+    return fps / TAKE_RATES[-1], can
+
+
 def status_line(frames: int, elapsed: float, recent, clock, rec, share: float) -> str:
     """The strip's first line: frame rate, frame time, tempo, the take, and audio delivery."""
-    deaf = "" if share > 0.95 else f" · DEAF {share:.0%}"
-    return (f"{frames / elapsed:.0f} fps · "
-            f"{statistics.median(recent):.1f} ms · "
+    deaf = "" if share > 0.95 else f", DEAF {share:.0%}"
+    return (f"{frames / elapsed:.0f} fps, "
+            f"{statistics.median(recent):.1f} ms, "
             f"{clock.bpm:.0f} bpm {clock.source}"
-            + (f" · REC {rec.seconds:.0f}s {rec.dropped} dropped" if rec is not None else "")
+            + (f", REC {rec.seconds:.0f}s {rec.dropped} dropped" if rec is not None else "")
             + deaf)
 
 
@@ -578,10 +591,7 @@ def main(argv=None) -> int:
         return 1
 
     # Imported here, after the arguments parse, so `--help` and a typo answer at once.
-    import torch
-
     from ganlive import bank
-    from ganlive import device as dev
     from ganlive.families import LoadOptions
 
     tracks, map_note = resolve_map(args.map, args.layout)
@@ -590,7 +600,7 @@ def main(argv=None) -> int:
     # Before anything opens the card: the affinity is for this process's submission thread,
     # and the compile that follows is the first thing to use it.
     if args.cpu == "fast":
-        dev.prioritise_gpu_feeder()
+        process.prioritise_gpu_feeder()
 
     note_channels = parse_track_channels(args.midi_channels) if args.midi_channels else None
     notes = parse_notes(args.notes)
@@ -637,10 +647,8 @@ def main(argv=None) -> int:
 
     screen = screen_size()
     floor = {} if args.direction_floor is None else {"direction_floor": args.direction_floor}
-    r = bank.build(args.checkpoint, args.device,
-                   height=args.height, screen=screen,
-                   options=LoadOptions(compile_net=args.compile_net, capture=args.capture,
-                                       measure_grain=args.measure_grain, exact=args.exact,
+    r = bank.build(args.checkpoint, height=args.height, screen=screen,
+                   options=LoadOptions(measure_grain=args.measure_grain, backend=args.backend,
                                        **floor))
     print(f"generator: {r.report()}", flush=True)
     if args.height is None and r.height < r.cfg.ladder.height:
@@ -736,33 +744,37 @@ def main(argv=None) -> int:
                 actions["model"] = requests.ask_model
             panel = DialPanel(runner, actions=actions, extractor=extractor, bank=r, shelf=shelf,
                               encoders=encoders)
-        display = Display((r.height, r.width), title=f"ganlive - {preset.name}",
+        display = Display((r.height, r.width), r.gpu, title=f"ganlive - {preset.name}",
                           overlay=panel, fullscreen=not args.console)
         print("window open. Esc or Q to stop.", flush=True)
 
-    to_window = r.stage.bgra_bytes
-
-    first = r.stage.step(r.current.net(walk.latent(0.0)))
-    to_window(first)
-    dev.synchronize()
+    # The window is given the model's own frame, presented as it is made.
+    made = r.current.net(walk.latent(0.0))
+    if display is not None:
+        display.publish(Stepped.native(made))
+    r.sync()
 
     rec = None
+    #: The last second's frame times, for the status line and a take's frame rate.
+    recent: deque[float] = deque(maxlen=60)
+    #: When the last second's passes started, and whether each was late, for the rate a take
+    #: keeps up with.
+    passes: deque[float] = deque(maxlen=max(2, round(args.fps)))
+    behind: deque[bool] = deque(maxlen=max(2, round(args.fps)))
     stills: list = []
-    #: The last frame's `(ticket, shown, taped)` while its downloads are still running behind
-    #: the next frame's generation. None once it has been put up.
+    #: The last frame's `(ticket, taped)` while its take's download is still running behind
+    #: the next frame's generation. None once it has been handed to the recorder.
     in_flight = None
 
     def land():
-        """Show and tape the frame left in flight, once its downloads have finished."""
+        """Tape the frame left in flight, once its download has finished."""
         nonlocal in_flight
         if in_flight is None:
             return
-        (ticket, shown, taped), in_flight = in_flight, None
+        (ticket, taped, slot), in_flight = in_flight, None
         ticket.wait()
-        if shown is not None:
-            display.publish(shown)
-        if taped is not None and rec is not None:
-            rec.offer(taped)
+        if rec is not None:
+            rec.offer(taped, slot)
 
     def toggle_take(at=None):
         """Start or stop recording. Called by the frame loop, never by the window."""
@@ -770,37 +782,41 @@ def main(argv=None) -> int:
         land()                  # the frame in flight belongs to the take it was taped for
         if rec is not None:
             report = rec.stop()
-            print(f"take: {report}  staging {r.stage.pinned()}", flush=True)
+            print(f"take: {report}", flush=True)
             if guide.running:
                 print(f"  sync: {guide.describe(guide.stop(report))}", flush=True)
+            if rec.hits is not None:
+                named = video.named_with_hits(rec.path, rec.hits)
+                print(f"  first hit at {rec.hits[0]:.3f} s, last at {rec.hits[1]:.3f} s in the "
+                      f"video: {named.name}", flush=True)
             rec = None
         else:
             path = next_path(TAKES, "take", ".mp4")
-            rec = video.Recorder(path, r.width, r.height, args.fps, args.codec,
+            rate, can = take_rate(float(args.fps), passes, behind)
+            rec = video.Recorder(path, r.width, r.height, rate, args.codec,
                                  realtime=True, depth=TAKE_DEPTH).start()
+            if rate < args.fps:
+                print(f"  at {rate:g} fps: this card plays the model at {can:.0f} fps, short "
+                      f"of {args.fps}", flush=True)
             # The card idle while the encoder opens: see `Recorder.wait_open`. The picture
             # holds for that long, about a second and a half on a hardware encoder.
-            dev.synchronize()
+            r.sync()
             if not rec.wait_open():
                 print("  the encoder is still opening after 30 s; carrying on", flush=True)
             print(f"recording {r.width}x{r.height} to {path} with {args.codec}", flush=True)
             if args.guide:
                 armed = guide.start(path, bpm=clock.bpm, beat=clock.beats,
                                     beat_source=clock.source, at=at,
-                                    about={"fps": float(args.fps), "width": r.width,
+                                    about={"fps": rate, "width": r.width,
                                            "height": r.height, "model": r.current.name,
                                            "preset": runner.preset.name})
                 print(f"  sync: {armed}", flush=True)
         if panel is not None:
             panel.recording = rec is not None
 
-    if args.record:
-        toggle_take()
-        rec.offer(r.stage.nv12_bytes(first, "take", TAKE_RING))
-        if not rec.drain():
-            print("  the encoder did not start; the take may be short", flush=True)
-
-    print(f"host staging: {r.stage.pinned()}", flush=True)
+    #: `--record` starts the take once the loop has timed half a second of frames, so the
+    #: take's frame rate is one the card holds (`take_rate`).
+    record_soon = args.record
 
     if card is not None:
         card.start()
@@ -808,8 +824,6 @@ def main(argv=None) -> int:
     period = 1.0 / args.fps
     total = int(args.seconds * args.fps) if args.seconds else 0
     ms: deque[float] = deque(maxlen=SAMPLE_CAP)
-    #: The last second's frame times, for the status line.
-    recent: deque[float] = deque(maxlen=60)
     #: Frame times per model, each capped like `ms`; see `per_model_lines`.
     by_model: dict[str, deque] = {}
     late, frames = 0, 0
@@ -818,6 +832,8 @@ def main(argv=None) -> int:
     hits_checked = False
     start = time.perf_counter()
     ticked = start
+    #: When the loop's own schedule started: `start`, moved on after a take paced the loop.
+    paced = start
     # A deadline as well as a frame count, so a model that cannot hold the asked-for rate
     # still stops after `--seconds`.
     deadline = start + args.seconds if args.seconds else 0.0
@@ -825,76 +841,93 @@ def main(argv=None) -> int:
           + (f" for {args.seconds:g}s" if total else " -- stop it with the window"),
           flush=True)
     try:
-        with torch.no_grad():
-            while ((not total or frames < total)
-                   and (not deadline or time.perf_counter() < deadline)):
-                serve_models(shelf, requests, r, rec is not None, switch_model)
+        while ((not total or frames < total)
+               and (not deadline or time.perf_counter() < deadline)):
+            serve_models(shelf, requests, r, rec is not None, switch_model)
 
-                t0 = time.perf_counter()
-                # Before anything writes this frame's inputs: a captured generator reads its
-                # latent and settings from host buffers, and writes every frame into one
-                # buffer the last frame's conversions may still be reading.
-                r.stage.release()
-                model = r.current
-                if ticks is not None:
-                    ticks(t0)
-                if not hits_checked and reactive and t0 - start > HIT_GRACE_S:
-                    hits_checked = True
-                    report_unheard(extractor, kind, fix, notes, note_channels)
-                runner.observe(extractor.drain())
-                runner.apply(extractor.since, extractor.features(), model.settings)
-                # By the time that passed, not by `period`: a model that cannot hold the frame
-                # rate would otherwise play the music slower, and faster again after a switch.
-                clock.advance(min(t0 - ticked, LONGEST_STEP_S))
-                ticked = t0
-                guide.mark(clock.beats)
-                out = model.net(walk.latent(clock.beats))
-                frame = r.stage.step(out)
-                if requests.take("record"):
-                    toggle_take(t0)
+            t0 = time.perf_counter()
+            passes.append(t0)
+            # While recording, the take sets the time (`Recorder.next_frame`): each pass draws
+            # its next frame, at that frame's own time, and a pass with none due waits.
+            at = t0
+            if rec is not None:
+                due = rec.next_frame(t0)
+                if due is None:
+                    time.sleep(rec.wait(t0))
+                    continue
+                at = due
+            model = r.current
+            if ticks is not None:
+                ticks(at)
+            if not hits_checked and reactive and t0 - start > HIT_GRACE_S:
+                hits_checked = True
+                report_unheard(extractor, kind, fix, notes, note_channels)
+            hits = extractor.drain()
+            runner.observe(hits)
+            if rec is not None:
+                for _track, _strength, ago in hits:
+                    rec.hit(t0 - ago)
+            runner.apply(extractor.since, extractor.features(), model.settings)
+            # By the time that passed, not by `period`: a model that cannot hold the frame
+            # rate would otherwise play the music slower, and faster again after a switch.
+            clock.advance(min(max(at - ticked, 0.0), LONGEST_STEP_S))
+            ticked = at
+            guide.mark(clock.beats)
+            out = model.net(walk.latent(clock.beats))
+            if display is not None:
+                display.publish(Stepped.native(out))
+            toggled = requests.take("record") or (record_soon and len(passes) == passes.maxlen)
+            if toggled:
+                record_soon = False
+                toggle_take(t0)
+                if rec is None:         # stopped: the loop's own schedule starts again from here
+                    paced = time.perf_counter() - frames * period
+            # At the take's size, for a take or a still. The pass that started a take waited
+            # for its encoder, so its frame comes before the take; a recorder with a full
+            # queue has the frame drawn again, at the same time, by the next pass.
+            frame = None
+            if rec is not None and not toggled and rec.wants:
+                slot = rec.claim()
                 with r.stage.handoff() as sent:
-                    shown = (to_window(frame)
-                             if display is not None and display.wants else None)
-                    taped = None
-                    if rec is not None:
-                        if rec.wants:
-                            taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
-                        else:
-                            rec.skip()
-                # The last frame's, whose downloads ran while this one was being generated.
+                    frame = r.stage.step(out)
+                    taped = r.stage.nv12_bytes(frame, "take", TAKE_RING)
+                # The last frame's, whose download ran while this one was being generated.
                 land()
-                in_flight = (sent.ticket, shown, taped)
-                if requests.take("still"):
-                    shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
-                    stills.append(video.save_still(shot, r.stage.rgb_still(frame)))
-                    print(f"still: {shot}", flush=True)
-                # A frame on time goes up now. Overlapping its download with the next frame
-                # costs a frame of lag, worth paying only on a frame that missed its slot.
-                if not args.pipeline or time.perf_counter() < start + (frames + 1) * period:
-                    land()
-                now = time.perf_counter()
-                took = (now - t0) * 1000
-                ms.append(took)
-                recent.append(took)
-                if model.name not in by_model:
-                    by_model[model.name] = deque(maxlen=SAMPLE_CAP)
-                by_model[model.name].append(took)
-                frames += 1
-                if panel is not None:
-                    panel.beats = clock.beats
-                    if frames % 15 == 0:
-                        elapsed = now - start
-                        share = 1.0 if hears is None else (hears() - heard0) / max(elapsed, 1e-6)
-                        panel.status = status_line(frames, elapsed, recent, clock, rec, share)
+                in_flight = (sent.ticket, taped, slot)
+            if requests.take("still"):
+                shot = next_path(STILLS, model.name.replace(" ", "-"), ".png")
+                stills.append(video.save_still(shot, r.stage.rgb_still(frame or r.stage.step(out))))
+                print(f"still: {shot}", flush=True)
+            # A frame on time is taped now. Overlapping its download with the next frame
+            # costs a frame of lag, worth paying only on a frame that missed its slot.
+            due_by = at + 1.0 / rec.fps if rec is not None else paced + (frames + 1) * period
+            if not args.pipeline or time.perf_counter() < due_by:
+                land()
+            now = time.perf_counter()
+            took = (now - t0) * 1000
+            ms.append(took)
+            recent.append(took)
+            if model.name not in by_model:
+                by_model[model.name] = deque(maxlen=SAMPLE_CAP)
+            by_model[model.name].append(took)
+            frames += 1
+            if panel is not None:
+                panel.beats = clock.beats
+                if frames % 15 == 0:
+                    elapsed = now - start
+                    share = 1.0 if hears is None else (hears() - heard0) / max(elapsed, 1e-6)
+                    panel.status = status_line(frames, elapsed, recent, clock, rec, share)
 
-                slack = start + frames * period - time.perf_counter()
+            if rec is None:             # a take paces the loop itself, at the top of the pass
+                slack = paced + frames * period - time.perf_counter()
+                behind.append(slack <= 0)
                 if slack > 0:
                     time.sleep(slack)
                 else:
                     late += 1
-                if display is not None and display.stopped:
-                    print("stopped from the window", flush=True)
-                    break
+            if display is not None and display.stopped:
+                print("stopped from the window", flush=True)
+                break
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
     finally:
@@ -925,7 +958,4 @@ def main(argv=None) -> int:
     report_clock(clock, reader, args, pressure, encoders, runner, machine)
     if reactive:
         report_drums(extractor, tracks, kind, fix, hears, heard0, wall)
-    peak = dev.peak_memory_gb()
-    if peak:
-        print(f"  memory      {peak:.2f} GB peak")
     return 0

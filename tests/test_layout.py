@@ -22,15 +22,18 @@ REPO = SRC.parents[1]
 #: one, so a reader can learn the package bottom up. A package's entry covers its modules.
 LAYERS = {
     # Torch-free basics, and the device calls everything else asks.
-    "ganlive": 0, "ganlive.curves": 0, "ganlive.clock": 0, "ganlive.files": 0,
+    "ganlive": 0, "ganlive.curves": 0, "ganlive.clock": 0, "ganlive.files": 0, "ganlive.levels": 0,
+    "ganlive.ladder": 0,
     "ganlive.timing": 0, "ganlive.device": 0, "ganlive.checkpoints": 0,
     # Frames off the card, and the settings vector on it.
     "ganlive.pixels": 1, "ganlive.settings": 1,
     "ganlive.models": 2,
     "ganlive.dials": 3,
+    # The WGSL engine: shaders generated from a converted model, and the hosts that run them.
+    "ganlive.engine": 3,
     # What plays the dials: the walk, the rules, the controllers, the recorders.
     "ganlive.walk": 4, "ganlive.presets": 4, "ganlive.control": 4, "ganlive.record": 4,
-    "ganlive.frame": 5, "ganlive.families": 5,
+    "ganlive.families": 5,
     "ganlive.strip": 6, "ganlive.window": 6,
     "ganlive.bank": 7,
     "ganlive.tools": 8, "ganlive.cli": 8,
@@ -38,21 +41,19 @@ LAYERS = {
 
 #: Optional or heavy third-party packages that may be imported inside a function, so that a
 #: machine without them still runs everything that does not need them.
-DEFERRABLE = {"onnx", "onnxruntime", "openvino", "sounddevice", "av", "huggingface_hub",
-              "psutil", "pygame"}
+DEFERRABLE = {"sounddevice", "av", "psutil", "pygame"}
 
 #: Every other import made inside a function, and why it is not at the top.
 DEFERRED = {
-    # Loading the compiler costs start-up time; only a compile needs it.
-    ("ganlive.frame", "torch._dynamo.utils"): "torch",
-    ("ganlive.models.capture", "torch._dynamo.utils"): "torch",
-    # `play` answers `--help` and a bad argument without loading torch.
-    ("ganlive.tools.play", "torch"): "torch",
-    ("ganlive.tools.play", "ganlive.bank"): "torch",
-    ("ganlive.tools.play", "ganlive.device"): "torch",
-    ("ganlive.tools.play", "ganlive.families"): "torch",
-    # Recording is torch-free until a take actually starts.
-    ("ganlive.record.video", "ganlive.pixels"): "torch",
+    # `play` answers `--help` and a bad argument before wgpu and the engine load.
+    ("ganlive.tools.convert", "ganlive.engine.convert"): "torch",
+    # An engine model that is already converted plays without PyTorch.
+    ("ganlive.engine.load", "ganlive.engine.convert"): "torch",
+    ("ganlive.tools.play", "ganlive.bank"): "start-up",
+    ("ganlive.tools.play", "ganlive.families"): "start-up",
+    # A checkpoint without its conversion beside it is read with PyTorch, and only then.
+    ("ganlive.families", "ganlive.models.fastgan"): "torch",
+    ("ganlive.families", "ganlive.models.stylegan2"): "torch",
     # The converted-StyleGAN2 file opens with no other module of this package.
     ("ganlive.models.stylegan2", "ganlive.models.common"): "self-contained",
     # NVIDIA's own code, from the checkout named on the command line.
@@ -60,8 +61,11 @@ DEFERRED = {
     ("ganlive.tools.import_stylegan2", "legacy"): "on --repo",
 }
 
-#: Modules that must import without torch: the hardware checks run before any model does.
-TORCH_FREE = ("ganlive.clock", "ganlive.control.midi", "ganlive.tools.doctor", "ganlive.tools.play")
+#: Modules that must import without torch: the hardware checks run before any model does, and
+#: a converted model plays without PyTorch installed at all.
+TORCH_FREE = ("ganlive.clock", "ganlive.control.midi", "ganlive.tools.doctor", "ganlive.tools.play",
+              "ganlive.bank", "ganlive.families", "ganlive.walk", "ganlive.tools.latency",
+              "ganlive.tools.tune", "ganlive.engine.load", "ganlive.process")
 
 
 def _modules():

@@ -2,13 +2,31 @@
 
 [Back to the README](../README.md)
 
-Load a model to get dials for its latent space. Use them with your mouse, a MIDI controller, or drums.
+This guide covers the desktop app, a Python program that plays models from your disk in a
+window, with your mouse, a MIDI controller, audio input, or drums. The
+[player in your browser](https://gustavecortal.com/ganlive/) needs none of it.
 
-[Models](#models) · [Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
-[Recording](#recording) · [Performance](#speed) · [Installation](#install) ·
-[Development](#development)
+Contents: [quick start](#quick-start), [models](#models), [controls](#the-interface),
+[MIDI and audio](#playing-with-hardware), [recording](#recording), [speed](#speed),
+[installation](#install), [development](#development).
 
-Commands assume an active project environment. Otherwise, prefix `ganlive` with
+## Quick start
+
+Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Supports Windows, macOS, and Linux, on any GPU through Vulkan, Metal, or Direct3D 12.
+
+```bash
+git clone https://github.com/gustavecortal/ganlive.git
+cd ganlive
+uv venv --python 3.12
+uv pip install -e ".[record]" huggingface_hub
+uv run --no-sync hf download gustavecortal/ganlive-lichen --local-dir runs/lichen
+uv run --no-sync ganlive play --checkpoint runs/lichen --console --no-audio --no-midi
+```
+
+Drag the dials beside the image. For MIDI, remove `--no-midi`.
+
+Commands below assume an active project environment. Otherwise, prefix `ganlive` with
 `uv run --no-sync` from the project directory.
 
 ## Models
@@ -19,17 +37,19 @@ Models can have different resolutions and latent dimensions.
 
 ### StyleGAN2
 
-Convert NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository.
-Install the dependencies needed to read NVIDIA's model file:
+Import NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository. This needs
+PyTorch and the dependencies that read NVIDIA's model file. For its face model:
 
 ```bash
-uv pip install requests click setuptools
-ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch
-ganlive play --checkpoint runs/stylegan2/model.pt --console
+uv pip install -e ".[convert]" requests click setuptools
+git clone --depth 1 https://github.com/NVlabs/stylegan2-ada-pytorch
+curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
+ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
+ganlive play --checkpoint runs/stylegan2/ffhq.pt --console
 ```
 
-See the [README](../README.md#quick-start) for a complete example.
-The converted model runs without NVIDIA's custom CUDA kernels.
+The imported model runs without NVIDIA's custom CUDA kernels. To play it in the browser,
+convert `runs/stylegan2/ffhq.pt` as the [README](../README.md#bring-your-own-gan) shows.
 
 ### FastGAN
 
@@ -43,33 +63,11 @@ hf download gustavecortal/ganlive-lichen --local-dir runs/lichen
 ganlive play --checkpoint runs/lichen --console
 ```
 
-### Other generators
-
-Install the `onnx` extra and import a compatible ONNX generator:
-
-```bash
-ganlive adopt model.onnx --out runs/onnx/model.onnx
-ganlive play --checkpoint runs/onnx/model.onnx --console
-```
-
-For a Hugging Face repository, install `hub` and use:
-
-```bash
-ganlive adopt hf:owner/repo --out runs/onnx/model.onnx
-```
-
-If the repository requires its own Python code, add `--trust-remote-code` only for code
-you trust. Import needs a generator that accepts a latent and returns an image.
-Models with extra inputs or unsupported operations may need a custom ONNX export.
-
-Import creates and calibrates controls, then saves them with the graph for later use.
-
 ### Additional tools
 
 | Command | Use |
 |---|---|
 | `ganlive dials runs/stylegan2/model.pt` | Find directions using the whole generator and save them for later launches |
-| `ganlive export-onnx --checkpoint runs/my-run` | Export a FastGAN checkpoint with its controls |
 
 ## The interface
 
@@ -103,7 +101,7 @@ Dark dials are inactive for the current model.
 | `l` | Map the next MIDI knob to the last dial touched |
 | `[` / `]` | Previous / next loaded model |
 | `m` | Browse models under `--runs` |
-| `Tab` / `Shift+Tab` | Next / previous preset |
+| `Tab` or `P` / `Shift+Tab` or `Shift+P` | Next / previous preset |
 | `s` | Save a preset |
 | `r` | Release all mouse-controlled dials |
 | `v` | Start / stop video recording |
@@ -206,38 +204,36 @@ Measure your hardware with:
 ganlive latency --checkpoint runs/stylegan2/ffhq.pt
 ```
 
-Reported measurements on a $350 Intel Arc A770 with PyTorch 2.13+xpu:
+Measured on a $350 Intel Arc A770 on 2026-10-09, with the backend and tuning ganlive chose at
+each model's first load (Direct3D 12 for lichen), before `ganlive tune`:
 
 | Model | Native resolution | Frame time | FPS |
 |---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 10.7 ms | 94 |
-| FastGAN, displayed at 1620×1080 | 3072×2048 | 8.8 ms | 114 |
-| StyleGAN2 FFHQ via ONNX, OpenVINO FP16 | 1024×1024 | 14.3 ms | 70 |
+| StyleGAN2 FFHQ | 1024×1024 | 34.9 ms | 29 |
+| FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 9.6 ms | 104 |
+| FastGAN amber | 1536×1024 | 5.6 ms | 177 |
 
-These measure generation and frame preparation. With the window and controls,
-the FFHQ loop took 12.4 ms, with 13.8 ms at the 95th percentile.
+In Edge on the same card, the browser player draws lichen at 87 fps and amber at 150 fps.
 
-Reported measurements on an Apple M5 MacBook Pro with PyTorch 2.14.1 on MPS:
-
-| Model | Native resolution | Frame time | FPS |
-|---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 46.4 ms | 22 |
-| FastGAN, displayed at 1472×982 | 3072×2048 | 31.0 ms | 32 |
-| FastGAN via ONNX, ONNX Runtime with CoreML | 3072×2048 | 77.5 ms | 13 |
-
-With the window and controls, the FFHQ loop took 47.7 ms, with 48.9 ms at the 95th
-percentile. On a Mac, play the `.pt` checkpoint rather than its ONNX export: compiled
-PyTorch on MPS is the faster runtime.
+These measure generation and frame preparation. On this card, `ganlive tune` brought the
+frame it times from 4.94 to 4.71 ms for amber and from 33.3 to 30.0 ms for FFHQ.
 
 Results depend on your model, hardware, and runtime.
 
 ## Install
 
-Follow the [README quick start](../README.md#quick-start).
-Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/) first.
+Follow the [quick start](#quick-start).
 
-ganlive detects CUDA, Intel XPU, Apple MPS, or CPU.
-AMD GPUs use the ROCm PyTorch build on Linux.
+Models play on WebGPU through Vulkan, Metal, or Direct3D 12. At a model's first load,
+ganlive measures which of these draws it right and fastest on your machine and remembers
+the choice. A FastGAN's first load on a GPU also spends about 10 seconds tuning its heaviest
+layers there. `--backend` picks a backend instead, and `ganlive tune` finds how every layer runs
+fastest on your GPU.
+
+PyTorch is needed only to convert a checkpoint, which happens once, at its first load, and
+for `import-stylegan2` and `dials`. Install
+[PyTorch for your hardware](https://pytorch.org/get-started/locally/), or the `convert` extra
+for the default build.
 
 Add optional features with `uv pip install -e ".[EXTRA]"`:
 
@@ -245,10 +241,8 @@ Add optional features with `uv pip install -e ".[EXTRA]"`:
 |---|---|
 | `audio` | Audio input and recording guide tracks |
 | `record` | Video recording |
-| `onnx` | ONNX import and playback |
-| `onnx-intel` | ONNX through OpenVINO for Intel GPUs |
-| `hub` | Hugging Face imports, including ONNX dependencies |
-| `all` | All features except `onnx-intel` |
+| `convert` | PyTorch, to convert checkpoints |
+| `all` | All features |
 | `dev` | Development dependencies |
 
 Combine extras as `".[audio,record]"`.

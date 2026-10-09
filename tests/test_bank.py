@@ -4,7 +4,10 @@ them."""
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
+import subprocess
+import sys
 import types
 
 import numpy as np
@@ -13,12 +16,11 @@ import torch
 
 from ganlive import bank as R
 from ganlive.bank import Bank, Shelf, frame_size
-from ganlive.checkpoints import admit, checkpoint_for, is_onnx, label_for, run_step, slug_for
+from ganlive.checkpoints import admit, checkpoint_for, label_for, run_step, slug_for
 from ganlive.clock import WalkConfig
 from ganlive.dials import fastgan_dials
 from ganlive.dials import table as S
-from ganlive.families import FAMILIES, LoadOptions, family_of
-from ganlive.frame import FrameStage
+from ganlive.families import LoadOptions, config_of, family_of
 from ganlive.models.fastgan import Generator
 from ganlive.tools import play as live
 from ganlive.window import fit_height, parse_height
@@ -42,17 +44,34 @@ def _no_models():
     return types.SimpleNamespace(models=[])
 
 
-def test_an_exported_graph_is_a_model_on_the_shelf_and_names_itself_apart():
-    """An export lives in one flat folder as `<run>-<step>.onnx`, so the stem says everything.
-    The trailing word keeps it from sharing a row with the checkpoint it came from."""
-    graph = pathlib.Path("runs/onnx/gv-warm-lr3-0078000.onnx")
-    check = pathlib.Path("runs/gv-warm-lr3/checkpoints/0078000.pt")
+class _Stage:
+    """Just enough of an `EngineStage` for a bank that draws nothing: the size it shows."""
 
-    assert is_onnx(graph) and not is_onnx(check)
-    assert run_step(graph) == ("gv-warm-lr3", "78000 onnx")
-    assert label_for(graph) == "gv-warm-lr3 78000 onnx"
-    assert label_for(check) == "gv-warm-lr3 78000"
-    assert slug_for(graph) != slug_for(check)
+    device = None
+
+    def __init__(self, height: int, width: int) -> None:
+        self.height, self.width = height, width
+
+    def resize(self, height: int, width: int) -> None:
+        self.height, self.width = height, width
+
+
+def test_a_converted_checkpoint_is_known_without_pytorch(tmp_path):
+    """With its conversion beside it, a checkpoint's family and size come off the conversion's
+    manifest, so a machine without PyTorch plays it and lists it on the shelf."""
+    checkpoint = tmp_path / "faces.pt"
+    checkpoint.write_bytes(b"a checkpoint this test never opens")
+    st = checkpoint.stat()
+    beside = tmp_path / "faces.engine"
+    beside.mkdir()
+    (beside / "manifest.json").write_text(json.dumps({
+        "family": "stylegan2", "nz": 512, "height": 256, "width": 256,
+        "stamp": {"size": st.st_size, "mtime_ns": st.st_mtime_ns}}))
+    script = ("import sys; from ganlive.families import config_of, family_of; "
+              f"p = {str(checkpoint)!r}; c = config_of(p); "
+              "print(family_of(p), c.nz, c.ladder.width, 'torch' in sys.modules)")
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert done.stdout.split() == ["stylegan2", "512", "256", "False"], done.stdout + done.stderr
 
 
 def test_a_published_model_named_after_its_folder_is_called_by_that_name_alone():
@@ -62,24 +81,17 @@ def test_a_published_model_named_after_its_folder_is_called_by_that_name_alone()
     assert run_step(published) == ("lichen", "")
     assert label_for(published) == "lichen"
     assert slug_for(published) == "lichen"
-    # Its export is named by that slug, and reads back the same way.
-    assert label_for(pathlib.Path("runs/onnx/lichen.onnx")) == "lichen onnx"
 
 
-def test_the_shelf_lists_every_graph_but_only_the_newest_checkpoint(tmp_path):
-    """A run holds many checkpoints and the newest is the one anybody means, so it is one row.
-    Every export is a different model, so that folder is as many rows as it has files."""
+def test_the_shelf_lists_only_the_newest_checkpoint_of_a_run(tmp_path):
+    """A run holds many checkpoints and the newest is the one anybody means, so it is one row."""
     run = tmp_path / "a-run" / "checkpoints"
     run.mkdir(parents=True)
     for step in ("0001000.pt", "0002000.pt"):
         (run / step).write_bytes(b"")
-    graphs = tmp_path / "onnx"
-    graphs.mkdir()
-    for name in ("a-run-0002000.onnx", "b-run-0009000.onnx"):
-        (graphs / name).write_bytes(b"")
 
     names = [p.name for p in Shelf(_no_models(), tmp_path)._models()]
-    assert names == ["0002000.pt", "a-run-0002000.onnx", "b-run-0009000.onnx"], names
+    assert names == ["0002000.pt"], names
 
 
 def test_a_file_that_holds_no_generator_is_listed_but_not_offered(tmp_path):
@@ -89,7 +101,7 @@ def test_a_file_that_holds_no_generator_is_listed_but_not_offered(tmp_path):
     folder.mkdir(parents=True)
     torch.save({"adapter": {}, "step": 1, "config": {}}, folder / "0000001.pt")
     with pytest.raises(ValueError, match="no FastGAN generator"):
-        family_of(folder / "0000001.pt").config_of(folder / "0000001.pt")
+        config_of(folder / "0000001.pt")
     (entry,) = Shelf(_no_models(), tmp_path).entries()
     assert entry.why == "not playable", entry
 
@@ -122,7 +134,7 @@ def test_the_shelf_lists_what_is_on_disk_and_every_readable_model_can_join(tmp_p
     (tmp_path / "not-a-run").mkdir()                          # no checkpoint: not listed
 
     loaded = _StubModel(path=here, name="gv-here 82000", cfg=stub_cfg(256, 1536, 1024))
-    bank = Bank(models=[loaded], stage=FrameStage(1024, 1536, device="cpu"), device="cpu")
+    bank = Bank(models=[loaded], stage=_Stage(1024, 1536))
     shelf = Shelf(bank, tmp_path)
 
     by_name = {e.name: e for e in shelf.entries()}
@@ -183,20 +195,13 @@ def test_a_bank_may_mix_latent_widths_and_aspect_ratios_and_refuses_only_a_dupli
     assert admit([], pathlib.Path("runs/anything.pt")) is None
 
 
-def test_one_record_answers_every_question_about_a_model_file():
-    """The config reader, the loader, the capture gate, the layout and the shelf all ask the
-    same `Family`, so a new format is one entry and no two places can disagree."""
-    assert [f.name for f in FAMILIES] == ["onnx", "stylegan2", "fastgan"], (
-        "order is load-bearing: suffix, then the file's own tag, then whatever is left")
-    assert family_of(pathlib.Path("anything.onnx")).name == "onnx"
-    assert family_of(pathlib.Path("no-such-file.pt")).name == "fastgan", (
-        "the tail takes anything, so this never returns None")
-
-    for family in FAMILIES:
-        for field in ("owns", "config_of", "prepare"):
-            assert callable(getattr(family, field)), f"{family.name}.{field}"
-    assert [f.name for f in FAMILIES if not f.capturable] == ["onnx"], (
-        "an ONNX graph runs under its own runtime, so a torch-stream recording holds nothing")
+def test_a_file_is_an_engine_model_a_stylegan2_or_else_a_fastgan(tmp_path):
+    """An engine folder first, then the file's own tag, then whatever is left: never None."""
+    engine = tmp_path / "runs-engine"
+    engine.mkdir()
+    (engine / "manifest.json").write_text("{}")
+    assert family_of(engine) == "engine"
+    assert family_of(pathlib.Path("no-such-file.pt")) == "fastgan"
 
 
 def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():
@@ -220,16 +225,31 @@ def test_both_stylegan2_layout_builders_offer_the_same_shared_blocks():
 
 
 def test_ganlive_opens_a_fastgan_checkpoint(tmp_path):
-    """The whole FastGAN load path, from a `.pt` on disk to a playable `Model`: rebuild,
-    freeze the noise, install, measure, lay out."""
+    """The whole FastGAN load path, from a `.pt` on disk to a `Model` playing on the engine:
+    converted beside the checkpoint once, its dials measured then, and loaded from there."""
+    wgpu = pytest.importorskip("wgpu")
+    from ganlive.engine.runner import default_device
+
+    try:
+        gpu = default_device(fallback=True)        # the CPU adapter: the card stays free
+    except (RuntimeError, wgpu.GPUError):
+        pytest.skip("no WebGPU CPU adapter")
     torch.manual_seed(0)          # the dial gate measures the picture; random weights vary
     cfg = dict(nz=16, ngf=8, im_size=256, im_width=None)
     net = Generator(**cfg)
+    # Statistics from a few batches, as training leaves them: untrained ones let activations
+    # outgrow fp16, and the engine is right to refuse a model it cannot draw.
+    for module in net.modules():
+        if isinstance(module, torch.nn.BatchNorm2d):
+            module.momentum = None
+    with torch.no_grad():
+        for _ in range(4):
+            net(torch.randn(8, 16))
     path = tmp_path / "tiny.pt"
     torch.save({"g_ema": net.state_dict(), "config": cfg}, path)
 
-    model = R._prepare(path, "cpu", torch.float32,
-                       LoadOptions(compile_net=False, capture=False, measure_grain=False))
+    model = R._prepare(path, gpu, LoadOptions())
+    assert (tmp_path / "tiny.engine" / "manifest.json").is_file(), "converted beside it"
     assert model.cfg.nz == 16 and model.cfg.ladder.height == 256
     assert model.settings.names, "no dials were installed on the generator"
     # A 256-pixel generator has no 512 rungs, so the dials that write them are offered and
@@ -246,34 +266,14 @@ def test_switching_models_repoints_the_directions_at_the_new_one():
     first = np.eye(2, 8, dtype=np.float32)
     second = np.full((2, 8), 0.5, dtype=np.float32)
     models = [_StubModel(rows=first), _StubModel(rows=second)]
-    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu")
+    bank = Bank(models=models, stage=_Stage(64, 96))
 
     cfg = WalkConfig()
-    bank.walk(cfg, dtype=torch.float32)
+    bank.walk(cfg)
     assert cfg.directions is first
 
     bank.use(1)
     assert cfg.directions is second, "the walk still holds the previous model's basis"
-
-
-def test_a_model_switch_moves_where_the_latent_goes_with_it():
-    """A bank can hold both kinds, so the generator says where it takes the latent: an ONNX
-    graph and a captured torch graph read it from the host, a compiled module from the card."""
-    models = [_StubModel(path=pathlib.Path("runs/a.onnx"),
-                         net=types.SimpleNamespace(latent_on_host=True)),
-              _StubModel(path=pathlib.Path("runs/b.pt"))]
-    bank = Bank(models=models, stage=FrameStage(64, 96), device="cpu")
-    cfg = WalkConfig()
-    bank.walk(cfg, dtype=torch.float32)
-
-    bank.index = 0
-    bank._rewire()
-    assert cfg.latent_on_host is True, "a generator that takes the latent on the host is obeyed"
-
-    bank.index = 1
-    bank._rewire()
-    assert cfg.latent_on_host is False, (
-        "switching to a checkpoint left the walk handing a numpy array to a torch generator")
 
 
 def test_every_model_is_shown_at_its_own_native_size_not_the_banks_smallest():
@@ -295,29 +295,14 @@ def test_every_model_is_shown_at_its_own_native_size_not_the_banks_smallest():
 
 def test_a_switch_moves_the_stage_to_the_incoming_models_size():
     """The stage follows the model, and loading a second one leaves the first alone."""
-    class Net(torch.nn.Module):
-        def __init__(self, w, h):
-            super().__init__()
-            self.w, self.h = w, h
-
-        def forward(self, z):
-            return [torch.zeros(1, 3, self.h, self.w), torch.zeros(1, 3, self.h // 4,
-                                                                   self.w // 4)]
-
     def model(w, h):
-        return _StubModel(net=Net(w, h), path=pathlib.Path("m.pt"), cfg=stub_cfg(8, w, h))
+        return _StubModel(path=pathlib.Path("m.pt"), cfg=stub_cfg(8, w, h))
 
     big, small = model(48, 32), model(24, 16)
-    r = Bank(models=[big, small], stage=FrameStage(32, 48, device="cpu"), device="cpu",
-             dtype=torch.float32)
-
+    r = Bank(models=[big, small], stage=_Stage(32, 48))
     assert (r.height, r.width) == (32, 48)
-    assert r.stage.bgra_bytes(r.stage.step(big.net(None))).shape == (32, 48, 4)
-
     r.use(1)
     assert (r.height, r.width) == (16, 24), "the stage did not follow the switch"
-    assert r.stage.bgra_bytes(r.stage.step(small.net(None))).shape == (16, 24, 4)
-
     r.use(0)
     assert (r.height, r.width) == (32, 48), "switching back left the big model downscaled"
 

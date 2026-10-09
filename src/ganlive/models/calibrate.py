@@ -2,7 +2,7 @@
 
 A dial's *curve* is its measurement: the values that buy an even share of the same change at
 every point of the turn, so a turn feels like the same amount of picture on every model.
-`Probe` runs an ONNX graph, `TorchProbe` a torch network; `calibrate` takes either.
+`TorchProbe` runs a torch network with its settings installed, and `calibrate` takes it.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import numpy as np
 import torch
 
 from ganlive.curves import clamp01
-from ganlive.models import runtime
 from ganlive.models.common import first_image, host_latent
 from ganlive.pixels import FLOOR_LEVELS, levels
 
@@ -116,27 +115,8 @@ class _Probe:
         raise NotImplementedError
 
 
-class Probe(_Probe):
-    """An ONNX graph, runnable on the host, so a dial can be asked what it does."""
-
-    def __init__(self, model, device: str = "cpu", precision: str = "FP16",
-                 runner=None) -> None:
-        """`device` is `cpu` for ONNX Runtime, or an OpenVINO device name such as `GPU`.
-        `runner` is one already compiled for exactly that, so it is not compiled twice."""
-        if runner is None:
-            backend, want = runtime.measuring_on(device)
-            runner = runtime.open_graph(model, backend=backend, device=want,
-                                        precision=precision)
-        self.runner = runner
-        self.nz, self.width = self.runner.nz, self.runner.width
-
-    def frame(self, z, values=None) -> np.ndarray:
-        # A copy: the runner's output is overwritten by the next submission.
-        return np.array(self.runner.infer(z, values), np.float32)
-
-
 class TorchProbe(_Probe):
-    """The same contract as `Probe`, for a torch network with installed `Settings`."""
+    """A torch network with installed `Settings`, so a dial can be asked what it does."""
 
     def __init__(self, net, settings, nz: int, device="cpu", dtype=None) -> None:
         self.net, self.settings, self.nz, self.device = net, settings, nz, device

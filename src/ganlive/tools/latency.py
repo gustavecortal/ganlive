@@ -14,20 +14,20 @@ import itertools
 import time
 from pathlib import Path
 
-import torch
+import numpy as np
 
 from ganlive import bank
-from ganlive import device as dev
 from ganlive.control.features import FeatureExtractor
 from ganlive.control.kit import INDEX
 from ganlive.control.simulate import MachineSim, StemFeeder
 from ganlive.dials.fastgan_dials import fastgan
+from ganlive.engine.screen import Stepped
 from ganlive.families import LoadOptions
 from ganlive.files import write_json
 from ganlive.presets import Impulse, Preset, PresetRunner
 from ganlive.strip import DialPanel
 from ganlive.timing import drift_ms, stat_ms
-from ganlive.tools import add_device, parser
+from ganlive.tools import add_backend, parser
 from ganlive.window import Display, parse_height, screen_size
 
 
@@ -57,11 +57,9 @@ def worst_case(layout=None) -> Preset:
     )
 
 
-def latent_for(model, r):
-    """A fixed latent where this generator reads it: on the host for a graph that reads it
-    there, as the walk hands it over; on the device otherwise."""
-    z = torch.randn(1, model.cfg.nz).to(r.dtype)
-    return z.numpy() if getattr(model.net, "latent_on_host", False) else z.to(r.device)
+def latent_for(model) -> np.ndarray:
+    """A fixed latent, a host array as the walk hands it over."""
+    return np.random.default_rng(0).standard_normal((1, model.cfg.nz)).astype(np.float32)
 
 
 def _time_frames(frames: int, step) -> list[float]:
@@ -85,15 +83,14 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     """The played loop: the control loop, finishing where a played frame finishes.
 
     The recorded loop ends at `nv12_bytes`, with no window on screen. A played frame ends
-    with `bgra_bytes` and a `publish` that wakes the window thread, which then uploads a
-    texture, draws the strip and presents -- work that holds the GIL and lands on this
-    thread's next frame, so it has to be measured with the window really open."""
+    with a `publish`, which presents the frame and wakes the window thread to paint the strip
+    and take the events. That work holds the GIL and lands on this thread's next frame, so
+    it has to be measured with the window really open."""
     panel = DialPanel(runner, actions={}, extractor=ex, bank=r)
-    display = Display((r.height, r.width), title="ganlive - latency", overlay=panel,
+    display = Display((r.height, r.width), r.gpu, title="ganlive - latency", overlay=panel,
                       fullscreen=False)
-    to_window = r.stage.bgra_bytes
     stages: dict[str, list] = {"hit detection": [], "rules": [], "walk": [],
-                              "issue": [], "window": [], "publish": []}
+                              "issue": [], "publish": []}
     total_ms: list[float] = []
     # A feeder of its own: the recorded loop's has finished, and the drums must be playing.
     feeder = StemFeeder(ex, pcm, take.samplerate, args.blocksize)
@@ -101,8 +98,9 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     time.sleep(0.25)
     try:
         for _ in range(8):                                  # the window's first texture
-            display.publish(to_window(r.stage.step(model.net(walk.latent(0.0)))))
-        dev.synchronize()
+            model.net(walk.latent(0.0))
+            display.publish(Stepped.native(model.net))
+        r.sync()
         for f in range(int(args.seconds * args.fps)):
             t0 = time.perf_counter()
             runner.observe(ex.drain())
@@ -111,16 +109,13 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
             t2 = time.perf_counter()
             z = walk.latent(f / args.fps * take.bpm / 60.0)
             t3 = time.perf_counter()
-            frame = r.stage.step(model.net(z))
+            model.net(z)
             t4 = time.perf_counter()
-            shown = to_window(frame)
-            t5 = time.perf_counter()
-            display.publish(shown)
+            display.publish(Stepped.native(model.net))
             t6 = time.perf_counter()
             panel.beats = f / args.fps * take.bpm / 60.0
             for name, dt in (("hit detection", t1 - t0), ("rules", t2 - t1),
-                             ("walk", t3 - t2), ("issue", t4 - t3),
-                             ("window", t5 - t4), ("publish", t6 - t5)):
+                             ("walk", t3 - t2), ("issue", t4 - t3), ("publish", t6 - t4)):
                 stages[name].append(dt * 1000)
             total_ms.append((t6 - t0) * 1000)
     finally:
@@ -135,9 +130,6 @@ def played(r, runner, ex, walk, model, args, take, pcm, period_ms) -> tuple[dict
     return out, per
 
 
-# Without gradients, as `play` runs it: a compiled generator called with them on is a second,
-# slower graph, and timing that read 31 ms frames as 41 on an M5.
-@torch.no_grad()
 def main(argv=None) -> int:
     ap = parser("latency", __doc__)
     ap.add_argument("--checkpoint", type=Path, action="append", metavar="PATH", required=True,
@@ -145,7 +137,7 @@ def main(argv=None) -> int:
                          "loads them, and every one of them is timed: a bank holds "
                          "them all resident at once, and each has its own frame time. The "
                          "full loops run on the first. Required.")
-    add_device(ap)
+    add_backend(ap)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--height", type=parse_height, default=0,
@@ -160,13 +152,10 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, default=Path("runs/ganlive/latency.json"))
     ap.add_argument("--window", action="store_true",
                     help="also time the played loop: the real window open and the real strip "
-                         "drawn beside it, finishing at `bgra_bytes` and `publish` rather "
+                         "drawn beside it, finishing at `publish` rather "
                          "than at the recorder's `nv12_bytes`. The window thread's work lands "
                          "on the frame thread, so only this loop shows its cost. Needs a "
                          "screen.")
-    ap.add_argument("--no-capture", dest="capture", action="store_false",
-                    help="load without recording each compiled forward as one device graph, "
-                         "to measure what the capture saves")
     args = ap.parse_args(argv)
 
     take = MachineSim(bpm=130.0, seed=1).render(bars=8)
@@ -174,9 +163,9 @@ def main(argv=None) -> int:
     print(f"audio: {pcm.shape[0]} ch, {take.seconds:.1f}s, blocksize {args.blocksize} "
           f"({args.blocksize / take.samplerate * 1000:.2f} ms)", flush=True)
 
-    r = bank.build(args.checkpoint, args.device, height=args.height,
+    r = bank.build(args.checkpoint, height=args.height,
                    screen=screen_size(),
-                   options=LoadOptions(capture=args.capture))
+                   options=LoadOptions(backend=args.backend))
     print(f"generator: {r.report()}", flush=True)
 
     total = int(args.seconds * args.fps)
@@ -184,12 +173,12 @@ def main(argv=None) -> int:
     results: dict = {"fps": args.fps, "height": r.height, "width": r.width,
                      "channels": pcm.shape[0], "blocksize": args.blocksize,
                      "preset": "worst-case", "native": [r.cfg.ladder.width, r.cfg.ladder.height],
-                     "bank": [m.name for m in r.models], "capture": args.capture}
+                     "bank": [m.name for m in r.models]}
 
     model = r.current
-    z_fixed = latent_for(model, r)
+    z_fixed = latent_for(model)
     r.stage.nv12_bytes(r.stage.step(model.net(z_fixed)))
-    dev.synchronize()
+    r.sync()
 
     ex = FeatureExtractor(pcm.shape[0], take.samplerate)
     runner = PresetRunner(worst_case(model.layout), INDEX, float(args.fps),
@@ -270,14 +259,14 @@ def main(argv=None) -> int:
         was = r.index
         for i, m in enumerate(r.models):
             r.use(i)
-            z = latent_for(m, r)
+            z = latent_for(m)
 
             def step(m=m, z=z):
                 r.stage.nv12_bytes(r.stage.step(m.net(z)))
 
             for _ in range(8):                          # the first frames after a switch
                 step()
-            dev.synchronize()
+            r.sync()
             per[m.name] = stat_ms(_time_frames(total, step), period_ms)
             per[m.name]["size"] = [r.width, r.height]
         r.use(was)
@@ -288,11 +277,6 @@ def main(argv=None) -> int:
             print(f"   {name:34} {s['size'][0]:5d}x{s['size'][1]:<5d} {s['median']:8.2f} "
                   f"{s['p95']:8.2f} {1000.0 / s['median']:6.1f}")
 
-    vram = dev.memory_report(r.device)
-    if vram:
-        results["vram"] = vram
-        print(f"\n   memory: {vram.get('max_allocated_gb', float('nan')):.2f} GB peak in use, "
-              f"{vram.get('max_reserved_gb', float('nan')):.2f} GB peak held")
 
     at = results["audio_thread"]
     print(f"\n   sound callback: {at['push_median_ms']:.3f} ms median, "

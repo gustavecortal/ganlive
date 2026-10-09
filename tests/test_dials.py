@@ -9,7 +9,6 @@ import math
 import numpy as np
 import pytest
 import torch
-import torch.nn.utils as U
 from torch import nn
 
 from ganlive import bank as R
@@ -18,7 +17,6 @@ from ganlive.clock import WalkConfig
 from ganlive.curves import at, clamp01
 from ganlive.dials import steer as K
 from ganlive.dials import table as S
-from ganlive.dials.derive import sefa, sefa_onnx
 from ganlive.dials.fastgan_dials import (
     DIALS,
     MODEL,
@@ -154,7 +152,7 @@ def test_the_documented_spread_table_matches_what_the_walk_does():
     Tolerances are wide because these are means over a random sequence."""
     for spread, expected in ((0.05, 1.8), (0.10, 3.5), (0.20, 7.0), (0.35, 11.8),
                              (0.50, 16.0), (0.70, 20.2), (1.00, 22.5)):
-        got = _step(SlerpWalk(256, "cpu", WalkConfig(spread=spread)), n=60)
+        got = _step(SlerpWalk(256, WalkConfig(spread=spread)), n=60)
         assert got == pytest.approx(expected, abs=0.6), (spread, got, expected)
 
 
@@ -270,33 +268,6 @@ def test_every_dial_is_accounted_for_on_a_fully_featured_model():
         f"give each one a Span, a noise band or a direction, or take it off the surface")
 
 
-def test_directions_read_off_an_onnx_file_match_the_ones_read_off_the_weights(tmp_path):
-    """A generator nobody here has the training code for still arrives with its own ranked
-    latent axes, because the first weight that consumes `z` is in the file."""
-    nz = 12
-
-    class Tiny(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.up = U.spectral_norm(nn.ConvTranspose2d(nz, 8, 4, 1, 0, bias=False))
-
-        def forward(self, z):
-            return self.up(z.reshape(-1, nz, 1, 1))
-
-    net = Tiny().eval()
-    path = tmp_path / "tiny.onnx"
-    with torch.no_grad():
-        torch.onnx.export(net, (torch.zeros(1, nz),), str(path),
-                          input_names=["z"], output_names=["image0"], dynamo=True)
-
-    off_weights = sefa(net, nz)
-    off_file = sefa_onnx(path, nz)
-
-    assert len(off_file) == len(off_weights) == nz
-    cos = (off_file.basis * off_weights.basis).sum(1).abs()
-    assert float(cos.min()) > 0.999, f"the two readers disagree: {cos}"
-
-
 def test_an_onnx_model_offers_no_settings_it_cannot_write():
     """`steer.install` swaps steerable modules into a torch module tree and an ONNX graph has
     none, so the MODEL block is empty. An empty `Settings` accepts the writes and drops them,
@@ -315,17 +286,17 @@ def test_an_onnx_model_offers_no_settings_it_cannot_write():
 def test_a_direction_dial_moves_the_latent_and_by_exactly_the_amount_asked():
     rows = np.eye(4, 16, dtype=np.float32)
     cfg = WalkConfig(directions=rows)
-    walk = SlerpWalk(16, "cpu", cfg)
+    walk = SlerpWalk(16, cfg)
     surface = Surface(layout=fastgan())
 
     surface.apply(FakeSettings(), cfg)
-    at_rest = walk.latent(0.5).clone()
+    at_rest = walk.latent(0.5).copy()
 
     surface.set("dir1", 1.0)
     surface.apply(FakeSettings(), cfg)
     pushed = walk.latent(0.5)
 
-    delta = (pushed - at_rest).flatten().numpy()
+    delta = (pushed - at_rest).flatten()
     assert delta[0] == pytest.approx(DIRECTION_RANGE, abs=1e-3), "dir1 must push its own axis"
     assert np.allclose(delta[1:], 0.0, atol=1e-3), "and must not disturb the others"
 
@@ -336,29 +307,29 @@ def test_a_w_push_goes_to_the_push_buffer_and_leaves_the_latent_alone():
     rows = np.zeros((2, 8), dtype=np.float32)
     rows[0, 1] = 1.0
     rows[1, 5] = 1.0
-    push = torch.zeros(2, 4)
+    push = np.zeros((2, 4), np.float32)
     cfg = WalkConfig(directions=rows, push_into=push)
-    walk = SlerpWalk(16, "cpu", cfg)
+    walk = SlerpWalk(16, cfg)
     surface = Surface(layout=fastgan())
 
     surface.apply(FakeSettings(), cfg)
-    at_rest = walk.latent(0.5).clone()
-    assert float(push.abs().max()) == 0.0, "nothing turned, nothing pushed"
+    at_rest = walk.latent(0.5).copy()
+    assert float(np.abs(push).max()) == 0.0, "nothing turned, nothing pushed"
 
     surface.set("dir2", 1.0)
     surface.apply(FakeSettings(), cfg)
     pushed = walk.latent(0.5)
 
-    assert torch.equal(pushed, at_rest), (
+    assert np.array_equal(pushed, at_rest), (
         "a `w` push reached the latent as well; on this family the mapping's pixel norm "
         "would then renormalise the walk's own vector around it")
     assert push[1, 1] == pytest.approx(DIRECTION_RANGE, abs=1e-3), "dir2 pushes its own axis"
-    assert float(push[0].abs().max()) == 0.0, "and only inside its own style range"
+    assert float(np.abs(push[0]).max()) == 0.0, "and only inside its own style range"
 
     surface.set("dir2", 0.5)
     surface.apply(FakeSettings(), cfg)
     walk.latent(0.5)
-    assert float(push.abs().max()) == 0.0, (
+    assert float(np.abs(push).max()) == 0.0, (
         "the push buffer kept the last push after the dial came back to rest, so the model "
         "stays steered by a dial the strip draws as centred")
 
@@ -395,7 +366,7 @@ def test_every_walk_config_field_is_either_written_each_frame_or_in_the_cache_ke
     keyed = set(SlerpWalk.SEED_FIELDS)
     # Properties of the loaded model, not of a frame: `Bank` sets them on a switch, and
     # nothing on the surface writes them.
-    excluded = {"spread", "directions", "latent_on_host", "push_into"}
+    excluded = {"spread", "directions", "push_into"}
 
     missing = names - written_each_frame - keyed - excluded
     assert not missing, (
@@ -536,7 +507,7 @@ def test_every_load_setting_reaches_every_model_the_bank_ever_loads():
         "mutable options would let one model's settings follow the next one's")
 
     # Every load path takes the whole object, so none of them can take a subset of it.
-    loaders = (R._prepare, FA._prepare_onnx, FA._prepare_stylegan2, FA._prepare_fastgan)
+    loaders = (R._prepare,)
     for fn in loaders:
         taken = [p for p in inspect.signature(fn).parameters.values()
                  if "LoadOptions" in str(p.annotation)]

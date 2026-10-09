@@ -1,6 +1,6 @@
 """Drive the strip the way a pair of hands does, headless, and see what falls over.
 
-A real SDL renderer on the dummy video driver, so the real fonts and paint path run. Every
+SDL on its dummy video driver, so the real fonts and paint path run. Every
 event goes through `DialPanel.handle` in the order `Display` delivers it: paint, present, then
 the events that arrived. Model switches happen mid-gesture, because a switch retires dials while
 the focus, the drag and the mode carry across.
@@ -29,7 +29,7 @@ from ganlive.dials import table as S
 from ganlive.dials.fastgan_dials import fastgan
 from ganlive.presets import DEFAULT
 from ganlive.strip import WIDTH, DialPanel, floor_height
-from tests.support import FakeSettings, _runner, _StubModel, headless_renderer, stub_bank
+from tests.support import FakeSettings, _runner, _StubModel, dummy_display, stub_bank
 
 #: The layouts a bank can hold at once, including the awkward ones: a single direction, and a
 #: family whose MODEL block shares no dial name with this one.
@@ -160,7 +160,7 @@ def _fault(where, mode, height, event, seen):
     return (where, mode, height, event, spot, line, full)
 
 
-def run(renderer, rounds: int, seed: int, switch_odds: float = 0.06):
+def run(rounds: int, seed: int, switch_odds: float = 0.06):
     """Returns `(faults, states reached)`. A fault is one distinct place a traceback ended."""
     shelf, rng = Shelf(), random.Random(seed)
     faults, seen, reached = [], set(), collections.Counter()
@@ -174,16 +174,13 @@ def run(renderer, rounds: int, seed: int, switch_odds: float = 0.06):
         def paint(at=strip):
             """One frame, exactly as `Display` draws it. Reads `panel` late, on purpose: it is
             rebuilt below after this is defined."""
-            renderer.draw_color = (0, 0, 0, 255)
-            renderer.clear()
-            panel.draw(renderer, at)                             # noqa: B023
-            renderer.present()
+            panel.compose(at[2], at[3])                          # noqa: B023
             check(panel)                                         # noqa: B023
 
         if panel is None:
             lname, vname = names[rng.randrange(len(names))]
             panel = build(LAYOUTS[lname], LIVE[vname], shelf)
-            panel.attach(renderer)
+            panel.attach()
             where = f"{lname}, {vname} live"
         elif rng.random() < switch_odds:
             lname, vname = names[rng.randrange(len(names))]
@@ -238,9 +235,9 @@ def main() -> int:
     args = ap.parse_args()
 
     total = 0
-    with headless_renderer((WIDTH + 200, max(HEIGHTS)), "fuzz") as renderer:
+    with dummy_display():
         for seed in range(args.seeds):
-            faults, reached = run(renderer, args.rounds, seed)
+            faults, reached = run(args.rounds, seed)
             states = ", ".join(f"{k} {v}" for k, v in sorted(reached.items()))
             print(f"seed {seed}: {args.rounds} rounds, {len(faults)} distinct fault(s)")
             print(f"  reached: {states}", flush=True)

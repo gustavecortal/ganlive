@@ -2,38 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import torch
 
-#: Every ladder ends on a block this many pixels tall, whatever family built it.
-BASE = 4
+from ganlive.ladder import BASE, Ladder
 
-
-@dataclass(frozen=True)
-class Ladder:
-    """The (height, width) a generator climbs to, square or not.
-
-    Geometry only. Whether a particular family can build a given size is that family's
-    question: see `fastgan.check_buildable`."""
-
-    height: int
-    width: int
-
-    @classmethod
-    def of(cls, height: int, width: int | None = None) -> Ladder:
-        """`width=None` means square."""
-        return cls(height, height if width is None else width)
-
-    @property
-    def base_width(self) -> int:
-        """Width of the `BASE`-high bottom rung. 4 when square, 6 at 3:2."""
-        return BASE * self.width // self.height
-
-    def at(self, rung: int) -> tuple[int, int]:
-        """The (height, width) of the ladder `rung` rows tall."""
-        return rung, rung * self.base_width // BASE
+__all__ = ["BASE", "Ladder"]
 
 
 def denormalise(x: torch.Tensor) -> torch.Tensor:
@@ -53,6 +27,6 @@ def latent(nz: int, seed: int, device, dtype) -> torch.Tensor:
 
 
 def host_latent(nz: int, seed: int = 0) -> np.ndarray:
-    """One seeded latent as a `(1, nz)` float32 numpy array, for a model run off the host:
-    an ONNX graph, or a check against another implementation."""
+    """One seeded latent as a `(1, nz)` float32 numpy array, for a model run off the host or
+    a check against another implementation."""
     return np.random.default_rng(seed).standard_normal((1, nz)).astype(np.float32)

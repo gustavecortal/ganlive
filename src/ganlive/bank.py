@@ -1,7 +1,8 @@
 """A bank of loaded models, one playing at a time, and the shelf of models on disk that can join it.
 
-`build` turns checkpoint paths into a `Bank`. How each kind of file is opened is in
-`families`, the dial gate is in `dials.gate`, and file naming is in `checkpoints`.
+`build` turns checkpoint paths into a `Bank`. Every model plays on the engine, all on the one
+wgpu device the first model found fastest. How each kind of file becomes an engine model is in
+`families`, and file naming is in `checkpoints`.
 """
 from __future__ import annotations
 
@@ -10,16 +11,22 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import torch
+import numpy as np
 
-from ganlive.checkpoints import ONNX, admit, checkpoint_for, checkpoints_in, index_of, label_for
+from ganlive.checkpoints import (
+    admit,
+    checkpoint_for,
+    checkpoints_in,
+    index_of,
+    is_engine,
+    is_published_engine,
+    label_for,
+)
 from ganlive.clock import WalkConfig
-from ganlive.device import detect_backend, playback_dtype
-from ganlive.dials.gate import verified
+from ganlive.dials.table import live_dials
+from ganlive.engine.load import open_model
+from ganlive.engine.screen import EngineStage
 from ganlive.families import LoadOptions, config_of, family_of
-from ganlive.frame import FrameStage
-from ganlive.models.capture import Replay, capture
-from ganlive.pixels import compiled_conversions
 from ganlive.walk import SlerpWalk
 from ganlive.window import fit_height
 
@@ -42,8 +49,8 @@ class Model:
     settings: object
     #: The dials this model offers.
     layout: object
-    graphs: int = 0
-    compile_s: float = 0.0
+    #: Seconds it took to load, converting it first if it had to be.
+    load_s: float = 0.0
     #: The measured `dials.derive.Directions`, or None when they could not be derived.
     directions: object = None
     #: The same basis as the `(n, nz)` float32 array the walk adds. Held here so the walk's
@@ -51,13 +58,13 @@ class Model:
     rows: object = None
     #: Every dial that provably reaches this model. The strip draws the rest dark.
     dials_live: frozenset = frozenset()
-    #: The `(bands, w_dim)` tensor the walk writes a StyleGAN2's `w` push into, or None on
-    #: families that steer `z`. On a captured model, the host buffer the graph reads from.
+    #: The `(bands, w_dim)` array the walk writes a StyleGAN2's `w` push into, or None on
+    #: families that steer `z`.
     push: object = None
 
     def __post_init__(self) -> None:
         if self.rows is None and self.directions is not None:
-            self.rows = self.directions.basis.numpy()
+            self.rows = np.asarray(self.directions.basis, np.float32)
 
     @functools.cached_property
     def name(self) -> str:
@@ -65,35 +72,25 @@ class Model:
         return label_for(self.path)
 
 
-def _prepare(path, device, dtype, options: LoadOptions) -> Model:
-    """One model made ready to play: opened by its family, captured, and its dials verified."""
-    family = family_of(path)
-    got = family.prepare(path, device, dtype, options)
-    # Captured after every sweep above, which read the module tree or hold two frames side by
-    # side, and before the gate, so the gate measures the graph that will actually play.
-    if options.capture and family.capturable:
-        feeds = [got.settings.vec] + ([got.push] if got.push is not None else [])
-        got.net, said = capture(got.net, got.cfg.nz, device, dtype, feeds=feeds)
-        print(f"graph: {said}", flush=True)
-        if isinstance(got.net, Replay):
-            # The graph reads its settings and push from host buffers of its own, so a dial
-            # write and a walk step become host writes into those; see `Replay`.
-            got.settings.feed_from(got.net.host_buffer(got.settings.vec))
-            if got.push is not None:
-                got.push = got.net.host_buffer(got.push)
-    model = Model(path=Path(path), net=got.net, cfg=got.cfg, settings=got.settings,
-                  layout=got.layout, graphs=got.graphs, compile_s=got.compile_s,
-                  directions=got.directions, push=got.push)
-    return verified(model, device, dtype)
+def _prepare(path, gpu, options: LoadOptions, tune: bool = True) -> Model:
+    """One model made ready to play on the engine, on the wgpu device `gpu` (the bank's), or
+    on this machine's fastest for it when the bank has none yet. Its dials were measured when
+    it was converted, so which of them are live is read off the program, not measured. A model
+    loaded at launch may be tuned (`tune`); one loaded mid-set, with the picture stopped, is not."""
+    started = time.perf_counter()
+    # Grain is a FastGAN question: a StyleGAN2's conversion is stamped without it.
+    grain = options.measure_grain if family_of(path) == "fastgan" else True
+    net, layout, directions = open_model(path, gpu, options.direction_floor, grain,
+                                         backend=options.backend, tune=tune)
+    return Model(path=Path(path), net=net, cfg=net.cfg, settings=net.settings, layout=layout,
+                 load_s=time.perf_counter() - started, directions=directions, push=net.push,
+                 dials_live=live_dials(net.settings, directions, layout))
 
 
-def _warm(stage: FrameStage, model: Model, device, dtype, size) -> int:
-    """One warm-up frame through the whole after-generator path, at the size it will play.
-    Returns graphs built. A smaller dummy would build a second graph on the first real frame."""
+def _warm(stage: EngineStage, model: Model, size) -> None:
+    """One warm-up frame through the whole after-generator path, at the size it will play."""
     stage.resize(*size)
-    with torch.no_grad():
-        probe = model.net(torch.zeros(1, model.cfg.nz, device=device, dtype=dtype))
-        return stage.warm(stage.step(probe))
+    stage.step(model.net(np.zeros((1, model.cfg.nz), np.float32)))
 
 
 @dataclass
@@ -101,24 +98,26 @@ class Bank:
     """The models, the work that happens after any of them, and which one is playing."""
 
     models: list[Model]
-    stage: FrameStage
-    device: str
+    stage: EngineStage
     index: int = 0
     #: How every model in this bank was prepared, including the ones added later.
     options: LoadOptions = field(default_factory=LoadOptions)
-    #: The precision the bank plays in. None is the device's own; see `device.playback_dtype`.
-    dtype: object = None
     #: The height asked for: None fits the screen, 0 is native. See `window.fit_height`.
     height_want: int | None = 0
     screen: tuple | None = None
     #: Every walk built by `walk()`, re-pointed at the new model's directions by `use`.
     _walks: list = field(default_factory=list)
-    compile_s: float = 0.0
-    graphs: int = 0
+    #: Seconds `build` took, every model loaded and warmed.
+    load_s: float = 0.0
 
-    def __post_init__(self) -> None:
-        if self.dtype is None:
-            self.dtype = playback_dtype(self.device)
+    @property
+    def gpu(self):
+        """The wgpu device every model of this bank plays on."""
+        return self.stage.device
+
+    def sync(self) -> None:
+        """Wait until everything queued for the card is done."""
+        self.stage.sync()
 
     @property
     def current(self) -> Model:
@@ -154,15 +153,11 @@ class Bank:
 
     def _rewire(self) -> None:
         """Point the stage and every walk at the playing model: its frame size, its latent
-        width and directions, and where it takes the latent and the push."""
+        width and directions, and where it takes a push."""
         model = self.current
-        # An ONNX graph and a captured one read the latent from the host; a compiled module
-        # from the card.
-        on_host = bool(getattr(model.net, "latent_on_host", False))
         self.stage.resize(*self.size_of(model))
         for walk in self._walks:
             walk.cfg.directions = model.rows
-            walk.cfg.latent_on_host = on_host
             walk.cfg.push_into = model.push
             walk.retarget(model.cfg.nz)
 
@@ -175,35 +170,27 @@ class Bank:
         path = checkpoint_for(Path(target))
         admit(self.models, path)
         playing = (self.height, self.width)
-        model = _prepare(path, self.device, self.dtype, self.options)
+        model = _prepare(path, self.gpu, self.options, tune=False)
         try:
-            warmed = _warm(self.stage, model, self.device, self.dtype, self.size_of(model))
+            _warm(self.stage, model, self.size_of(model))
         finally:
             self.stage.resize(*playing)
         # Joined only once it has run, so a model whose warm-up raised is not left in the bank.
         self.models.append(model)
-        self.graphs += model.graphs + warmed
-        self.compile_s += model.compile_s
         return model
 
     def report(self) -> str:
-        """One line naming every path that could silently have fallen back to a slow one."""
-        live = [k for k, on in self.stage.compiled.items() if on] or ["none"]
+        """The size shown, the settings, and each model with its load time."""
         models = ", ".join(f"{m.name} ({m.cfg.ladder.width}x{m.cfg.ladder.height}, "
-                           f"{m.compile_s:.0f}s)" for m in self.models)
-        pinned = {"settings": self.current.settings.pinned,
-                  **(self.stage.pinned() or {"frames": "after the first one"})}
+                           f"{m.load_s:.0f}s)" for m in self.models)
         return (f"{self.width}x{self.height} out of {self.current.cfg.ladder.width}x"
-                f"{self.current.cfg.ladder.height}, {self.graphs} graph(s) in "
-                f"{self.compile_s:.0f}s, "
-                f"{len(self.current.settings.names)} settings, "
-                f"compiled conversions: {'+'.join(live)}, "
-                f"pinned: {pinned}\n  models: {models}")
+                f"{self.current.cfg.ladder.height}, loaded in {self.load_s:.0f}s, "
+                f"{len(self.current.settings.names)} settings\n  models: {models}")
 
-    def walk(self, config=None, dtype=None):
+    def walk(self, config=None):
         """A walk wired to the playing model's directions, kept wired across switches."""
         config = config if config is not None else WalkConfig()
-        walk = SlerpWalk(self.cfg.nz, self.device, config, dtype=dtype or self.dtype)
+        walk = SlerpWalk(self.cfg.nz, config)
         self._walks.append(walk)
         self._rewire()
         return walk
@@ -253,11 +240,15 @@ class Shelf:
         out = []
         for path in self._models():
             why, note = "", ""
-            if path not in here:
+            if path in here:
+                pass
+            else:
                 try:
                     cfg = self._config(path)
                 except ValueError:
                     why = "not playable"          # a file of the wrong kind, such as an adapter
+                except ModuleNotFoundError as exc:
+                    why = "needs PyTorch to convert" if exc.name == "torch" else f"unreadable: {exc}"
                 except Exception as exc:          # noqa: BLE001  a broken file is not a crash
                     why = f"unreadable: {type(exc).__name__}"
                 else:
@@ -267,13 +258,18 @@ class Shelf:
         return sorted(out, key=lambda s: (not s.loaded, -s.path.stat().st_mtime))
 
     def _models(self) -> list[Path]:
-        """Every model file under `root`: each exported graph, the newest checkpoint of each
-        training run, and every file of a flat folder. Empty when there is no `root`."""
+        """Every model under `root`: each engine model, the newest checkpoint of each training
+        run, and every checkpoint of a flat folder. Empty when there is no `root`."""
         if not self.root.is_dir():
             return []
         found: list[Path] = []
         for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
-            found += sorted(folder.glob(f"*{ONNX}"))
+            if is_engine(folder):
+                if is_published_engine(folder):
+                    found.append(folder)
+                continue
+            # Inside `runs/engine/`. A checkpoint's own conversion is listed as the checkpoint.
+            found += sorted(p for p in folder.iterdir() if is_published_engine(p))
             history = folder / "checkpoints"
             found += checkpoints_in(history)[-1:] if history.is_dir() else checkpoints_in(folder)
         return found
@@ -295,39 +291,32 @@ class Shelf:
             self.note = f"{label_for(want)}: {exc}"
             return None
         self._listing = self._scan()
-        self.note = f"loaded {model.name}, {model.compile_s:.1f}s to compile"
+        self.note = f"loaded {model.name} in {model.load_s:.1f}s"
         return model
 
 
-def build(checkpoints: list, device: str | None = None, height: int | None = 0, dtype=None,
-          screen=None, options: LoadOptions | None = None) -> Bank:
-    """Load and prepare every checkpoint, warm the stage at each one's size, and return the
-    bank playing the first.
-
-    `device` and `dtype` default to this machine's accelerator and the precision it plays
-    fastest in; see `device.playback_dtype`. `height` is as `window.parse_height` returns."""
-    device = device or detect_backend()
-    dtype = dtype or playback_dtype(device)
+def build(checkpoints: list, height: int | None = 0, screen=None,
+          options: LoadOptions | None = None) -> Bank:
+    """Load and prepare every checkpoint on the engine, warm the stage at each one's size, and
+    return the bank playing the first. The first model picks the wgpu device (its fastest
+    backend here, or `options.backend`) and the others join it. `height` is as
+    `window.parse_height` returns."""
     options = options or LoadOptions()
     paths = [checkpoint_for(Path(t)) for t in checkpoints]
 
-    models: list[Model] = []
     t_all = time.perf_counter()
-    for path in paths:
+    models = [_prepare(paths[0], None, options)]
+    gpu = models[0].net.model.device
+    for path in paths[1:]:
         admit(models, path)
-        models.append(_prepare(path, device, dtype, options))
+        models.append(_prepare(path, gpu, options))
 
     out_height, out_width = frame_size(models[0].cfg, height, screen)
-    to_yuv, to_rgb, to_bgra = compiled_conversions()
-    stage = FrameStage(out_height, out_width, to_yuv, to_rgb=to_rgb, to_bgra=to_bgra,
-                       device=device)
+    stage = EngineStage(gpu, out_height, out_width)
 
     # Each at its own size, `models[0]` last, so the stage is left at the size that plays.
-    warmed = sum(_warm(stage, m, device, dtype, frame_size(m.cfg, height, screen))
-                 for m in reversed(models))
-    stage.resize(out_height, out_width)
+    for m in reversed(models):
+        _warm(stage, m, frame_size(m.cfg, height, screen))
 
-    return Bank(models=models, stage=stage, device=device,
-                graphs=sum(m.graphs for m in models) + warmed,
-                compile_s=time.perf_counter() - t_all, dtype=dtype,
+    return Bank(models=models, stage=stage, load_s=time.perf_counter() - t_all,
                 height_want=height, screen=screen, options=options)

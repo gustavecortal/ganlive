@@ -10,9 +10,12 @@ import torch
 
 from ganlive.clock import WalkConfig
 from ganlive.dials import derive, table
+from ganlive.dials.table import live_dials
 from ganlive.models.calibrate import TARGET_LEVELS
 from ganlive.models.common import first_image, latent
 from ganlive.pixels import FLOOR_LEVELS, RANDOM_FLOOR, levels
+
+__all__ = ["live_dials"]
 
 
 @torch.no_grad()
@@ -60,26 +63,6 @@ def verified(model, device, dtype):
           + ("; dark: " + ", ".join(f"{k.name} {k.measured:.2f}" for k in dark)
              if dark else "") + f" (floor {FLOOR_LEVELS:g} 8-bit levels)", flush=True)
     return replace(model, layout=layout, dials_live=live)
-
-
-def live_dials(settings, directions, layout) -> frozenset:
-    """The names of the dials that reach this model and, where measured, move its picture."""
-    have = set(getattr(settings, "index", ()) or ())
-    count = 0 if directions is None else len(directions)
-    live = set()
-    for knob in layout.knobs:
-        index = table.direction_index(knob.name)
-        if index is not None:
-            if index < count:
-                live.add(knob.name)
-            continue
-        # `any`, not `all`: a dial that reaches three of its four bands is still a dial. And
-        # reaching the model is not moving the picture: a modulated convolution divides a
-        # constant gain straight back out, so a measurement below the floor is dark too.
-        reaches = not knob.writes or any(write.setting in have for write in knob.writes)
-        if reaches and (knob.measured is None or knob.measured >= FLOOR_LEVELS):
-            live.add(knob.name)
-    return frozenset(live)
 
 
 def directions_for(net, nz: int, device, dtype, read=None, into=None,

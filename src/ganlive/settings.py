@@ -32,10 +32,8 @@ class Settings:
         self._slot = 0
         self.write = self._writes[0]
         #: What the card holds. Starts at the neutral the vector is built holding, so a frame
-        #: that moves nothing sends nothing -- see `commit`. After `feed_from` it is the very
-        #: buffer the card reads, and the staging ring goes unused.
+        #: that moves nothing sends nothing -- see `commit`.
         self._sent = np.ones(len(self.names), dtype=self._writes[0].dtype)
-        self._fed = False
         self.skipped = 0
 
     def _viewable(self) -> None:
@@ -78,12 +76,6 @@ class Settings:
         """The values last committed, as a host array."""
         return self._sent
 
-    def feed_from(self, host: torch.Tensor) -> None:
-        """From now on the card reads `vec` from the host buffer `host` on every replay -- a
-        captured graph uploads it itself, see `models.capture.capture` -- so a commit is a
-        host write and nothing is sent. `host` already holds what the card holds."""
-        self._sent, self._fed = host.numpy(), True
-
     def commit(self) -> None:
         """Send this frame's settings to the card -- unless the card already has them.
 
@@ -94,8 +86,6 @@ class Settings:
             self.skipped += 1
             return
         np.copyto(self._sent, self.write)
-        if self._fed:
-            return                      # the graph reads `_sent` itself on the next replay
         self.vec.copy_(self.host[self._slot], non_blocking=True)
         nxt = (self._slot + 1) % self.STAGING
         self._writes[nxt][:] = self.write

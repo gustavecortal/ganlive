@@ -1,6 +1,7 @@
 """The window the picture is shown in, and how big the picture should be for this screen.
 
-Torch-free: the frame arrives as BGRA bytes, which is what an SDL streaming texture already is.
+Torch-free. The GPU that made a frame draws it into the window (`engine.present`), and SDL opens
+the window and takes its events.
 """
 from __future__ import annotations
 
@@ -9,9 +10,11 @@ import ctypes
 import os
 import sys
 import threading
+import time
 import traceback
 
 from ganlive.curves import clamp01
+from ganlive.engine.present import Screen
 
 #: How far one arrow key pans a 1:1 view, as a fraction of the picture.
 PAN_STEP = 0.1
@@ -83,57 +86,87 @@ def window_size(w: int, h: int, screen_w: int, screen_h: int, overlay=None) -> t
             min(screen_h, max(240, round(h * s), floor)))
 
 
+#: The most often the strip is composed, and the longest the window thread goes without taking
+#: the window's messages, in seconds.
+STRIP_S = 1 / 60
+TEND_S = 0.02
+
 #: Whether the window gets a thread of its own. Not on macOS, where a window and its events
 #: belong to the main thread; there each `publish` draws on the caller's thread instead.
 THREADED = sys.platform != "darwin"
 
 
-class Display:
-    """A native window showing the latest frame `publish`ed to it.
+def placed(w: int, h: int, picture, one_to_one: bool, pan) -> tuple[tuple, tuple]:
+    """`(dst, src)`: where a `w` x `h` frame goes in the `picture` area (width, height), and
+    which part of it is shown, as `(x, y, w, h)` rects. Fitted whole, or at one frame pixel a
+    window pixel, panned."""
+    aw, vh = picture
+    if one_to_one:
+        cw, ch = min(w, aw), min(h, vh)
+        src = (round((w - cw) * pan[0]), round((h - ch) * pan[1]), cw, ch)
+        return ((aw - cw) // 2, (vh - ch) // 2, cw, ch), src
+    s = min(aw / w, vh / h)
+    dw, dh = round(w * s), round(h * s)
+    return ((aw - dw) // 2, (vh - dh) // 2, dw, dh), (0, 0, w, h)
 
-    On its own thread where the platform allows (`THREADED`), so drawing never holds up the
-    frame loop. `overlay` is the optional strip drawn beside the picture (`strip.DialPanel`).
+
+class Display:
+    """A native window showing the latest frame `publish`ed to it, with `overlay`, the
+    optional strip (`strip.DialPanel`), beside it.
+
+    The wgpu `device` the frames are made on draws the window (`engine.present.Screen`):
+    `publish` takes a `screen.Stepped` frame and presents it at once, so nothing goes through
+    host memory. The window has its own thread where the platform allows (`THREADED`), which
+    paints the strip and takes the events, so neither holds up the frame loop.
     Keys: Esc/Q stop, F toggles fullscreen, N shows native pixels, arrows pan that view."""
 
-    def __init__(self, size, title: str = "ganlive", overlay=None, fullscreen: bool = True,
-                 threaded: bool = THREADED):
-        self.size = size                      # (h, w) of the frames it will be given
+    def __init__(self, size, device, title: str = "ganlive", overlay=None,
+                 fullscreen: bool = True, threaded: bool = THREADED):
+        self.size = size                      # (h, w) the window is first sized for
         self.threaded = threaded
         self.stopped = False
         self.overlay = overlay
         self.fullscreen = fullscreen
-        self._frame = None
+        self.screen = None
+        self._device = device
         self._seq = 0
-        self._waiting = 0
         self._closed = False
         self._cond = threading.Condition()
         self._ready = threading.Event()
         self._error = None
         self._one_to_one = False
         self._pan = [0.5, 0.5]
+        #: For the GPU screen: the strip's latest pixels, not yet uploaded, and the window's
+        #: `(pixels, scale, picture, strip)` as its thread last laid it out.
+        self._strip = None
+        self._areas = None
+        self._composed = 0.0
         if not threaded:
             try:
                 self._open(title)
             except Exception as e:  # noqa: BLE001  no display, no SDL, no pygame
-                raise RuntimeError(f"display window failed to open: {type(e).__name__}: {e}") from e
+                self._destroy()
+                raise RuntimeError(f"display window failed to open ({type(e).__name__}: {e}). "
+                               f"--headless plays without one") from e
             return
-        threading.Thread(target=self._run, args=(title,), daemon=True).start()
+        thread = threading.Thread(target=self._run, args=(title,), daemon=True)
+        thread.start()
         self._ready.wait(timeout=20)
         if self._error:
-            raise RuntimeError(f"display window failed to open: {self._error}")
-
-    @property
-    def wants(self) -> bool:
-        """Whether a frame published now would be drawn, so one is worth converting."""
-        return not self.threaded or self._waiting > 0
+            thread.join(timeout=5)
+            raise RuntimeError(f"display window failed to open ({self._error}). --headless "
+                               f"plays without one")
 
     def publish(self, frame) -> None:
+        """Present `frame`, a `screen.Stepped`, and have the strip painted for the next."""
+        if self.stopped:
+            return
+        self._guarded(self._present, frame)
         if not self.threaded:
-            if not self.stopped:
-                self._guarded(self._step, frame)
+            self._guarded(self._tend)
             return
         with self._cond:
-            self._frame, self._seq = frame, self._seq + 1
+            self._seq += 1
             self._cond.notify_all()
 
     def close(self) -> None:
@@ -145,17 +178,14 @@ class Display:
             self._cond.notify_all()
 
     def _open(self, title: str) -> None:
-        """Window, renderer, texture, and the overlay attached. Raises if there is no display."""
+        """Window, its drawing, and the overlay attached. Raises if there is no display."""
         if sys.platform == "win32":
             # Windows only: SDL refuses this driver name everywhere else.
             os.environ.setdefault("SDL_VIDEODRIVER", "windows")
-        # Filter the picture when it is scaled to the window. SDL's default is nearest-neighbour,
-        # which shimmers on a frame shrunk to fit.
-        os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")
         import pygame
-        from pygame._sdl2.video import Renderer, Texture, Window
+        from pygame._sdl2.video import Window
 
-        self._pg, self._texture = pygame, Texture
+        self._pg = pygame
         h, w = self.size
         # The display alone: `pygame.init` would also open an audio output and start polling
         # joysticks for the whole session. The strip starts its own fonts.
@@ -168,18 +198,18 @@ class Display:
                            resizable=True)
         if self.fullscreen:
             self._win.set_fullscreen(True)
-        self._ren = Renderer(self._win, vsync=False)
-        self._tex = Texture(self._ren, (w, h), depth=32, streaming=True)
-        self._tex_size = (w, h)
+        self.screen = Screen(self._win, self._device)
         self._pan_keys = {getattr(pygame, f"K_{name.upper()}"): d for name, d in PAN_KEYS.items()}
         if self.overlay is not None:
-            self.overlay.attach(self._ren)
+            self.overlay.attach()
+        self._tend()
 
     def _run(self, title: str) -> None:
         try:
             self._open(title)
         except Exception as e:  # noqa: BLE001  no display, no SDL, no pygame
             self._error = f"{type(e).__name__}: {e}"
+            self._destroy()
             self._ready.set()
             return
         self._ready.set()
@@ -187,23 +217,44 @@ class Display:
         self._destroy()
 
     def _serve(self) -> None:
-        """The window thread: draw each new frame as it is published, until `close`."""
+        """The window thread: after each frame is presented, paint the strip for the next and
+        take the events, until `close`. It takes the window's messages at least every
+        `TEND_S` even with no frame coming, so presenting from the frame loop never waits on
+        a window whose own thread is not listening (a resize, a fullscreen switch)."""
         seq = 0
         while True:
             with self._cond:
-                self._waiting += 1
-                try:
-                    self._cond.wait_for(lambda at=seq: self._seq != at or self._closed)
-                finally:
-                    self._waiting -= 1
+                self._cond.wait_for(lambda at=seq: self._seq != at or self._closed, TEND_S)
                 if self._closed:
                     return
-                seq, frame = self._seq, self._frame
-            self._step(frame)
+                seq = self._seq
+            self._tend()
 
-    def _step(self, frame) -> None:
-        """Draw one frame, then take the events that arrived."""
-        strip = self._present(frame)
+    def _present(self, frame) -> None:
+        """Draw `frame`, with the strip the window's thread last painted."""
+        strip = self._strip
+        if strip is not None:
+            self._strip = None
+            self.screen.upload_strip(*strip)
+        pixels, scale, picture, rect = self._areas
+        dst, src = placed(frame.width, frame.height, picture, self._one_to_one, self._pan)
+        self.screen.present(frame, pixels, [v * scale for v in dst], src,
+                            [v * scale for v in rect])
+
+    def _tend(self) -> None:
+        """Between frames: lay the window out, paint the strip, and take the events that
+        arrived."""
+        picture, rect = self._layout()
+        now = time.perf_counter()
+        if rect[2] and now - self._composed >= STRIP_S:
+            self._composed = now
+            surface = self.overlay.compose(rect[2], rect[3])
+            self._strip = (surface.get_buffer().raw, surface.get_pitch(), *surface.get_size())
+        pixels = self.screen.pixels(self._win)
+        self._areas = (pixels, pixels[0] / max(1, self._win.size[0]), picture, rect)
+        self._events(rect)
+
+    def _events(self, strip) -> None:
         for ev in self._pg.event.get():
             if strip[2] and self.overlay.handle(ev, strip):
                 continue
@@ -224,33 +275,6 @@ class Display:
             self._win.destroy()
         except Exception:  # noqa: BLE001  never opened, or already gone
             pass
-
-    def _present(self, frame) -> tuple[int, int, int, int]:
-        """Upload one frame, draw it and the overlay, and show them. Returns the strip's rect."""
-        pg, ren = self._pg, self._ren
-        h, w = frame.shape[0], frame.shape[1]
-        if (w, h) != self._tex_size:
-            self._tex = self._texture(ren, (w, h), depth=32, streaming=True)
-            self._tex_size = (w, h)
-        self._tex.update(pg.image.frombuffer(memoryview(frame).cast("B"), (w, h), "BGRA"))
-        ren.draw_color = (0, 0, 0, 255)
-        ren.clear()
-        picture, strip = self._layout()
-        aw, vh = picture
-        if self._one_to_one:
-            cw, ch = min(w, aw), min(h, vh)
-            x = round((w - cw) * self._pan[0])
-            y = round((h - ch) * self._pan[1])
-            self._tex.draw(srcrect=(x, y, cw, ch),
-                           dstrect=((aw - cw) // 2, (vh - ch) // 2, cw, ch))
-        else:
-            s = min(aw / w, vh / h)
-            dw, dh = round(w * s), round(h * s)
-            self._tex.draw(dstrect=((aw - dw) // 2, (vh - dh) // 2, dw, dh))
-        if strip[2]:
-            self.overlay.draw(ren, strip)
-        ren.present()
-        return strip
 
     def _layout(self) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
         """`((picture width, height), strip rect)` for the window as it is now.

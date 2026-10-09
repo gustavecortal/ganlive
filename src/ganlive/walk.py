@@ -1,18 +1,17 @@
 """The latent walk: a great-circle path through seeded latents, addressed by beat.
 
-`SlerpWalk` turns a musical position into the generator's latent. The clock and the timing
-of a move (`MusicalClock`, `shape`, `position`, `WalkConfig`) live in `clock`, which is
-torch-free.
+`SlerpWalk` turns a musical position into the generator's latent, a host array the engine
+uploads. The clock and the timing of a move (`MusicalClock`, `shape`, `position`,
+`WalkConfig`) live in `clock`.
 """
 from __future__ import annotations
 
 import math
 
 import numpy as np
-import torch
 
 from ganlive.clock import WalkConfig, position
-from ganlive.pixels import pinned
+from ganlive.engine.noise import pcg, seeded_noise
 
 
 def _angle(z0: np.ndarray, z1: np.ndarray) -> float:
@@ -38,10 +37,6 @@ class SlerpWalk:
     Segment `k` runs from seed `k` to seed `k + 1`, and each seed is a pure function of `k` and
     the config, so any beat can be jumped to and a rewind returns the same picture."""
 
-    #: How many host buffers the latent rotates through, so a buffer is not overwritten while
-    #: an earlier frame's copy to the device may still be reading it.
-    STAGING = 3
-
     #: The width every seed is drawn at, before any model sees it. A model reads the first `nz`
     #: entries, so models of different latent widths in one bank walk the same sequence.
     CANON = 4096
@@ -50,9 +45,8 @@ class SlerpWalk:
     #: on these, so a change is seen at once. `spread` is not one: it changes how far, not which.
     SEED_FIELDS = ("base_seed", "loop_segments", "home_every")
 
-    def __init__(self, nz: int, device, config: WalkConfig | None = None,
-                 dtype=torch.float32) -> None:
-        self.nz, self.device, self.dtype = nz, device, dtype
+    def __init__(self, nz: int, config: WalkConfig | None = None) -> None:
+        self.nz = nz
         self.cfg = config or WalkConfig()
         self._k: tuple | None = None
         self._z1 = None
@@ -62,19 +56,8 @@ class SlerpWalk:
         self._offset_key: tuple | None = None
         self._offset_rows = None
         self._offset_vec = None
-        #: The offset array last handed to a `w` push buffer, by identity. `_offset` returns the same
-        #: array while the amounts hold still, which keeps a host-to-device copy off the frame path.
-        self._pushed = None
-        self._slot = 0
-        self._staging, self._views = self._staging_ring()
         self._pair = None
         self._coef = np.zeros(2, dtype=np.float32)
-        self._scratch = np.zeros(nz, dtype=np.float32)
-
-    def _staging_ring(self):
-        """The pinned host ring the latent is written into, at the current width."""
-        bufs = [pinned((1, self.nz), self.dtype) for _ in range(self.STAGING)]
-        return bufs, [buf.numpy().reshape(-1) for buf in bufs]
 
     def retarget(self, nz: int) -> None:
         """Hand this walk to a generator of a different latent width, mid-set."""
@@ -83,8 +66,6 @@ class SlerpWalk:
             return
         self.nz = nz
         self._offset_key = self._offset_rows = self._offset_vec = None
-        self._scratch = np.zeros(nz, dtype=np.float32)
-        self._staging, self._views = self._staging_ring()
         # The cached endpoints are the old width's. The position is not cached: segment and
         # phase are read back from the beat, so the walk resumes where it was.
         self._k = self._z1 = self._pair = None
@@ -94,17 +75,15 @@ class SlerpWalk:
         """The width the walk itself runs at, above every model that reads it."""
         return max(self.CANON, self.nz)
 
-    def _draw(self, k: int, salt: int = 0) -> torch.Tensor:
-        """A Gaussian draw that depends only on `(base_seed, salt, k)`. Stays on the host.
+    def _draw(self, k: int, salt: int = 0) -> np.ndarray:
+        """A Gaussian draw that depends only on `(base_seed, salt, k)`: the engine's own
+        generator (`seeded_noise`), which a browser computes the same way (web/walk.mjs)."""
+        seed = (self.cfg.base_seed * 1_000_003 + salt * 7_919 + k) & 0x7FFF_FFFF
+        return seeded_noise(self.canon, int(pcg(np.array([seed], np.uint32))[0]))
 
-        Drawn with torch's generator, so a seed gives the same picture it always has."""
-        g = torch.Generator(device="cpu").manual_seed(
-            (self.cfg.base_seed * 1_000_003 + salt * 7_919 + k) & 0x7FFF_FFFF)
-        return torch.randn(self.canon, generator=g)
-
-    def home_for(self, k: int) -> torch.Tensor:
+    def home_for(self, k: int) -> np.ndarray:
         """The neighbourhood segment `k` is drawn around. Salted so `home_0` is not `seed_0`."""
-        return torch.from_numpy(self._home_canon(k)[:self.nz].copy())
+        return self._home_canon(k)[:self.nz].copy()
 
     def _home_canon(self, k: int) -> np.ndarray:
         """The home at the walk's own width. Every `home_every` segments share one, so the last
@@ -112,12 +91,12 @@ class SlerpWalk:
         block = k // self.cfg.home_every if self.cfg.home_every else 0
         key = (self.cfg.base_seed, block, self.canon)
         if self._home is None or self._home[0] != key:
-            self._home = (key, self._draw(block, salt=1).numpy())
+            self._home = (key, self._draw(block, salt=1))
         return self._home[1]
 
-    def seed_for(self, k: int) -> torch.Tensor:
+    def seed_for(self, k: int) -> np.ndarray:
         """Segment `k`'s target latent, at the loaded model's width."""
-        return torch.from_numpy(self._seed_canon(k)[:self.nz])
+        return self._seed_canon(k)[:self.nz]
 
     def _seed_canon(self, k: int) -> np.ndarray:
         """The same target at the walk's own width. A pure function of `k` and the config.
@@ -126,7 +105,7 @@ class SlerpWalk:
         them, so successive seeds stay in one neighbourhood."""
         if self.cfg.loop_segments:
             k %= self.cfg.loop_segments
-        target = self._draw(k).numpy()
+        target = self._draw(k)
         if self.cfg.spread >= 1.0:
             return target
         home = self._home_canon(k)
@@ -153,53 +132,23 @@ class SlerpWalk:
         self._k = key
         self.segment_index = k
 
-    def latent(self, beats: float) -> torch.Tensor:
-        """The `(1, nz)` input for this musical position, on `device`.
-
-        A host array instead when `cfg.latent_on_host` says the generator reads it there."""
+    def latent(self, beats: float) -> np.ndarray:
+        """The `(1, nz)` latent for this musical position, a new array each time."""
         k, _u, t = position(self.cfg, beats)
         self._load(k)
         self._coef[0], self._coef[1] = _weights(self._omega, t)
-
-        self._slot = (self._slot + 1) % self.STAGING
-        view = self._views[self._slot]
+        latent = (self._coef @ self._pair).reshape(1, -1)
+        view = latent.reshape(-1)
         offset = self._offset()
-        if self.cfg.push_into is not None:
-            # A `w` push never touches the latent: the mapping opens with a pixel norm that
-            # cancels any scaling of `z`, so the push is applied after the mapping instead.
-            self._hand_over(offset)
-            offset = None
-        if view.dtype == np.float32:
-            np.dot(self._coef, self._pair, out=view)
-            if offset is not None:
-                view += offset
-        else:
-            np.dot(self._coef, self._pair, out=self._scratch)
-            if offset is not None:
-                self._scratch += offset
-            view[:] = self._scratch
-        if self.cfg.latent_on_host:
-            return view
-        return self._staging[self._slot].to(self.device, non_blocking=True)
-
-    def _hand_over(self, offset) -> None:
-        """Put a `w` push where the generator reads it, and only when it changed.
-
-        Remembered together with the tensor it went into: a model switch points `push_into` at
-        another model's push buffer, and switching back must still clear or rewrite the first one."""
         into = self.cfg.push_into
-        if self._pushed is not None and self._pushed[0] is offset and self._pushed[1] is into:
-            return
-        if into.device.type == "cpu":
-            # A captured generator reads the push from this host buffer: a numpy write, with
-            # no torch small-tensor overhead and nothing issued to the card.
-            view = into.numpy().reshape(-1)
-            view[:] = 0.0 if offset is None else offset.reshape(-1)
-        elif offset is None:
-            into.zero_()
-        else:
-            into.copy_(torch.from_numpy(offset).reshape(into.shape))
-        self._pushed = (offset, into)
+        if into is not None:
+            # A `w` push never touches the latent: the mapping opens with a pixel norm that
+            # cancels any scaling of `z`, so the push goes to the model's push buffer, which
+            # it uploads when it changed.
+            into.reshape(-1)[:] = 0.0 if offset is None else offset.reshape(-1)
+        elif offset is not None:
+            view += offset
+        return latent
 
     def _offset(self):
         """The summed direction push, or `None` when every dial is at rest."""

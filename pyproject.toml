@@ -1,7 +1,7 @@
 [project]
 name = "ganlive"
 dynamic = ["version"]  # read from ganlive.__version__
-description = "Plug-and-play GAN exploration in real time: dials for any GAN latent space, played by hand, with MIDI, or from drums."
+description = "Explores a GAN's latent space in real time, with dials derived automatically and played by hand, with MIDI, or from drums."
 readme = "README.md"
 # pygame 2.6 has no wheel for Python 3.14 yet.
 requires-python = ">=3.10,<3.14"
@@ -9,7 +9,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Gustave Cortal" }]
 keywords = ["gan", "stylegan2", "fastgan", "latent-space", "midi", "vj", "live-visuals",
-            "generative-art", "real-time", "onnx", "generative-adversarial-networks",
+            "generative-art", "real-time", "webgpu", "generative-adversarial-networks",
             "latent-space-exploration", "plug-and-play", "drums", "audio-reactive",
             "image-generation"]
 classifiers = [
@@ -28,8 +28,9 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: MIDI",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# torch is not listed: the right build depends on your GPU, so the README installs it first.
-dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6"]
+# Playing needs no PyTorch: models run on WebGPU. Converting a checkpoint does, so `convert`
+# installs the default build, and the README installs the one for your GPU instead.
+dependencies = ["numpy>=1.26", "pygame>=2.5", "psutil>=6", "wgpu>=0.32"]
 
 [project.urls]
 Homepage = "https://github.com/gustavecortal/ganlive"
@@ -39,12 +40,8 @@ Issues = "https://github.com/gustavecortal/ganlive/issues"
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5"]
 record = ["av>=13"]
-# ONNX Runtime picks TensorRT, CUDA, ROCm, MIGraphX, CoreML or DirectML where present.
-onnx = ["onnx>=1.17", "onnxruntime>=1.20", "onnxscript>=0.7"]
-# The same through OpenVINO: the fastest path on Intel GPUs.
-onnx-intel = ["onnx>=1.17", "onnxruntime-openvino>=1.20", "openvino>=2024.6", "onnxscript>=0.7"]
-hub = ["ganlive[onnx]", "huggingface_hub>=0.25"]
-all = ["ganlive[audio,record,onnx,hub]"]
+convert = ["torch>=2.4"]
+all = ["ganlive[audio,record,convert]"]
 dev = ["ganlive[all]", "pytest>=8", "ruff>=0.6", "pillow>=10"]
 
 [project.scripts]

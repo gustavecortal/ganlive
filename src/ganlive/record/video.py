@@ -1,6 +1,7 @@
 """Writing finished frames to a video file on one encoder thread, and saving stills."""
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -11,14 +12,51 @@ import numpy as np
 
 from ganlive.files import size_mb
 
+
+def nv12_plane_views(frame, height: int, width: int):
+    """numpy views onto an nv12 frame's own buffers, honouring each plane's line size."""
+    return [np.frombuffer(p, dtype=np.uint8).reshape(rows, p.line_size)[:, :width]
+            for p, rows in ((frame.planes[0], height), (frame.planes[1], height // 2))]
+
 #: Hardware encoders, in the order they are tried. The first that opens on this machine
 #: wins; `libx264` always does, on the CPU, and costs most of the frame rate at 4K.
 CODECS = ("av1_qsv", "hevc_qsv", "h264_nvenc", "hevc_nvenc", "hevc_videotoolbox",
           "h264_amf", "libx264")
 DEFAULT_CODEC = "auto"
 
+#: Each encoder's constant-quality setting, so that a take keeps the picture's grain: Intel's
+#: quality mode at 22 recorded a 1620x1080 lichen walk at 10 Mbit/s and 3.3 levels from the
+#: frames, against 2.6 Mbit/s and 4.4 levels by default, in the same encode time. Encoders not
+#: tried on a card here are given a bitrate instead (`BITS_PER_PIXEL`), which every encoder
+#: takes: an option one refused would make `auto` skip it.
+QUALITY = {"av1_qsv": {"global_quality": "22"}, "hevc_qsv": {"global_quality": "22"},
+           "libx264": {"crf": "18"}}
+#: The bitrate of the others, in bits per pixel of each frame: 10 Mbit/s for 1620x1080 at 60
+#: fps, what Intel's quality mode chose for the same take.
+BITS_PER_PIXEL = 0.1
+
 #: Encoder frames reused in rotation, so the writer does not allocate one per frame.
 POOL = 4
+#: Seconds a take may fall behind its frames before it skips ahead: only a card that cannot
+#: draw the model at the take's rate, which `play` picks a rate to avoid, gets there.
+MOST_BEHIND_S = 0.5
+
+
+def named_with_hits(path: Path, hits) -> Path:
+    """Rename a take, and its guide and sidecar, after its first and last drum hit (seconds of
+    the video): where its audio goes and how far it drifted, kept with the file. The sidecar's
+    own mentions of the names follow."""
+    first, last = hits
+    stem = f"{path.stem}-hits-{first:.3f}s-{last:.3f}s"
+    for suffix in (".mp4", ".wav", ".json"):
+        old = path.with_suffix(suffix)
+        if old.exists():
+            old.rename(old.with_name(stem + suffix))
+    sidecar = path.with_name(stem + ".json")
+    if sidecar.exists():
+        sidecar.write_text(sidecar.read_text(encoding="utf-8").replace(path.stem, stem),
+                           encoding="utf-8")
+    return path.with_name(stem + path.suffix)
 
 
 def save_still(path: Path, rgb) -> threading.Thread:
@@ -59,6 +97,10 @@ class Recorder:
         self._thread: threading.Thread | None = None
         self._t0: float | None = None
         self._pts = -1
+        #: The take's frame number last handed out by `slot`.
+        self._claimed = -1
+        #: The first and the last drum hit, in seconds of the video (`hit`).
+        self.hits: list[float] | None = None
         #: Set once the encoder is open, or has failed to: see `wait_open`.
         self._opened = threading.Event()
 
@@ -85,13 +127,45 @@ class Recorder:
         """Whether a frame offered right now would actually be written."""
         return not self._q.full()
 
+    def next_frame(self, now: float) -> float | None:
+        """The time (`time.perf_counter`) of the take's next frame if it is due by `now`: up to
+        half a frame early, so a loop at the take's rate draws one a pass. The caller draws
+        the picture of that time and `claim`s it, so the take sets the time and a pass that
+        came late is caught up by the next ones. The take starts at the first call. Only a
+        take more than `MOST_BEHIND_S` behind skips ahead, counting those frames `dropped`."""
+        if self._t0 is None:
+            self._t0 = now
+        behind = math.floor((now - self._t0) * self.fps) - (self._claimed + 1)
+        if behind > MOST_BEHIND_S * self.fps:
+            self.dropped += behind
+            self._claimed += behind
+        at = self._t0 + (self._claimed + 1) / self.fps
+        return at if at <= now + 0.5 / self.fps else None
+
+    def wait(self, now: float) -> float:
+        """Seconds from `now` until the next frame is due (`next_frame`)."""
+        return max(0.0, self._t0 + (self._claimed + 0.5) / self.fps - now)
+
+    def claim(self) -> int:
+        """The next frame's number, now that its picture is drawn."""
+        self._claimed += 1
+        return self._claimed
+
+    def hit(self, at: float) -> None:
+        """A drum hit at `at` (`time.perf_counter`), kept if it falls in the take."""
+        if self._t0 is None or at < self._t0:
+            return
+        s = round(at - self._t0, 3)
+        self.hits = [s, s] if self.hits is None else [self.hits[0], s]
+
     def skip(self) -> None:
         """Count a frame the caller chose not to fetch, so the report still adds up."""
         self.offered += 1
         self.dropped += 1
 
-    def offer(self, plane) -> bool:
-        """Hand one host frame to the writer. False means the picture did not wait for it."""
+    def offer(self, plane, slot: int | None = None) -> bool:
+        """Hand one host frame to the writer, as frame `slot` of the take (`slot`), or by the
+        clock now. False means the picture did not wait for it."""
         self.offered += 1
         if self._t0 is None:
             self._t0 = time.perf_counter()
@@ -99,7 +173,7 @@ class Recorder:
             self._pts += 1
             self._q.put((self._pts, plane))
             return True
-        pts = max(self._pts + 1, round(self.seconds * self.fps))
+        pts = max(self._pts + 1, round(self.seconds * self.fps) if slot is None else slot)
         try:
             self._q.put_nowait((pts, plane))
         except queue.Full:
@@ -129,28 +203,39 @@ class Recorder:
         out = {"file": str(self.path), "codec": self.codec,
                "mb": round(size_mb(self.path), 1), "frames": self.written,
                "offered": self.offered,
-               "dropped": self.dropped, "seconds": round(self.seconds, 1)}
+               "dropped": self.dropped, "seconds": round(self.seconds, 1),
+               "fps": self.fps}
+        if self.hits is not None:
+            out["hits"] = self.hits
         if self.failed:
             out["error"] = f"{type(self.failed[0]).__name__}: {self.failed[0]}"
         return out
 
-    def _encoder(self, av, tb: Fraction) -> str:
-        """The first wanted encoder that actually opens at this size on this machine.
+    def _open(self, av, tb: Fraction):
+        """`(container, stream)` for the first wanted encoder that actually opens at this size
+        on this machine, its name kept in `codec`.
 
         Opened for real rather than looked up: `add_stream` only checks that the build knows
         the name, so an NVENC encoder on a machine without an NVIDIA card would be accepted
         and then fail at the first frame. `libx264` is last in `CODECS` and always opens, on
         the CPU, so `auto` records slowly rather than not at all."""
         wanted = CODECS if self.codec == "auto" else (self.codec,)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         for name in wanted:
+            container = av.open(str(self.path), "w")
             try:
-                ctx = av.CodecContext.create(name, "w")
-                ctx.width, ctx.height, ctx.pix_fmt = self.width, self.height, "nv12"
-                ctx.time_base, ctx.framerate = tb, round(self.fps)
-                ctx.open()
-                return name
+                stream = container.add_stream(name, rate=round(self.fps), options=QUALITY.get(name, {}))
+                stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
+                if name not in QUALITY:
+                    stream.bit_rate = round(BITS_PER_PIXEL * self.width * self.height * self.fps)
+                stream.codec_context.time_base = tb
+                stream.codec_context.open()
             except Exception:                                        # noqa: BLE001
+                container.close()
                 continue
+            self.codec = name
+            return container, stream
+        self.path.unlink(missing_ok=True)
         raise RuntimeError(f"no encoder opened, tried {', '.join(wanted)}")
 
     def _run(self) -> None:
@@ -158,17 +243,9 @@ class Recorder:
         try:
             import av
 
-            # Deferred: `pixels` imports torch, and recording does not otherwise need it.
-            from ganlive.pixels import nv12_plane_views
-
             tb = Fraction(1, round(self.fps))
-            self.codec = self._encoder(av, tb)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            container = av.open(str(self.path), "w")
-            stream = container.add_stream(self.codec, rate=round(self.fps))
-            stream.width, stream.height, stream.pix_fmt = self.width, self.height, "nv12"
             # Opened now rather than at the first frame, so `wait_open` covers all of it.
-            stream.codec_context.open()
+            container, stream = self._open(av, tb)
             self._opened.set()
             pool = [av.VideoFrame(self.width, self.height, "nv12") for _ in range(POOL)]
             views = [nv12_plane_views(f, self.height, self.width) for f in pool]

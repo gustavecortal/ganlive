@@ -59,7 +59,6 @@ from tests.support import (
     _runner,
     _StubModel,
     dummy_display,
-    headless_renderer,
     since,
     stub_bank,
 )
@@ -73,9 +72,9 @@ MIN_H = floor_height(GROUPS)
 def _travelled(walk, beats):
     """Where along its arc the walk really is at `beats`, recovered from the latent it returns."""
     k = position(walk.cfg, beats)[0]
-    z0 = walk.seed_for(k).numpy().astype(np.float64)
-    z1 = walk.seed_for(k + 1).numpy().astype(np.float64)
-    got = walk.latent(beats).numpy().reshape(-1).astype(np.float64)
+    z0 = walk.seed_for(k).astype(np.float64)
+    z1 = walk.seed_for(k + 1).astype(np.float64)
+    got = walk.latent(beats).reshape(-1).astype(np.float64)
     a, b = np.linalg.lstsq(np.stack([z0, z1], axis=1), got, rcond=None)[0]
     n0, n1 = z0 / np.linalg.norm(z0), z1 / np.linalg.norm(z1)
     omega = float(np.arccos(np.clip(float(n0 @ n1), -1.0, 1.0)))
@@ -254,17 +253,14 @@ def test_the_strip_lays_out_the_loaded_model_s_dials_and_not_the_departed_one_s(
     holder = stub_bank(current)
     runner.use_model(current)
 
-    with headless_renderer((WIDTH + 200, 900), "rows") as renderer:
+    with dummy_display():
         panel = DialPanel(runner, bank=holder)
-        panel.attach(renderer)
+        panel.attach()
         strip = (0, 0, WIDTH, 900)
 
         def frame():
-            """One, exactly as `Display` draws it -- clear, draw, present."""
-            renderer.draw_color = (0, 0, 0, 255)
-            renderer.clear()
-            panel.draw(renderer, strip)
-            renderer.present()
+            """One, exactly as `Display` asks for it."""
+            panel.compose(strip[2], strip[3])
 
         frame()
         assert {n for n, _t, _h in panel._rows} == set(ours), "the model it opened on"
@@ -326,7 +322,7 @@ def test_the_scope_draws_the_curve_the_walk_actually_travels():
     """The motion dials change nothing about a single frame, so the scope is where they show.
     It reads the walk's own shaping, so it cannot drift from what the walk does."""
     cfg = WalkConfig(beats_per_segment=4.0, hold=0.55, when=0.8, step_grid=0, base_seed=3)
-    walk = SlerpWalk(64, "cpu", cfg)
+    walk = SlerpWalk(64, cfg)
     drawn = scope_curve(cfg, samples=33)
 
     for i in range(1, 32):
@@ -335,7 +331,7 @@ def test_the_scope_draws_the_curve_the_walk_actually_travels():
         assert drawn[i] == pytest.approx(position(cfg, beats * 0.9999)[2], abs=2e-3)
 
     stepped = WalkConfig(beats_per_segment=4.0, step_grid=4, base_seed=3)
-    walk = SlerpWalk(64, "cpu", stepped)
+    walk = SlerpWalk(64, stepped)
     assert _travelled(walk, 0.4) == pytest.approx(_travelled(walk, 0.9), abs=2e-3)
     assert _travelled(walk, 0.4) != pytest.approx(_travelled(walk, 1.4), abs=2e-3)
     assert len(set(round(t, 6) for t in scope_curve(stepped, samples=40))) <= 5
@@ -385,32 +381,16 @@ def test_the_strip_says_which_drum_drives_which_dial_from_the_patch_itself():
     assert "se_128" in narrow, "the kick is still inside the channel range"
 
 
-def test_the_window_actually_opens_with_the_strip_beside_it():
-    """A real window opens, takes a frame, and its thread ends when it is closed."""
-
+def test_a_window_wgpu_cannot_draw_says_so_and_leaves_no_thread():
+    """The GPU draws the window. Where a window offers it no native handle, as SDL's dummy
+    driver does, opening fails with the way to play without one, on either thread."""
     threads = threading.active_count()
     with dummy_display():
-
-        panel = _panel(DIALS, levels=(100.0, 50.0))
-        display = window.Display((64, 96), title="test", overlay=panel,
-                                         fullscreen=False)
-        display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
-        display.close()
-    assert threading.active_count() <= threads + 1, "the window thread outlived the window"
-
-
-def test_the_window_can_draw_on_the_callers_own_thread():
-    """macOS keeps a window and its events on the main thread, so there the window draws each
-    frame as it is published; a frame it cannot draw stops the session as the thread does."""
-    with dummy_display():
-        display = window.Display((64, 96), title="inline", overlay=_panel(DIALS),
-                                 fullscreen=False, threaded=False)
-        assert display.wants, "an inline window is always ready for a frame"
-        display.publish(np.zeros((64, 96, 4), dtype=np.uint8))
-        assert not display.stopped
-        display.publish(np.zeros((3, 5, 1), dtype=np.uint8))      # no picture at all
-        assert display.stopped, "a frame that cannot be drawn must stop the session"
-        display.close()
+        for threaded in (True, False):
+            with pytest.raises(RuntimeError, match="--headless"):
+                window.Display((64, 96), object(), title="test", overlay=_panel(DIALS),
+                               fullscreen=False, threaded=threaded)
+    assert threading.active_count() <= threads, "the window thread outlived the window"
 
 
 def test_every_routing_column_label_fits_the_column_it_names():
@@ -418,9 +398,9 @@ def test_every_routing_column_label_fits_the_column_it_names():
     drums on one channel labels them `MT/HT`. Centring a label wider than its column pushes it
     into the next one: `MT/HT CH/OH CY/CB` rendered as a single run of characters."""
 
-    with headless_renderer((WIDTH, 900), "fit") as renderer:
+    with dummy_display():
         panel = DialPanel(_runner(DEFAULT, channel_of=channel_map("voices")))
-        panel.attach(renderer)
+        panel.attach()
         columns = grid_columns(WIDTH, len(panel.kit))
         labels = ["/".join(names) for _channel, names in panel.kit]
         too_wide = [(label, panel._micro.size(label)[0], cw)
@@ -444,9 +424,9 @@ def test_a_dial_the_surface_does_not_carry_is_drawn_dark_rather_than_raised():
     foreign = set(stub.layout.rests) - set(runner.surface.values)
     assert foreign, "this test needs the two layouts to actually disagree"
 
-    with headless_renderer((WIDTH, 900), "dark") as renderer:
+    with dummy_display():
         panel = DialPanel(runner, bank=stub_bank(stub))
-        panel.attach(renderer)
+        panel.attach()
         panel._resize(WIDTH, 900)
         panel._paint()
 
@@ -461,9 +441,8 @@ def test_a_thousand_gestures_across_model_switches_break_nothing():
     the real paint path. Seeded, so a fault is reproducible with
     `python -m tests.fuzz_surface --seeds 1`."""
 
-    size = (fuzz_surface.WIDTH + 200, max(fuzz_surface.HEIGHTS))
-    with headless_renderer(size, "fuzz") as renderer:
-        faults, reached = fuzz_surface.run(renderer, 500, seed=0)
+    with dummy_display():
+        faults, reached = fuzz_surface.run(500, seed=0)
 
     assert not faults, fuzz_surface.report(faults) or [f[5] for f in faults]
     # A fuzzer that never reaches the state is a fuzzer that proves nothing, and this is the
@@ -508,7 +487,7 @@ def test_the_help_line_only_names_keys_the_strip_itself_handles():
     panel = DialPanel(_runner(),
                       actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object(), encoders=EncoderMap({}))
-    panel.attach(None)
+    panel.attach()
     panel._size = (400, 900)
     offered = " ".join(panel._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -530,7 +509,7 @@ def test_a_key_whose_action_was_not_supplied_is_neither_offered_nor_swallowed():
     """A key whose action the host did not supply is neither listed nor taken: `play` supplies
     no model action for a single loaded model, so `[ ]` must not appear."""
     bare = DialPanel(_runner())
-    bare.attach(None)
+    bare.attach()
     bare._size = (400, 900)
     offered = " ".join(bare._status_lines()[3:])
     strip = (0, 0, 400, 900)
@@ -609,9 +588,9 @@ def test_the_strip_does_not_rasterise_the_same_line_twice():
     """`font.render` rasterises every glyph on every call, on the window's thread, and a
     repaint asks for the same few dozen lines as the last one."""
 
-    with headless_renderer((WIDTH, 400), "text") as renderer:
+    with dummy_display():
         panel = DialPanel(_runner())
-        panel.attach(renderer)
+        panel.attach()
 
         once = panel._say(panel._small, "se_256", (1, 2, 3))
         assert panel._say(panel._small, "se_256", (1, 2, 3)) is once, "kept, not drawn again"
@@ -676,7 +655,7 @@ def test_no_status_line_runs_off_the_edge_of_the_strip():
 
     panel = DialPanel(runner, actions={a: (lambda *a_: None) for a in console.ACTIONS},
                       shelf=object())
-    panel.attach(None)
+    panel.attach()
     panel._size = (WIDTH, 900)
     room = WIDTH - 2 * console.PAD
 

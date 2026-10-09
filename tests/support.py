@@ -122,12 +122,12 @@ def stub_cfg(nz: int, width: int, height: int):
 
 
 def walk(**kw) -> SlerpWalk:
-    return SlerpWalk(NZ, "cpu", WalkConfig(**kw))
+    return SlerpWalk(NZ, WalkConfig(**kw))
 
 
 def _step(w: SlerpWalk, n: int = 40) -> float:
     """Mean displacement between consecutive targets -- how far one segment actually travels."""
-    return sum(float((w.seed_for(k) - w.seed_for(k + 1)).norm()) for k in range(n)) / n
+    return sum(float(np.linalg.norm(w.seed_for(k) - w.seed_for(k + 1))) for k in range(n)) / n
 
 
 def _pulses(clock, bpm, seconds, t0=0.0, jitter=0.0, rng=None):
@@ -218,26 +218,15 @@ def _panel(dials_live=None, levels=None, runner=None):
 
 
 @contextlib.contextmanager
-def headless_renderer(size, title: str = "test"):
-    """A real SDL renderer on the dummy video driver, for drawing the strip with no screen."""
-    import pygame
-
-    with dummy_display():
-        from pygame._sdl2.video import Renderer, Window
-
-        pygame.display.init()
-        yield Renderer(Window(title, size=size), vsync=False)
-
-
-@contextlib.contextmanager
 def dummy_display():
-    """SDL on its dummy video driver for the duration, then the display closed and the
-    driver setting put back as it was."""
+    """SDL's display on its dummy video driver for the duration, then closed and the driver
+    setting put back as it was."""
     import pygame
 
     before = os.environ.get("SDL_VIDEODRIVER")
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     try:
+        pygame.display.init()
         yield
     finally:
         pygame.display.quit()
