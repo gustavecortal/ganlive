@@ -1,7 +1,7 @@
 [project]
 name = "ganlive"
 dynamic = ["version"]  # read from ganlive.__version__
-description = "Plug-and-play GAN exploration in real time: dials for any GAN latent space, played by hand, with MIDI, or from drums."
+description = "Explores a GAN's latent space in real time, with dials derived automatically and played by hand, with MIDI, or from drums."
 readme = "README.md"
 # pygame 2.6 has no wheel for Python 3.14 yet.
 requires-python = ">=3.10,<3.14"

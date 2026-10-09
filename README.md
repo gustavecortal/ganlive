@@ -6,84 +6,47 @@
   <a href="docs/demo.mp4"><img src="docs/demo.webp" alt="Real-time GAN latent-space exploration with automatically derived dials: ganlive-lichen, a FastGAN trained on my photographs, with a dial turned by hand and drums wired to dials in the routing grid" width="860"></a>
 </p>
 
-## Quick start
+## Play in your browser
 
-Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-Supports Windows, macOS, and Linux, with NVIDIA, AMD, Intel, and Apple GPU backends or CPU.
+Open [the player](https://gustavecortal.com/ganlive/) in a browser with WebGPU, such as a
+current Chrome, Edge, Firefox or Safari. Nothing to install: the model downloads once and runs
+on your graphics card, whatever its make.
 
-### 1. Install
+Drag a dial to hold it, and let go to return it to the preset. To play from a drum machine or a
+controller, open the Drums tab and press Connect MIDI (Chrome, Edge and Firefox support Web
+MIDI). Its clock sets the tempo, and the routing grid sends each drum to the dials it pushes.
+
+Record saves an MP4 of the picture at your screen's size, at 60, 30 or 20 fps, whichever your
+card keeps up with. Its file name gives the first and last drum hit in seconds of the video, to
+line up the audio in an editor.
+
+## Bring your own GAN
+
+Convert a FastGAN or StyleGAN2 checkpoint once, with Python 3.10–3.13 and
+[uv](https://docs.astral.sh/uv/getting-started/installation/), then upload it to the
+Hugging Face Hub:
 
 ```bash
 git clone https://github.com/gustavecortal/ganlive.git
 cd ganlive
 uv venv --python 3.12
+uv pip install -e ".[convert]" huggingface_hub
+uv run --no-sync ganlive convert path/to/checkpoint.pt
+uv run --no-sync hf auth login
+uv run --no-sync hf upload <you>/<model> runs/engine/<name> engine
 ```
 
-Install [PyTorch for your hardware](https://pytorch.org/get-started/locally/)
-with `uv pip install`, then install ganlive:
-
-```bash
-uv pip install -e ".[record]"
-```
-
-[GPU setup and optional features →](docs/guide.md#install)
-
-### 2. Load a model
-
-Try NVIDIA's StyleGAN2 face model:
-
-```bash
-git clone --depth 1 https://github.com/NVlabs/stylegan2-ada-pytorch
-uv pip install requests click setuptools
-curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
-uv run --no-sync ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
-```
-
-### 3. Explore
-
-```bash
-uv run --no-sync ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --no-audio --no-midi
-```
-
-Drag the dials beside the image. The first launch converts the model once, which may take a minute or two.
-
-## Controls
-
-| Action | Control |
-|---|---|
-| Adjust a dial | Drag or scroll |
-| Release a dial | Right-click |
-| Map a MIDI knob | Touch a dial, press `l`, then turn the knob |
-| Route MIDI notes | `g` |
-| Choose a model | `m` |
-| Change preset | `Tab` |
-| Save image / record video | `c` / `v` |
-| Quit | `Esc` |
-
-For MIDI, remove `--no-midi`. To use notes, map them to tracks and press `g` to connect
-those tracks to dials:
-
-```bash
-uv run --no-sync ganlive play --checkpoint runs/stylegan2/ffhq.pt --console --no-audio --notes 36=BD,38=SD,42=CH
-```
-
-MIDI clock keeps movement in time with your device.
-[More controls and MIDI setup →](docs/guide.md#playing-with-hardware)
-
-## Bring your own GAN
-
-| Model | Load with |
-|---|---|
-| **StyleGAN2** | `ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch` |
-| **FastGAN** | A [gantrain](https://github.com/gustavecortal/gantrain) checkpoint or a published one: [ganlive-lichen](https://huggingface.co/gustavecortal/ganlive-lichen), [ganlive-amber](https://huggingface.co/gustavecortal/ganlive-amber) |
-
-[Model setup and examples →](docs/guide.md#models)
+Then play it at `https://gustavecortal.com/ganlive/?model=https://huggingface.co/<you>/<model>`.
+Converting measures the model's dials, and NVIDIA's StyleGAN2-ADA `.pkl` files are
+[imported](docs/guide.md#stylegan2) first.
 
 ## Learn more
 
-[User guide](docs/guide.md) · [Automatic dials](docs/guide.md#how-the-dials-are-found) ·
-[Performance](docs/guide.md#speed) · [Development](docs/guide.md#development) ·
-[Related work](docs/guide.md#related-work) · [Citation](CITATION.cff)
+- The [user guide](docs/guide.md) covers the desktop app, which plays models from your disk,
+  reacts to audio input, and records with a guide track.
+- [How the dials are found](docs/guide.md#how-the-dials-are-found)
+- [Development](docs/guide.md#development) and [related work](docs/guide.md#related-work)
+- [Citation](CITATION.cff)
 
 ## License
 

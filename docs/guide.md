@@ -2,13 +2,31 @@
 
 [Back to the README](../README.md)
 
-Load a model to get dials for its latent space. Use them with your mouse, a MIDI controller, or drums.
+This guide covers the desktop app, a Python program that plays models from your disk in a
+window, with your mouse, a MIDI controller, audio input, or drums. The
+[player in your browser](https://gustavecortal.com/ganlive/) needs none of it.
 
-[Models](#models) · [Controls](#the-interface) · [MIDI and audio](#playing-with-hardware) ·
-[Recording](#recording) · [Performance](#speed) · [Installation](#install) ·
-[Development](#development)
+Contents: [quick start](#quick-start), [models](#models), [controls](#the-interface),
+[MIDI and audio](#playing-with-hardware), [recording](#recording), [speed](#speed),
+[installation](#install), [development](#development).
 
-Commands assume an active project environment. Otherwise, prefix `ganlive` with
+## Quick start
+
+Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Supports Windows, macOS, and Linux, on any GPU through Vulkan, Metal, or Direct3D 12.
+
+```bash
+git clone https://github.com/gustavecortal/ganlive.git
+cd ganlive
+uv venv --python 3.12
+uv pip install -e ".[record]" huggingface_hub
+uv run --no-sync hf download gustavecortal/ganlive-lichen --local-dir runs/lichen
+uv run --no-sync ganlive play --checkpoint runs/lichen --console --no-audio --no-midi
+```
+
+Drag the dials beside the image. For MIDI, remove `--no-midi`.
+
+Commands below assume an active project environment. Otherwise, prefix `ganlive` with
 `uv run --no-sync` from the project directory.
 
 ## Models
@@ -19,17 +37,19 @@ Models can have different resolutions and latent dimensions.
 
 ### StyleGAN2
 
-Convert NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository.
-Install the dependencies needed to read NVIDIA's model file:
+Import NVIDIA StyleGAN2-ADA weights once, using a checkout of its repository. This needs
+PyTorch and the dependencies that read NVIDIA's model file. For its face model:
 
 ```bash
-uv pip install requests click setuptools
-ganlive import-stylegan2 model.pkl --repo stylegan2-ada-pytorch
-ganlive play --checkpoint runs/stylegan2/model.pt --console
+uv pip install -e ".[convert]" requests click setuptools
+git clone --depth 1 https://github.com/NVlabs/stylegan2-ada-pytorch
+curl -L -o ffhq.pkl https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl
+ganlive import-stylegan2 ffhq.pkl --repo stylegan2-ada-pytorch
+ganlive play --checkpoint runs/stylegan2/ffhq.pt --console
 ```
 
-See the [README](../README.md#quick-start) for a complete example.
-The converted model runs without NVIDIA's custom CUDA kernels.
+The imported model runs without NVIDIA's custom CUDA kernels. To play it in the browser,
+convert `runs/stylegan2/ffhq.pt` as the [README](../README.md#bring-your-own-gan) shows.
 
 ### FastGAN
 
@@ -184,13 +204,16 @@ Measure your hardware with:
 ganlive latency --checkpoint runs/stylegan2/ffhq.pt
 ```
 
-Reported measurements on a $350 Intel Arc A770, through Vulkan, before `ganlive tune`:
+Measured on a $350 Intel Arc A770 on 2026-10-09, with the backend and tuning ganlive chose at
+each model's first load (Direct3D 12 for lichen), before `ganlive tune`:
 
 | Model | Native resolution | Frame time | FPS |
 |---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 34.6 ms | 29 |
-| FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 10.0 ms | 100 |
-| FastGAN amber | 1536×1024 | 5.5 ms | 183 |
+| StyleGAN2 FFHQ | 1024×1024 | 34.9 ms | 29 |
+| FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 9.6 ms | 104 |
+| FastGAN amber | 1536×1024 | 5.6 ms | 177 |
+
+In Edge on the same card, the browser player draws lichen at 87 fps and amber at 150 fps.
 
 These measure generation and frame preparation. On this card, `ganlive tune` brought the
 frame it times from 4.94 to 4.71 ms for amber and from 33.3 to 30.0 ms for FFHQ.
@@ -199,7 +222,7 @@ Results depend on your model, hardware, and runtime.
 
 ## Install
 
-Follow the [README quick start](../README.md#quick-start).
+Follow the [quick start](#quick-start).
 
 Models play on WebGPU through Vulkan, Metal, or Direct3D 12. At a model's first load,
 ganlive measures which of these draws it right and fastest on your machine and remembers
