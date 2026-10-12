@@ -169,3 +169,15 @@ def test_web_take_colour_is_the_desktop_take_colour():
                  "(c.b - l) * (224.0 / (4.0 * (1.0 - KB)))", "(c.r - l) * (224.0 / (4.0 * (1.0 - KR)))",
                  "return u32(clamp(round(v + 128.0), 0.0, 255.0));"):
         assert line in NV12 and line in js, line
+
+
+@pytest.mark.skipif(NODE is None, reason="needs Node.js")
+def test_a_take_log_gives_back_every_frame_exactly():
+    """A browser take logs each frame in a few bytes and is drawn from the log after Stop, so
+    the log gives back every frame's latent and settings bit for bit, across a model switch."""
+    run = subprocess.run([NODE, str(Path(__file__).with_name("web_take.mjs"))],
+                         capture_output=True, text=True, check=False)
+    assert run.returncode == 0, run.stderr
+    got = json.loads(run.stdout)
+    assert got["read"] == got["frames"] == 400
+    assert got["wrong"] == []

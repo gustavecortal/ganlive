@@ -1,34 +1,38 @@
-// A take in a browser: the picture as it plays, every frame, as an MP4, sized for the screen
-// (or at the model's own size) and at a frame rate the card keeps up with. The frame is drawn
-// at the take's size, a compute shader turns it into I420 (the layout every WebCodecs encoder
-// takes), a ring of mapped buffers brings it back without stalling the page, and WebCodecs
-// encodes it: the GPU's H.264 encoder at a high bitrate where the browser offers one, else VP9,
-// written into an MP4 here, on disk as it comes (the site's private storage), so a long take
-// never sits in memory. A browser without WebCodecs records a canvas with MediaRecorder
-// instead. The desktop's takes are `record/video.py`.
+// A take in a browser, in two steps. While playing, `Recording` logs what each frame of the take
+// draws: the ends of the walk's segment and where between them the frame is, the direction
+// pushes and the model's settings, a few bytes a frame, kept in the browser (IndexedDB) as it
+// goes, so a take of hours costs the card nothing and survives a closed tab. After Stop,
+// `renderTake` draws every logged frame again, exactly, at the take's size and as fast as the
+// card goes: a compute shader turns each into I420 (the layout every WebCodecs encoder takes), a
+// ring of mapped buffers brings it back, and WebCodecs encodes it, H.264 where the browser
+// offers it, else VP9, at a constant quality where the encoder honours one, into an MP4 written
+// on disk as it comes (the site's private storage). The desktop's takes are `record/video.py`.
 
 import { screen } from "./runner.mjs";
+import { compose } from "./walk.mjs";
 
-/** A bitrate, in bits per pixel of each frame: about 16 Mbit/s for 1620x1080 at 60 fps, above
- *  the 12 YouTube asks of 1080p60. Every encoder honours one; Firefox takes a quantizer and
- *  ignores it. */
+/** Frames a second of every take: drawn after the performance, so any card records them all. */
+export const TAKE_FPS = 60;
+/** A bitrate, in bits per pixel of each frame, where an encoder takes no quantizer or ignores
+ *  it (Firefox): about 16 Mbit/s for 1620x1080 at 60 fps, above the 12 YouTube asks of 1080p60. */
 const BITS_PER_PIXEL = 0.15;
-/** Where only a constant quality is offered, its quantizer: about the desktop's CRF 18. */
-const QUANTIZER = { avc: 20, vp9: 26 };
-/** Frames the encoder may hold: the next waits (the player draws it at the next animation frame). */
+/** A constant quality, where the encoder honours it. H.264 at 23 keeps lichen's fastest motion
+ *  as close to the frames as 0.15 bits per pixel does (about 47 dB), and spends a third of that
+ *  on slow motion, which is most of a set. */
+const QUANTIZER = { avc: 23, vp9: 26 };
+/** Frames the encoder may hold before the render waits for it. */
 const QUEUE = 4;
 /** Frames on their way back from the GPU at most. A read takes 15 to 35 ms in Edge and Firefox. */
 const RING = 6;
 /** What the I420 shader writes, as each frame tells the encoder. The MP4 says it too (`colr`). */
 const BT709 = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false };
-/** Seconds a take may fall behind its frames before it gives up on them: only a card slower
- *  than the take's rate, which `takeRate` is there to avoid, gets there. */
-const MOST_BEHIND_S = 0.5;
 /** Seconds between key frames. */
 const KEY_EVERY_S = 2;
-/** The frame rates a take may have, best first: 60 divided evenly, so each frame of a slower
- *  take lasts a whole number of a 60 Hz screen's refreshes. */
-const RATES = [60, 30, 20];
+/** Frames worked out in one animation frame at most: a tab hidden for a while catches up over
+ *  several rather than freezing in one. */
+export const MOST_LOGGED = 120;
+/** Bytes of log kept in memory before they go to the browser's storage. */
+const CHUNK = 16384;
 
 /** The encoders worth trying, best first. A level fits the frame size and rate. */
 const CODECS = [
@@ -81,15 +85,8 @@ export function takeSize(width, height, screen) {
   return [even(width), even(height)];
 }
 
-/** The frame rate a take keeps up with, from the frames a second the player last drew while
- *  the picture moved (`fps`, 0 when it has not): the best of `RATES` the card holds, with a
- *  little slack for a 60 Hz screen measured at 59. */
-export function takeRate(fps) {
-  return RATES.find((r) => !fps || fps >= r * 0.9) ?? RATES[RATES.length - 1];
-}
 
-/** What this browser answered for each configuration asked about. Edge takes 1.3 s over its
- *  first answer, so the page asks ahead (`prepareTake`) and Record starts at once. */
+/** What this browser answered for each configuration asked about. */
 const answers = new Map();
 const supported = (config) => {
   const key = JSON.stringify(config);
@@ -98,38 +95,415 @@ const supported = (config) => {
   return answers.get(key);
 };
 
-/** The encoder configurations this browser says it takes for a `width` x `height` take at
- *  `fps`, best first: hardware before software, a bitrate before a constant quality. Each is
- *  asked about only when the one before is not enough. */
+/** Whether an encoder that takes a quantizer acts on it: Firefox's accepts one and encodes at
+ *  its own bitrate whatever the value. Two small frames of noise, at a fine and a coarse one. */
+const honours = new Map();
+function honoured(kind, config) {
+  const key = `${config.codec} ${config.hardwareAcceleration}`;
+  if (!honours.has(key))
+    honours.set(key, (async () => {
+      const size = 256;
+      const small = { ...config, width: size, height: size };
+      if (!(await supported(small))) return false;
+      const noise = Uint8Array.from({ length: (size * size * 3) / 2 }, (_, i) => (i * 2654435761) >>> 24);
+      const bytes = [];
+      for (const quantizer of [10, 40]) {
+        let total = 0;
+        const encoder = new VideoEncoder({ output: (chunk) => (total += chunk.byteLength), error: () => {} });
+        encoder.configure(small);
+        for (let i = 0; i < 2; i++) {
+          const frame = new VideoFrame(noise, { format: "I420", codedWidth: size, codedHeight: size, timestamp: i * 16667 });
+          encoder.encode(frame, { keyFrame: i === 0, [kind]: { quantizer } });
+          frame.close();
+        }
+        await encoder.flush().catch(() => {});
+        encoder.close();
+        bytes.push(total);
+      }
+      return bytes[0] > 1.5 * bytes[1];
+    })().catch(() => false));
+  return honours.get(key);
+}
+
+/** The encoder configurations this browser takes for a `width` x `height` take at `fps`, best
+ *  first: hardware before software, a constant quality before a bitrate. Each is asked about
+ *  only when the one before is not enough. */
 async function* configure(width, height, fps) {
   if (typeof VideoEncoder === "undefined") return;
   for (const hardwareAcceleration of ["prefer-hardware", "no-preference"])
-    for (const [kind, codec] of CODECS)
-      for (const bitrateMode of ["variable", "quantizer"]) {
-        const config = {
-          codec, width, height, framerate: fps, hardwareAcceleration, bitrateMode, latencyMode: "quality",
-          ...(bitrateMode === "variable" ? { bitrate: Math.round(BITS_PER_PIXEL * width * height * fps) } : {}),
-          ...(kind === "avc" ? { avc: { format: "avc" } } : {}),
-        };
-        // A configuration this browser cannot parse is one it does not support.
-        if (await supported(config)) yield { kind, config };
+    for (const [kind, codec] of CODECS) {
+      const base = { codec, width, height, framerate: fps, hardwareAcceleration, latencyMode: "quality",
+        ...(kind === "avc" ? { avc: { format: "avc" } } : {}) };
+      const steady = { ...base, bitrateMode: "quantizer" };
+      if ((await supported(steady)) && (await honoured(kind, steady))) yield { kind, config: steady, quantizer: QUANTIZER[kind] };
+      const variable = { ...base, bitrateMode: "variable", bitrate: Math.round(BITS_PER_PIXEL * width * height * fps) };
+      if (await supported(variable)) yield { kind, config: variable };
+    }
+}
+
+/** Whether this browser can save a take as video at all. */
+export const canRecord = () => typeof VideoEncoder !== "undefined";
+
+// -- the log ---------------------------------------------------------------------------------
+
+/** A log's records, each a tag byte and its fields, little-endian: the model the frames after it
+ *  draw (its name, as JSON), a new segment of the walk (its end, and its start unless that is the
+ *  last segment's end), and a frame (where between the two ends it is, then the direction pushes
+ *  and the model's settings if they changed). */
+const MODEL = 1;
+const SEGMENT = 2;
+const FRAME = 3;
+const PUSHES = 1;
+const SETTINGS = 2;
+
+/** The takes not yet saved as video, and their logs, in IndexedDB: a closed tab or a lost
+ *  graphics card leaves a take that can still be saved. */
+let opened = null;
+function store() {
+  opened ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open("ganlive-takes", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("takes", { keyPath: "id" });
+      request.result.createObjectStore("log");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return opened;
+}
+
+/** Run `work` in one transaction; resolves to what its request found, once committed. */
+async function transact(mode, work) {
+  const db = await store();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["takes", "log"], mode);
+    const request = work(t.objectStore("takes"), t.objectStore("log"));
+    t.oncomplete = () => resolve(request?.result);
+    t.onerror = t.onabort = () => reject(t.error);
+  });
+}
+
+const chunksOf = (id) => IDBKeyRange.bound([id, 0], [id, Infinity]);
+
+/** The takes kept in this browser and not yet saved as video, oldest first. */
+export async function keptTakes() {
+  try {
+    const takes = await transact("readonly", (takes) => takes.getAll());
+    return takes.filter((t) => t.frames > 0).sort((a, b) => a.id - b.id);
+  } catch {
+    return [];
+  }
+}
+
+/** Forget a kept take and its log. */
+export const forgetTake = (id) =>
+  transact("readwrite", (takes, log) => {
+    takes.delete(id);
+    log.delete(chunksOf(id));
+  }).catch(() => {});
+
+/** A take as it plays. While it is the player's `tap`, the player works out each of its frames at
+ *  that frame's own time (`next`) and logs it (`log`). `hit(seconds)` is told when each drum hit
+ *  arrives; `stop` resolves to the take, ready for `renderTake`. */
+export class Recording {
+  constructor() {
+    this.fps = TAKE_FPS;
+    this.id = Date.now();
+    this.started = new Date().toISOString();
+    this.start = null;
+    this.slot = -1;
+    this.frames = 0;
+    /** The first and the last drum hit, in seconds of the video, for lining up its audio. */
+    this.hits = null;
+    this.models = [];
+    this.bytes = new Uint8Array(2 * CHUNK);
+    this.used = 0;
+    /** The whole log, in memory for the render after Stop, and in IndexedDB in case it never comes. */
+    this.chunks = [];
+    this.saving = Promise.resolve();
+    this.flushed = 0;
+  }
+  /** Seconds of video recorded so far. */
+  get seconds() {
+    return this.frames / this.fps;
+  }
+  /** The time (ms, as the player's) of the take's next frame, if it is due by the animation
+   *  frame at `now`: up to half a frame early, so each animation frame of a screen at the
+   *  take's rate works out one. The take starts at the first `now`. */
+  next(now) {
+    this.start ??= now;
+    const at = this.start + ((this.slot + 1) * 1000) / this.fps;
+    if (at > now + 500 / this.fps) return null;
+    this.slot++;
+    return at;
+  }
+  /** A drum hit arrived at `seconds` (`performance.now() / 1000`, as MIDI times are). */
+  hit(seconds) {
+    if (this.start === null) return;
+    const at = seconds - this.start / 1000;
+    if (at < 0) return;
+    this.hits ??= { first: at, last: at };
+    this.hits.last = at;
+  }
+  /** Log the frame `entry` draws now: the walk's latent and the model's settings as they stand. */
+  log(entry, walk, settings) {
+    if (entry !== this.entry) {
+      this.entry = entry;
+      if (!this.models.some((m) => m.name === entry.name))
+        this.models.push({ name: entry.name, width: entry.width, height: entry.height });
+      const name = new TextEncoder().encode(JSON.stringify({ name: entry.name }));
+      this.reserve(3 + name.length);
+      this.u8(MODEL);
+      this.view.setUint16(this.used, name.length, true);
+      this.used += 2;
+      this.bytes.set(name, this.used);
+      this.used += name.length;
+      this.z1 = this.pushes = this.settings = null;
+    }
+    if (walk.z1 !== this.z1) {
+      const both = walk.z0 !== this.z1;
+      this.reserve(4 + 4 * walk.z1.length * (both ? 2 : 1));
+      this.u8(SEGMENT);
+      this.u8(both ? 1 : 0);
+      this.view.setUint16(this.used, walk.z1.length, true);
+      this.used += 2;
+      if (both) this.floats(walk.z0, 32);
+      this.floats(walk.z1, 32);
+      this.z1 = walk.z1;
+    }
+    const pushes = walk.cfg.amounts;
+    const k = settings.sent;
+    const flags = (differ(pushes, this.pushes) ? PUSHES : 0) | (differ(k, this.settings) ? SETTINGS : 0);
+    this.reserve(20 + 8 * pushes.length + 4 * k.length);
+    this.u8(FRAME);
+    this.u8(flags);
+    this.floats(walk.mixed, 64);
+    if (flags & PUSHES) {
+      this.u8(pushes.length);
+      this.floats(pushes, 64);
+      this.pushes = pushes.slice();
+    }
+    if (flags & SETTINGS) {
+      this.u8(k.length);
+      this.floats(k, 32);
+      this.settings = k.slice();
+    }
+    this.frames++;
+    if (this.used >= CHUNK || this.frames - this.flushed >= 2 * this.fps) this.flush();
+  }
+  reserve(n) {
+    if (this.used + n > this.bytes.length) {
+      const grown = new Uint8Array(2 * (this.used + n));
+      grown.set(this.bytes.subarray(0, this.used));
+      this.bytes = grown;
+    }
+    if (this.view?.buffer !== this.bytes.buffer) this.view = new DataView(this.bytes.buffer);
+  }
+  u8(v) {
+    this.bytes[this.used++] = v;
+  }
+  floats(values, bits) {
+    for (const v of values) {
+      if (bits === 32) this.view.setFloat32(this.used, v, true);
+      else this.view.setFloat64(this.used, v, true);
+      this.used += bits / 8;
+    }
+  }
+  /** What the log holds so far, into IndexedDB, with what is known of the take. */
+  flush() {
+    this.flushed = this.frames;
+    if (!this.used) return this.saving;
+    const data = this.bytes.slice(0, this.used);
+    this.used = 0;
+    const n = this.chunks.push(data) - 1;
+    const about = this.about();
+    this.saving = this.saving.then(() => transact("readwrite", (takes, log) => {
+      log.put(data.buffer, [this.id, n]);
+      takes.put(about);
+    })).catch(() => {});    // a browser without room or IndexedDB still saves the take after Stop
+    return this.saving;
+  }
+  about() {
+    const { id, started, fps, frames, hits, models } = this;
+    return { id, started, fps, frames, hits: hits && { ...hits }, models: models.map((m) => ({ ...m })) };
+  }
+  /** The take, its log whole: what `renderTake` draws. */
+  async stop() {
+    await this.flush();
+    return { ...this.about(), log: concat(this.chunks) };
+  }
+}
+
+const differ = (a, b) => !b || a.length !== b.length || a.some((v, i) => v !== b[i]);
+
+/** A kept take's log, from IndexedDB. */
+async function storedLog(id) {
+  const chunks = await transact("readonly", (_, log) => log.getAll(chunksOf(id)));
+  return concat(chunks.map((c) => new Uint8Array(c)));
+}
+
+/** What a log holds, in order: `{model}`, the name of the model the frames after it draw, and
+ *  each frame, `{z0, a, z1, b, pushes, settings}`: its latent is `compose(z0, a, z1, b,
+ *  directions, pushes)`, and its settings are the last ones given since its model. */
+export function* readLog(log) {
+  const view = new DataView(log.buffer, log.byteOffset, log.byteLength);
+  const f32 = (at, n) => new Float32Array(log.slice(at, at + 4 * n).buffer);
+  let z0, z1, pushes = [], settings = null;
+  for (let at = 0; at < log.length;) {
+    const tag = log[at++];
+    if (tag === MODEL) {
+      const n = view.getUint16(at, true);
+      const { name } = JSON.parse(new TextDecoder().decode(log.subarray(at + 2, at + 2 + n)));
+      at += 2 + n;
+      settings = null;
+      yield { model: name };
+    } else if (tag === SEGMENT) {
+      const both = log[at];
+      const n = view.getUint16(at + 1, true);
+      at += 3;
+      if (both) {
+        z0 = f32(at, n);
+        at += 4 * n;
+      } else z0 = z1;
+      z1 = f32(at, n);
+      at += 4 * n;
+    } else if (tag === FRAME) {
+      const flags = log[at];
+      const a = view.getFloat64(at + 1, true);
+      const b = view.getFloat64(at + 9, true);
+      at += 17;
+      if (flags & PUSHES) {
+        const n = log[at++];
+        pushes = Array.from({ length: n }, (_, i) => view.getFloat64(at + 8 * i, true));
+        at += 8 * n;
       }
+      if (flags & SETTINGS) {
+        const n = log[at++];
+        settings = f32(at, n);
+        at += 4 * n;
+      }
+      yield { z0, a, z1, b, pushes, settings };
+    } else throw new Error(`the take's log is damaged at byte ${at - 1}`);
+  }
 }
 
-/** Ask, in the background, what a `size` take will encode with, at each rate it may have. */
-export async function prepareTake([width, height]) {
-  for (const fps of RATES) for await (const _ of configure(width, height, fps)) break;
+// -- drawing a take --------------------------------------------------------------------------
+
+/** Draw `take` (from `Recording.stop` or `keptTakes`) as an MP4 of `size` (`takeSize`), every
+ *  frame at its own time. `model(name)` gives a loaded model (`loadPlayable`). `onProgress(done)`
+ *  is told the share of frames encoded. The frames are drawn on the card the page plays on: a
+ *  paused picture leaves the render the whole card. */
+export async function renderTake(device, take, { size, model, onProgress = () => {} }) {
+  const log = take.log ?? (await storedLog(take.id));
+  let refused = null;
+  for await (const candidate of configure(size[0], size[1], take.fps)) {
+    const file = await openFile(BITS_PER_PIXEL * size[0] * size[1] * take.frames / 8);
+    try {
+      return await draw(device, take, log, candidate, file, size, model, onProgress);
+    } catch (e) {
+      await file.discard();
+      // An encoder can claim a configuration and then refuse its first frame (Firefox did with
+      // NV12): the next candidate draws the take from the start.
+      if (!e.refused) throw e;
+      refused = e;
+    }
+  }
+  throw refused ?? new Error(`this browser has no video encoder for ${size[0]}×${size[1]}`);
 }
 
-/** Start a take of `entry` (a loaded model) at `size` (`takeSize`) and `fps` (`takeRate`). While
- *  it is the player's `tap`, the player draws one picture at each time `next` gives, and calls
- *  `draw` and `drawn` for it. `hit(seconds)` is told when each drum hit arrives; `stop` resolves
- *  to the video, its first and last hits then in `hits`. */
-export async function startTake(device, entry, { size = [entry.width, entry.height], fps = 60 } = {}) {
-  const candidates = configure(size[0], size[1], fps);
-  const first = await candidates.next();
-  if (first.done) return new RecorderTake(device, entry, size, fps);
-  return new CodecTake(device, entry, size, fps, first.value, candidates, await openFile());
+async function draw(device, take, log, { kind, config, quantizer }, file, [width, height], model, onProgress) {
+  const fps = take.fps;
+  const format = "rgba8unorm";
+  const size = (width * height * 3) / 2;
+  const bytes = Math.ceil(size / 4) * 4;
+  /** The frame at the take's size, drawn by the screen's own shader (engine/fit.py), which fits a
+   *  model of another shape inside it. */
+  const picture = device.createTexture({ size: [width, height], format,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+  const out = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const shape = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(shape, 0, new Uint32Array([height, width, 0, 0]));
+  const module = device.createShaderModule({ code: I420 });
+  const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+  const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: picture.createView() }, { binding: 1, resource: { buffer: out } },
+    { binding: 2, resource: { buffer: shape } }] });
+  const groups = Math.ceil(bytes / 4 / 256);
+  const ring = Array.from({ length: RING }, () => ({
+    buffer: device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+    free: Promise.resolve(),
+  }));
+  const mux = new Mp4(kind, width, height, file);
+  let failed = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => mux.add(chunk, meta),
+    error: (e) => (failed ??= Object.assign(e, { refused: !mux.samples.length })),
+  });
+  encoder.configure(config);
+  const dequeued = () => new Promise((resolve) => {
+    encoder.addEventListener("dequeue", resolve, { once: true });
+    setTimeout(resolve, 20);
+  });
+  // Frames reach the encoder in order through one chain of promises.
+  let chain = Promise.resolve();
+  let encoded = 0;
+  const keyEvery = Math.round(KEY_EVERY_S * fps);
+  const screens = new Map();
+  let entry, onto, frame = 0;
+  try {
+    for (const item of readLog(log)) {
+      if (item.model) {
+        entry = await model(item.model);
+        if (!screens.has(entry)) screens.set(entry, screen(device, entry.model, format));
+        onto = screens.get(entry);
+      } else {
+        const { z0, a, z1, b, pushes, settings } = item;
+        if (failed) throw failed;
+        const slot = ring[frame % RING];
+        await slot.free;
+        entry.model.setLatent(compose(z0, a, z1, b, entry.directions, pushes));
+        // The model's buffers are the page's too: its own settings go back after the frame.
+        if (settings) entry.model.setSettings(settings);
+        const commands = device.createCommandEncoder();
+        entry.model.encode(commands);
+        onto.draw(commands, picture);
+        const pass = commands.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bind);
+        pass.dispatchWorkgroups(Math.min(groups, 65535), Math.ceil(groups / 65535));
+        pass.end();
+        commands.copyBufferToBuffer(out, 0, slot.buffer, 0, bytes);
+        device.queue.submit([commands.finish()]);
+        entry.model.setSettings(entry.settings.sent);
+        const mapped = slot.buffer.mapAsync(GPUMapMode.READ);
+        const index = frame++;
+        chain = chain.then(() => mapped).then(async () => {
+          while (!failed && encoder.encodeQueueSize >= QUEUE) await dequeued();
+          if (!failed) {
+            const image = new VideoFrame(new Uint8Array(slot.buffer.getMappedRange(), 0, size), {
+              format: "I420", codedWidth: width, codedHeight: height, colorSpace: BT709,
+              timestamp: Math.round((index * 1e6) / fps), duration: Math.round(1e6 / fps),
+            });
+            encoder.encode(image, { keyFrame: index % keyEvery === 0, ...(quantizer ? { [kind]: { quantizer } } : {}) });
+            image.close();
+            if (++encoded % 30 === 0) onProgress(encoded / take.frames);
+          }
+          slot.buffer.unmap();
+        }).catch((e) => (failed ??= e));
+        slot.free = chain;
+      }
+    }
+    await chain;
+    if (!failed) await encoder.flush().catch((e) => (failed ??= e));
+    if (failed) throw failed;
+    onProgress(1);
+  } finally {
+    await chain;
+    if (encoder.state !== "closed") encoder.close();
+    for (const b of [out, shape, ...ring.map((r) => r.buffer)]) b.destroy();
+    picture.destroy();
+  }
+  return mux.finish(fps);
 }
 
 // -- where a take's file goes ---------------------------------------------------------------
@@ -141,7 +515,7 @@ let visited = false;
 /** A file for the next take: on disk where the browser allows it, else in memory. A saved take
  *  is the user's own copy, so the site's are removed: all of an earlier visit's, and of this
  *  visit's all but the last, whose download may still be running. */
-async function openFile() {
+async function openFile(need) {
   try {
     const dir = await navigator.storage.getDirectory();
     const old = [];
@@ -152,7 +526,9 @@ async function openFile() {
     const name = `${ON_DISK}${Date.now()}.mp4`;
     const handle = await dir.getFileHandle(name, { create: true });
     const { quota = Infinity, usage = 0 } = await navigator.storage.estimate().catch(() => ({}));
-    return new DiskFile(dir, name, handle, await handle.createWritable(), quota - usage);
+    // Firefox keeps a site to 10 GB at most unless the site asks to keep its files.
+    if (quota - usage < need) await navigator.storage.persist?.().catch(() => {});
+    return new DiskFile(dir, name, handle, await handle.createWritable());
   } catch {
     return new MemoryFile();     // no OPFS, or no createWritable (Safari before 26)
   }
@@ -161,8 +537,6 @@ async function openFile() {
 /** A file written in order (`append`), with bytes patched in place (`patch`) before `close`. */
 class MemoryFile {
   constructor() {
-    /** Bytes the take may still write. */
-    this.room = Infinity;
     this.parts = [];
     this.batch = [];
     this.batchBytes = 0;
@@ -198,8 +572,8 @@ class MemoryFile {
 }
 
 class DiskFile {
-  constructor(dir, name, handle, writable, room) {
-    Object.assign(this, { dir, name, handle, writable, room });
+  constructor(dir, name, handle, writable) {
+    Object.assign(this, { dir, name, handle, writable });
     this.size = 0;
     /** Writes in the order they were asked for; the first failure (a full disk) is kept. */
     this.chain = Promise.resolve();
@@ -230,202 +604,6 @@ class DiskFile {
     await this.chain;
     await this.writable.abort().catch(() => {});
     await this.dir.removeEntry(this.name).catch(() => {});
-  }
-}
-
-class TakeBase {
-  constructor(entry, [width, height], fps) {
-    Object.assign(this, { entry, width, height, fps });
-    this.start = null;
-    this.slot = -1;
-    this.frames = 0;
-    this.dropped = 0;
-    /** The first and the last drum hit, in seconds of the video, for lining up its audio. */
-    this.hits = null;
-  }
-  /** Seconds recorded so far. */
-  get seconds() {
-    return this.start === null ? 0 : (performance.now() - this.start) / 1000;
-  }
-  /** A drum hit arrived at `seconds` (`performance.now() / 1000`, as MIDI times are). */
-  hit(seconds) {
-    if (this.start === null) return;
-    const at = seconds - this.start / 1000;
-    if (at < 0) return;
-    this.hits ??= { first: at, last: at };
-    this.hits.last = at;
-  }
-  /** The time (ms, as the player's) of the take's next frame, if it is due by the animation
-   *  frame at `now`: up to half a frame early, so each animation frame of a screen at the
-   *  take's rate draws one. The take starts at the first `now`. */
-  next(now) {
-    this.start ??= now;
-    const period = 1000 / this.fps;
-    const behind = Math.floor((now - this.start) / period) - (this.slot + 1);
-    if (behind > MOST_BEHIND_S * this.fps) {
-      this.dropped += behind;
-      this.slot += behind;
-    }
-    const at = this.start + (this.slot + 1) * period;
-    return at <= now + period / 2 ? at : null;
-  }
-  /** Into the player's encoder: the picture drawn for the take's next frame, at the take's
-   *  size. A model switched to mid-take has the take's shape (the page refuses others). */
-  draw(encoder, m) {
-    if (m !== this.entry || !this.onto) this.use(m);
-    this.slot++;
-    this.record(encoder);
-  }
-  /** Draw `entry`'s frames from now on. */
-  use(entry) {
-    this.entry = entry;
-    this.onto = screen(this.device, entry.model, this.format);
-  }
-  ready() {
-    return true;
-  }
-}
-
-class CodecTake extends TakeBase {
-  constructor(device, entry, size, fps, first, candidates, file) {
-    super(entry, size, fps);
-    Object.assign(this, { device, candidates, file, format: "rgba8unorm" });
-    const { width: w, height: h } = this;
-    this.size = (w * h * 3) / 2;
-    const bytes = Math.ceil(this.size / 4) * 4;
-    /** The frame at the take's size, drawn by the screen's own shader (engine/fit.py). */
-    this.picture = device.createTexture({ size: [w, h], format: this.format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-    this.out = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    this.shape = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(this.shape, 0, new Uint32Array([h, w, 0, 0]));
-    const module = device.createShaderModule({ code: I420 });
-    this.pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-    this.bind = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: this.picture.createView() }, { binding: 1, resource: { buffer: this.out } },
-      { binding: 2, resource: { buffer: this.shape } }] });
-    const groups = Math.ceil(bytes / 4 / 256);
-    this.groups = [Math.min(groups, 65535), Math.ceil(groups / 65535)];
-    this.ring = Array.from({ length: RING }, () => ({
-      buffer: device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
-      busy: false,
-    }));
-    this.filling = null;
-    /** Each frame's encode waits for the one before, so frames reach the encoder in order. */
-    this.chain = Promise.resolve();
-    this.failed = null;
-    this.open(first);
-  }
-  /** Encode with `candidate`. An encoder can claim a configuration and then refuse its first
-   *  frame (Firefox did with NV12), so one that fails before writing anything gives way to the
-   *  next candidate; frames wait meanwhile (`ready`). */
-  open(candidate) {
-    Object.assign(this, candidate, { keyed: 0, switching: false });
-    this.mux = new Mp4(this.kind, this.width, this.height, this.file);
-    const encoder = (this.encoder = new VideoEncoder({
-      output: (chunk, meta) => this.mux.add(chunk, meta),
-      error: (e) => {
-        if (encoder !== this.encoder) return;
-        if (this.mux.samples.length) return void (this.failed ??= e);
-        this.switching = true;
-        this.reopened = this.candidates.next().then(({ value, done }) => (done ? (this.failed ??= e) : this.open(value)));
-      },
-    }));
-    encoder.configure(this.config);
-  }
-  /** Seconds of video the disk has room for, at this take's bitrate. */
-  get room() {
-    return this.file.room / ((this.config.bitrate ?? BITS_PER_PIXEL * this.width * this.height * this.fps) / 8);
-  }
-  get label() {
-    return `${this.config.codec}, ${this.config.bitrateMode === "quantizer" ? "constant quality" : "high bitrate"}`;
-  }
-  ready() {
-    return !this.failed && !this.switching && this.encoder.encodeQueueSize < QUEUE && this.ring.some((r) => !r.busy);
-  }
-  /** The frame at the take's size, then as I420 into a free buffer of the ring. */
-  record(encoder) {
-    this.onto.draw(encoder, this.picture);
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(this.pipeline);
-    pass.setBindGroup(0, this.bind);
-    pass.dispatchWorkgroups(...this.groups);
-    pass.end();
-    this.filling = this.ring.find((r) => !r.busy);
-    this.filling.busy = true;
-    encoder.copyBufferToBuffer(this.out, 0, this.filling.buffer, 0, this.out.size);
-  }
-  /** After the player's submit: read the frame back, then hand it to the encoder. */
-  drawn() {
-    const r = this.filling;
-    const slot = this.slot;
-    const mapped = r.buffer.mapAsync(GPUMapMode.READ);
-    this.chain = this.chain.then(() => mapped).then(async () => {
-      if (this.switching) await this.reopened;      // a frame read back while the encoder changes
-      if (!this.failed) {
-        const frame = new VideoFrame(new Uint8Array(r.buffer.getMappedRange(), 0, this.size), {
-          format: "I420", codedWidth: this.width, codedHeight: this.height, colorSpace: BT709,
-          timestamp: Math.round((slot * 1e6) / this.fps), duration: Math.round(1e6 / this.fps),
-        });
-        const quantizer = this.config.bitrateMode === "quantizer" ? { [this.kind]: { quantizer: QUANTIZER[this.kind] } } : {};
-        try {
-          this.encoder.encode(frame, { keyFrame: this.keyed++ % Math.round(KEY_EVERY_S * this.fps) === 0, ...quantizer });
-        } catch (e) {
-          if (this.encoder.state !== "configured") throw e;   // an encoder that failed, since replaced
-        }
-        frame.close();
-        this.frames++;
-      }
-      r.buffer.unmap();
-    }).catch((e) => (this.failed ??= e)).finally(() => (r.busy = false));
-  }
-  async stop() {
-    await this.chain;
-    if (!this.failed) await this.encoder.flush().catch((e) => (this.failed ??= e));
-    if (this.encoder.state !== "closed") this.encoder.close();
-    for (const b of [this.out, this.shape, ...this.ring.map((r) => r.buffer)]) b.destroy();
-    this.picture.destroy();
-    if (this.failed) {
-      await this.file.discard();
-      throw this.failed;
-    }
-    return this.mux.finish(this.fps);
-  }
-}
-
-/** Where WebCodecs is missing: a canvas of the model's size through MediaRecorder, MP4 where
- *  offered, else WebM. */
-class RecorderTake extends TakeBase {
-  constructor(device, entry, size, fps) {
-    super(entry, size, fps);
-    this.canvas = Object.assign(document.createElement("canvas"), { width: this.width, height: this.height });
-    this.context = this.canvas.getContext("webgpu");
-    const format = navigator.gpu.getPreferredCanvasFormat();
-    this.context.configure({ device, format, alphaMode: "opaque" });
-    Object.assign(this, { device, format });
-    const kind = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"].find((k) => MediaRecorder.isTypeSupported(k)) ?? "";
-    this.stream = this.canvas.captureStream(0);
-    this.chunks = [];
-    this.recorder = new MediaRecorder(this.stream, { mimeType: kind, videoBitsPerSecond: Math.round(BITS_PER_PIXEL * this.width * this.height * fps) });
-    this.recorder.addEventListener("dataavailable", (e) => e.data.size && this.chunks.push(e.data));
-    this.recorder.start(1000);
-    this.label = this.recorder.mimeType;
-  }
-  record(encoder) {
-    this.onto.draw(encoder, this.context.getCurrentTexture());
-  }
-  drawn() {
-    this.stream.getVideoTracks()[0].requestFrame?.();
-    this.frames++;
-  }
-  stop() {
-    return new Promise((resolve) => {
-      this.recorder.addEventListener("stop", () => {
-        this.context.unconfigure();
-        resolve(new Blob(this.chunks, { type: this.recorder.mimeType }));
-      });
-      this.recorder.stop();
-    });
   }
 }
 

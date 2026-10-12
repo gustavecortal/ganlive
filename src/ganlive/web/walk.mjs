@@ -106,22 +106,27 @@ export class SlerpWalk {
     this.key = key;
     this.segment = k;
   }
-  /** The latent for this musical position, with the direction push added. */
+  /** The latent for this musical position, with the direction push added. The weights of
+   *  the segment's two ends are kept in `mixed`, which a take logs. */
   latent(beats) {
     const [k, , t] = position(this.cfg, beats);
     this.load(k);
-    const [a, b] = weights(this.omega, t);
-    const z = mix(this.z0, a, this.z1, b);
-    const rows = this.cfg.directions;
-    const amounts = this.cfg.amounts;
-    if (rows) {
-      const n = Math.min(amounts.length, rows.length);
-      for (let r = 0; r < n; r++) {
-        const amount = amounts[r];
-        if (!amount || rows[r].length !== this.nz) continue;
-        for (let i = 0; i < this.nz; i++) z[i] += amount * rows[r][i];
-      }
-    }
-    return z;
+    this.mixed = weights(this.omega, t);
+    return compose(this.z0, this.mixed[0], this.z1, this.mixed[1], this.cfg.directions, this.cfg.amounts);
   }
+}
+
+/** `a * z0 + b * z1`, then each direction row pushed by its amount: a frame's latent, from what
+ *  a take logs of it as much as from the walk. */
+export function compose(z0, a, z1, b, rows, amounts) {
+  const z = mix(z0, a, z1, b);
+  if (rows) {
+    const n = Math.min(amounts.length, rows.length);
+    for (let r = 0; r < n; r++) {
+      const amount = amounts[r];
+      if (!amount || rows[r].length !== z.length) continue;
+      for (let i = 0; i < z.length; i++) z[i] += amount * rows[r][i];
+    }
+  }
+  return z;
 }
