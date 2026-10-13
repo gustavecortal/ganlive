@@ -10,8 +10,8 @@ import torch
 from ganlive.engine.compile import compile_manifest
 from ganlive.engine.convert_fastgan import manifest_of, prepared, probe
 from ganlive.engine.convert_stylegan2 import stylegan2_manifest, stylegan2_net
-from ganlive.engine.program_stylegan2 import browser_variants
 from ganlive.engine.probe import PROBE_LEVELS
+from ganlive.engine.program_stylegan2 import browser_variants
 from ganlive.levels import LEVEL
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
