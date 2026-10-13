@@ -99,7 +99,9 @@ export class Player {
     this.context = canvas.getContext("webgpu");
     this.context.configure({ device, format: this.format, alphaMode: "opaque" });
     this.pending = 0;
+    // Measured once, while the first model loads. Until then frames are paced without it.
     this.lag = 0;
+    reportLag(device).then((ms) => (this.lag = ms), () => {});
     this.last = null;
     this.shown = null;
     /** A take, while recording (`take.Recording`). */
@@ -121,12 +123,9 @@ export class Player {
   }
 
   /** Add a loaded model (`loadPlayable`); the first one starts playing. */
-  async add(entry) {
+  add(entry) {
     this.models.push(entry);
     if (this.index < 0) {
-      this.lag = await reportLag(this.device);
-      // Stopped meanwhile, as when a phone takes its graphics card back: the model is gone.
-      if (!this.models.includes(entry)) throw new Error("The player stopped while the model loaded.");
       this.runner = new PresetRunner(DEFAULT, this.features.channelOf(), this.fps, entry.layout, this.features.n);
       this.walk = new SlerpWalk(entry.nz, this.runner.walk);
       this.use(0);

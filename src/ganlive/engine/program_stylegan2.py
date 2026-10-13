@@ -67,12 +67,8 @@ def compile_stylegan2(manifest: dict, plans: dict | None = None, output: str = "
     feat = max(op["cout"] // 2 * op["h"] * op["w"] * 4 for op in m["ops"] if op["op"] != "torgb")
     b.buffer("x0", feat)
     b.buffer("x1", feat)
-    # T holds an upsampling conv's output before its blur, or a Winograd conv's input patches.
-    wino = [_wino_sizes(b, op) for op in m["ops"] if _is_wino(b, op)]
-    b.buffer("T", max([op["cout"] // 2 * (op["h"] + 1) * (op["w"] + 1) * 4
-                       for op in m["ops"] if op.get("up")] + [t for t, _ in wino], default=16))
-    b.buffer("scratch", max([_scratch(b, op) for op in m["ops"] if op["op"] == "conv"]
-                            + [sums for _, sums in wino], default=16))
+    b.buffer("T", max(_t_bytes(b, op) for op in m["ops"]))
+    b.buffer("scratch", max([_scratch(b, op) for op in m["ops"] if op["op"] == "conv"], default=16))
     side = m["height"] * m["width"] * 3 * 4
     b.buffer("img0", side)
     b.buffer("img1", side)
@@ -287,12 +283,13 @@ def _tiles(op: dict, M: int) -> bool:
     return op["cout"] % 32 == 0 and op["cin"] % TK == 0 and M > 0
 
 
-def _mm_plan(b: Builder, op: dict, g: dict) -> dict:
-    """How one product tiles: rows a thread (`rm`), column groups (`rn`) and slices (`S`), by
-    default so that even a 4x4 map fills the GPU."""
+def _mm_plan(b: Builder, op: dict, g: dict, parts: int = 1) -> dict:
+    """How one product (or `parts` alike) tiles: rows a thread (`rm`), column groups (`rn`)
+    and slices (`S`), by default so that even a 4x4 map fills the GPU."""
     plan = {"rm": 4, "rn": 1, **_override(b, g["name"])}
     steps = op["cin"] * len(g["taps"]) // TK
-    plan.setdefault("S", split(math.ceil(g["M"] / (8 * plan["rm"])) * (op["cout"] // (32 * plan["rn"])), steps))
+    tiles = math.ceil(g["M"] / (8 * plan["rm"])) * (op["cout"] // (32 * plan["rn"])) * parts
+    plan.setdefault("S", split(tiles, steps))
     return plan
 
 
@@ -354,9 +351,8 @@ def _as_wino(overrides: dict, op: dict) -> bool:
     """Whether a plain conv runs through Winograd: where it fits and has `WINO_BLOCKS`
     blocks, or when a plan says {"wino": True} for it, by name."""
     forced = overrides.get(op["name"], {}).get("wino")
-    blocks = op["h"] * op["w"] // 4
     lo, hi = WINO_BLOCKS
-    return _wino_fits(op) and (lo <= blocks <= hi if forced is None else forced)
+    return _wino_fits(op) and (lo <= _blocks(op) <= hi if forced is None else forced)
 
 
 def _combine(rows, cols, value) -> str:
@@ -370,13 +366,14 @@ def _combine(rows, cols, value) -> str:
     return " + ".join(terms).replace("+ -", "- ")
 
 
+def _blocks(op: dict) -> int:
+    """The 2x2 blocks of a layer's map, which Winograd draws one at a time."""
+    return op["h"] * op["w"] // 4
+
+
 def _wino_plan(b: Builder, op: dict) -> dict:
-    """How the 16 products tile, as `_mm_plan`, split so that a small map fills the GPU."""
-    plan = {"rm": 4, "rn": 1, **_override(b, f"{op['name']}.mm")}
-    blocks = op["h"] * op["w"] // 4
-    tiles = math.ceil(blocks / (8 * plan["rm"])) * (op["cout"] // (32 * plan["rn"])) * 16
-    plan.setdefault("S", split(tiles, op["cin"] // TK))
-    return plan
+    """How the 16 products [blocks x cin] by [cin x cout] tile (`_mm_plan`)."""
+    return _mm_plan(b, op, {"name": f"{op['name']}.mm", "M": _blocks(op), "taps": [0]}, parts=16)
 
 
 def _wino(b: Builder, op: dict, src: str, dst: str) -> None:
@@ -384,8 +381,8 @@ def _wino(b: Builder, op: dict, src: str, dst: str) -> None:
     patches transformed into T, 16 matrix products [blocks x cin] by [cin x cout] into the
     scratch, then each 2x2 block transformed back, demodulated and finished into `dst`."""
     cin, cout, h, w = op["cin"], op["cout"], op["h"], op["w"]
-    bh, bw = h // 2, w // 2
-    blocks = bh * bw
+    bw = w // 2
+    blocks = _blocks(op)
     name = op["name"]
     # Once: the kernel of each (input, output pair) as its 16 values, f16 pairs [16][cin][cout/2].
     v = b.buffer(f"wino.{name}", 16 * cin * cout * 2)
@@ -421,8 +418,7 @@ ${stores}
         f"  Y[{p * plane}u + i] = pack2x16float("
         + _combine(WINO_B[p // 4], WINO_B[p % 4], lambda y, x: f"d{y}{x}") + ");"
         for p in range(16))
-    n = plane
-    groups, index = linear(n)
+    groups, index = linear(plane)
     b.step(f"{name}.in", wgsl(storage([("X", "array<u32>"), ("Y", "array<u32>")]) + """
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -433,7 +429,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let base = c2 * ${cells}u;
 ${reads}
 ${stores}
-}""", index=index, n=n, blocks=blocks, bw=bw, cells=cells, reads=reads, stores=stores),
+}""", index=index, n=plane, blocks=blocks, bw=bw, cells=cells, reads=reads, stores=stores),
            [src, "T"], groups)
 
     # The 16 products, `par` being which: A [blocks x cin] from T, B [cin x cout] from the kernels.
@@ -472,23 +468,22 @@ ${LRELU}
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let i = ${index};
   if (i >= ${n}u) { return; }
-  let blk = i % ${blocks}u; let c = (i / ${blocks}u) * 4u;
+  let c = (i % ${q4}u) * 4u; let blk = i / ${q4}u;
   let d = ${dv};
 ${sums}
 ${outs}
-}""", LRELU=LRELU, index=index, n=n, blocks=blocks, dv=_dv(op), sums=sums, outs="\n".join(outs)),
+}""", LRELU=LRELU, index=index, n=n, q4=cout // 4, dv=_dv(op), sums=sums, outs="\n".join(outs)),
            ["P", "scratch", dst, "D", "K"], groups)
 
 
-def _is_wino(b: Builder, op: dict) -> bool:
-    """Whether this op is a plain conv that runs through Winograd."""
-    return op["op"] == "conv" and not op["up"] and _as_wino(b.overrides, op)
-
-
-def _wino_sizes(b: Builder, op: dict) -> tuple[int, int]:
-    """The bytes a Winograd conv keeps: its transformed input (in T) and partial sums (scratch)."""
-    blocks = op["h"] * op["w"] // 4
-    return 16 * op["cin"] // 2 * blocks * 4, 16 * _wino_plan(b, op)["S"] * blocks * op["cout"] * 4
+def _t_bytes(b: Builder, op: dict) -> int:
+    """What an op keeps in T: an upsampling conv's output before its blur, or a Winograd
+    conv's transformed input."""
+    if op.get("up"):
+        return op["cout"] // 2 * (op["h"] + 1) * (op["w"] + 1) * 4
+    if op["op"] == "conv" and _as_wino(b.overrides, op):
+        return 16 * op["cin"] // 2 * _blocks(op) * 4
+    return 16
 
 
 def _as_product(overrides: dict, op: dict) -> bool:
@@ -502,8 +497,9 @@ def _as_product(overrides: dict, op: dict) -> bool:
 #: The plans a matrix product tries: rows and columns a thread, and splits.
 PRODUCT_CHOICES = [{"rn": 2}, {"rm": 8}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}, {"S": 4},
                    {"rn": 2, "S": 2}]
-#: The most blocks `ganlive tune` tries Winograd on: past them, its buffers outgrow what a
-#: device gives by default (128 MiB a binding).
+#: The most blocks `ganlive tune` tries Winograd on. On FFHQ's 256x256 layer (128 channels) its
+#: buffers reach the 128 MiB a binding gets by default. A wider layer outgrows it sooner, and
+#: tune skips a trial that fails to build.
 WINO_TRIED = 16384
 
 
@@ -524,9 +520,10 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
         # product or the direct conv, each with its plans.
         others = PRODUCT_CHOICES if _as_product({}, op) else direct.CHOICES
         if _as_wino({}, op):
-            out[op["name"]] = [{"wino": False}] + [{"wino": False, **o} for o in others]
-            out[f"{op['name']}.mm"] = [{"rm": 8}, {"rn": 2}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}]
-        elif _wino_fits(op) and op["h"] * op["w"] // 4 <= WINO_TRIED:
+            off = [{"wino": False, **o} for o in others]
+            out[op["name"]] = off if {} in others else [{"wino": False}, *off]
+            out[f"{op['name']}.mm"] = PRODUCT_CHOICES
+        elif _wino_fits(op) and _blocks(op) <= WINO_TRIED:
             out[op["name"]] = [{"wino": True}, *others]
         else:
             out[op["name"]] = others
@@ -534,11 +531,11 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
 
 
 def _scratch(b: Builder, op: dict) -> int:
-    """The partial sums the largest matrix product of this layer keeps."""
+    """The partial sums this layer's largest matrix product keeps. Winograd's 16 always keep them."""
     if op["up"]:
         products = _parities(op)
     elif _as_wino(b.overrides, op):
-        return 16
+        return 16 * _wino_plan(b, op)["S"] * _blocks(op) * op["cout"] * 4
     elif _as_product(b.overrides, op):
         products = [_plain(op)]
     else:
@@ -561,7 +558,7 @@ def _mm(b: Builder, op: dict, src: str, dst: str, g: dict) -> None:
     tap = f"const TAP = array<u32, {nt}>({', '.join(f'{t}u' for t in taps)});\n"
     # The sum runs tap-major: k = q * cin + channel, so k and k + 1 share an input read.
     gather = (f"      let ci = k % {cin}u; let q = k / {cin}u; let t = TAP[q];\n"
-              f"      let sc = vec2f(S[{op['s']}u + ci], S[{op['s']}u + ci + 1u]); let base = (ci / 2u) * {g['hi'] * g['wi']}u;\n"
+              f"      let sc = {_sv(op, 'ci / 2u')}; let base = (ci / 2u) * {g['hi'] * g['wi']}u;\n"
               + "\n".join(
                   f"      {{ let m = m4 + {i}u; {g['at']}\n"
                   f"        if (m < {M}u && y >= 0 && y < {g['hi']} && x >= 0 && x < {g['wi']}) {{\n"
@@ -726,7 +723,7 @@ def _torgb(b: Builder, op: dict, src: str, prev: str | None, dst: str) -> None:
     acc = []
     for c2 in range(cin // 2):
         e = op["weight"] + 2 * c2 * 3
-        acc.append(f"  {{ let n = unpack2x16float(X[{c2 * plane}u + px]) * vec2f(S[{op['s'] + 2 * c2}u], S[{op['s'] + 2 * c2 + 1}u]);\n"
+        acc.append(f"  {{ let n = unpack2x16float(X[{c2 * plane}u + px]) * {_sv(op, f'{c2}u')};\n"
                    f"    y += n.x * vec3f(w1({e}u), w1({e + 1}u), w1({e + 2}u))"
                    f" + n.y * vec3f(w1({e + 3}u), w1({e + 4}u), w1({e + 5}u)); }}")
     clamp = op["clamp"]
