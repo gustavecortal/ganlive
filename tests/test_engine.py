@@ -20,7 +20,7 @@ from tests.support import tiny_stylegan2
 
 wgpu = pytest.importorskip("wgpu")
 from ganlive.engine.player import EngineGenerator  # noqa: E402
-from ganlive.engine.runner import Model, default_device  # noqa: E402
+from ganlive.engine.runner import Model, default_device, is_software  # noqa: E402
 from ganlive.engine.screen import EngineStage  # noqa: E402
 
 
@@ -34,6 +34,19 @@ def device():
         except (RuntimeError, wgpu.GPUError):           # this kind of adapter is missing
             continue
     pytest.skip("no WebGPU adapter")
+
+
+@pytest.fixture(scope="module")
+def gpu():
+    """A graphics card's adapter. Windows' CPU one (WARP) draws some of the upsampling matrix
+    products wrong, putting outputs of a two-tap parity at other parities' pixels."""
+    try:
+        found = default_device()
+    except (RuntimeError, wgpu.GPUError):
+        pytest.skip("no WebGPU adapter")
+    if is_software(found.adapter):
+        pytest.skip("no graphics card")
+    return found
 
 
 NZ = 32
@@ -97,10 +110,18 @@ def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device, p
         assert levels.mean() < 0.5 and np.percentile(levels, 99.9) < 4, (levels.mean(), levels.max())
 
 
-def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(device, tmp_path):
+#: The tiny StyleGAN2 as it is, its convolutions direct, and wider, so that its 16x16 conv runs
+#: through Winograd and its upsampling ones as matrix products, on a card (`gpu`).
+WIDER = {"channel_base": 512}
+
+
+@pytest.mark.parametrize(("over", "on"), [({}, "device"), (WIDER, "gpu")],
+                         ids=["direct", "winograd-and-products"])
+def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(request, tmp_path, over, on):
     """Mapping, truncation, modulated and transposed convolutions, blur and the colour skip."""
+    device = request.getfixturevalue(on)
     torch.manual_seed(0)
-    cfg = tiny_stylegan2()
+    cfg = tiny_stylegan2(**over)
     fresh = S2.Generator(cfg)
     for layers in S2.noise_sites(fresh).values():
         for layer in layers:

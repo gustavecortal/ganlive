@@ -51,6 +51,15 @@ ganlive play --checkpoint runs/stylegan2/ffhq.pt --console
 The imported model runs without NVIDIA's custom CUDA kernels. To play it in the browser,
 convert `runs/stylegan2/ffhq.pt` as the [README](../README.md#bring-your-own-gan) shows.
 
+The browser player already offers it as
+[ganlive-ffhq](https://huggingface.co/gustavecortal/ganlive-ffhq). Downloaded, its engine
+folder plays on the desktop without PyTorch:
+
+```bash
+hf download gustavecortal/ganlive-ffhq --local-dir runs/ffhq
+ganlive play --checkpoint runs/ffhq/engine --console
+```
+
 ### FastGAN
 
 Load a checkpoint trained with [gantrain](https://github.com/gustavecortal/gantrain),
@@ -204,19 +213,21 @@ Measure your hardware with:
 ganlive latency --checkpoint runs/stylegan2/ffhq.pt
 ```
 
-Measured on a $350 Intel Arc A770 on 2026-10-09, with the backend and tuning ganlive chose at
-each model's first load (Direct3D 12 for lichen), before `ganlive tune`:
+Measured on a $350 Intel Arc A770 (FFHQ on 2026-10-13, the FastGANs on 2026-10-09), with the
+backend and tuning ganlive chose at each model's first load (Direct3D 12 for lichen, Vulkan for
+FFHQ), before `ganlive tune`:
 
 | Model | Native resolution | Frame time | FPS |
 |---|---|---|---|
-| StyleGAN2 FFHQ | 1024×1024 | 34.9 ms | 29 |
+| StyleGAN2 FFHQ | 1024×1024 | 24.2 ms | 41 |
 | FastGAN lichen, displayed at 1620×1080 | 3072×2048 | 9.6 ms | 104 |
 | FastGAN amber | 1536×1024 | 5.6 ms | 177 |
 
-In Edge on the same card, the browser player draws lichen at 87 fps and amber at 150 fps.
+In Edge on the same card, the browser player draws lichen at 87 fps, amber at 150 fps and
+FFHQ at 40 fps.
 
 These measure generation and frame preparation. On this card, `ganlive tune` brought the
-frame it times from 4.94 to 4.71 ms for amber and from 33.3 to 30.0 ms for FFHQ.
+frame it times from 4.94 to 4.71 ms for amber, and found nothing faster than FFHQ's defaults.
 
 Results depend on your model, hardware, and runtime.
 
