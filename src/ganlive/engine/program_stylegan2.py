@@ -265,10 +265,11 @@ def _conv(b: Builder, op: dict, src: str, dst: str) -> None:
     _channels(op)
     cout, h, w = op["cout"], op["h"], op["w"]
     side = 2 if h % 2 == 0 else 1
-    # Weights made f32 at load: on an A770 they took FFHQ's frame from 26.4 to 24.7 ms in Edge,
-    # and from 25.4 to 23.5 ms on Vulkan.
-    plan = direct.check({"by": side, "bx": side, "oct": 8 if cout % 8 == 0 else 4, "f32": True,
-                         **_override(b, op["name"])}, op["name"], cout, h, w)
+    # Weights made f32 at load by default: on an A770 they took FFHQ's frame from 26.4 to
+    # 24.7 ms in Edge, and from 25.4 to 23.5 ms on Vulkan. A plan says which weights it reads.
+    plan = _override(b, op["name"]) or {"f32": True}
+    plan = direct.check({"by": side, "bx": side, "oct": 8 if cout % 8 == 0 else 4, **plan},
+                        op["name"], cout, h, w)
     entries = [("P", "array<u32>", "P"), ("X", "array<u32>", src), ("Y", "array<u32>", dst),
                ("S", "array<f32>", "S"), ("D", "array<f32>", "D"), ("K", "array<f32>", "K")]
 
@@ -407,12 +408,14 @@ ${stores}
 }""", index=index, n=n, half=cout // 2, weight=op["weight"], taps=9 * cout, g=g, stores=stores),
            ["P", v], groups, load=True)
 
-    # Each frame: the styled 4x4 patch of every block, B^T d B, as f16 pairs [16][cin/2][blocks].
+    # Each frame: the 4x4 patch of every block, B^T d B, as f16 pairs [16][cin/2][blocks]. The
+    # styles scale it as the products read it, in f32, so that what is stored stays as small as
+    # the features.
     plane, cells = cin // 2 * blocks, h * w
     reads = "\n".join(
         f"  let v{y}{x} = y0 + {y} >= 0 && y0 + {y} < {h} && x0 + {x} >= 0 && x0 + {x} < {w};\n"
         f"  let d{y}{x} = select(vec2f(0.0), unpack2x16float(X[base + select(0u, u32(y0 + {y}) * {w}u"
-        f" + u32(x0 + {x}), v{y}{x})]), v{y}{x}) * sv;"
+        f" + u32(x0 + {x}), v{y}{x})]), v{y}{x});"
         for y in range(4) for x in range(4))
     stores = "\n".join(
         f"  Y[{p * plane}u + i] = pack2x16float("
@@ -420,29 +423,29 @@ ${stores}
         for p in range(16))
     n = plane
     groups, index = linear(n)
-    b.step(f"{name}.in", wgsl(storage([("X", "array<u32>"), ("S", "array<f32>"), ("Y", "array<u32>")]) + """
+    b.step(f"{name}.in", wgsl(storage([("X", "array<u32>"), ("Y", "array<u32>")]) + """
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let i = ${index};
   if (i >= ${n}u) { return; }
   let c2 = i / ${blocks}u; let blk = i % ${blocks}u;
   let y0 = 2 * i32(blk / ${bw}u) - 1; let x0 = 2 * i32(blk % ${bw}u) - 1;
-  let base = c2 * ${cells}u; let sv = ${sv};
+  let base = c2 * ${cells}u;
 ${reads}
 ${stores}
-}""", index=index, n=n, blocks=blocks, bw=bw, cells=cells, sv=_sv(op, "c2"), reads=reads,
-                                    stores=stores), [src, "S", "T"], groups)
+}""", index=index, n=n, blocks=blocks, bw=bw, cells=cells, reads=reads, stores=stores),
+           [src, "T"], groups)
 
     # The 16 products, `par` being which: A [blocks x cin] from T, B [cin x cout] from the kernels.
     plan = _wino_plan(b, op)
     S = plan["S"]
-    gather = (f"      let base = (par * {cin // 2}u + k / 2u) * {blocks}u;\n"
-              + "\n".join(f"      {{ let m = m4 + {i}u; if (m < {blocks}u) {{ let x = unpack2x16float(X[base + m]); "
+    gather = (f"      let base = (par * {cin // 2}u + k / 2u) * {blocks}u; let sv = {_sv(op, 'k / 2u')};\n"
+              + "\n".join(f"      {{ let m = m4 + {i}u; if (m < {blocks}u) {{ let x = unpack2x16float(X[base + m]) * sv; "
                           f"v0[{i}] = x.x; v1[{i}] = x.y; }} }}" for i in range(4)))
     bload = (f"      let q = ((par * {cin}u + k) * {cout}u + nn) / 2u; "
              f"Bw[e] = vec4f(unpack2x16float(V[q]), unpack2x16float(V[q + 1u]));")
     decl, bufs = bindings([("X", "array<u32>", "T"), ("Y", "array<vec4f>", "scratch"),
-                           ("V", "array<u32>", v)])
+                           ("V", "array<u32>", v), ("S", "array<f32>", "S")])
     code, groups = matmul(M=blocks, N=cout, K=cin, S=S, rm=plan["rm"], rn=plan["rn"], mats=("w",),
                           decl=decl, gather=gather, bload=bload, parts=16)
     b.step(f"{name}.mm", code, bufs, groups)
@@ -496,27 +499,37 @@ def _as_product(overrides: dict, op: dict) -> bool:
     return _tiles(op, M) and (M <= GEMM_MAX if forced is None else forced)
 
 
+#: The plans a matrix product tries: rows and columns a thread, and splits.
+PRODUCT_CHOICES = [{"rn": 2}, {"rm": 8}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}, {"S": 4},
+                   {"rn": 2, "S": 2}]
+#: The most blocks `ganlive tune` tries Winograd on: past them, its buffers outgrow what a
+#: device gives by default (128 MiB a binding).
+WINO_TRIED = 16384
+
+
 def plan_choices(manifest: dict) -> dict[str, list[dict]]:
     """Each step's plans worth trying on a new machine. A matrix product (by its name) tries
     rows and columns a thread and splits, a direct conv (by its layer's name) the tiles that
-    do not spill registers, with f32 weights and workgroup memory or without."""
+    do not spill registers, with f32 weights and workgroup memory or without, and a plain conv
+    that Winograd fits tries it on or off."""
     out = {}
     for op in manifest["ops"]:
         if op["op"] != "conv":
             continue
         if op["up"]:
-            products = _parities(op) if _tiles(op, 1) else []
-        elif _wino_fits(op):
-            out[op["name"]] = [{"wino": False}, {"wino": True}]
+            for g in _parities(op) if _tiles(op, 1) else []:
+                out[g["name"]] = PRODUCT_CHOICES
+            continue
+        # A plain conv's kernel and its plans share the layer's name: Winograd, or else a
+        # product or the direct conv, each with its plans.
+        others = PRODUCT_CHOICES if _as_product({}, op) else direct.CHOICES
+        if _as_wino({}, op):
+            out[op["name"]] = [{"wino": False}] + [{"wino": False, **o} for o in others]
             out[f"{op['name']}.mm"] = [{"rm": 8}, {"rn": 2}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}]
-            products = [_plain(op)] if _as_product({}, op) else []
+        elif _wino_fits(op) and op["h"] * op["w"] // 4 <= WINO_TRIED:
+            out[op["name"]] = [{"wino": True}, *others]
         else:
-            products = [_plain(op)] if _as_product({}, op) else []
-        for g in products:
-            out[g["name"]] = [{"rn": 2}, {"rm": 8}, {"rm": 8, "rn": 2}, {"S": 1}, {"S": 2}, {"S": 4},
-                              {"rn": 2, "S": 2}]
-        if not op["up"] and not products:
-            out[op["name"]] = direct.CHOICES
+            out[op["name"]] = others
     return out
 
 
