@@ -227,7 +227,7 @@ In Edge on the same card, the browser player draws lichen at 87 fps, amber at 15
 FFHQ at 40 fps.
 
 These measure generation and frame preparation. On this card, `ganlive tune` brought the
-frame it times from 4.94 to 4.71 ms for amber, and found nothing faster than FFHQ's defaults.
+frame it times from 4.94 to 4.71 ms for amber and from 23.5 to 23.4 ms for FFHQ.
 
 Results depend on your model, hardware, and runtime.
 
