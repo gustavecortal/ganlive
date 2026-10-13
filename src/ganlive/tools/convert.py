@@ -5,10 +5,8 @@ any GPU and in a browser, without PyTorch.
 
 The folder holds `weights.bin` (fp16) and `manifest.json`: the model's layers, its dials
 (measured here, drawn by the engine on this machine's GPU), and a probe of the picture PyTorch
-draws, which a backend must match before it is trusted. `program.json` holds the compute shaders
-compiled from it, for the browser runner, and for a StyleGAN2 `variants/` holds other kernels for
-the same weights, which a browser times on its own card the first time it plays the model.
-Converting needs PyTorch.
+draws, which a backend must match before it is trusted. `program.json` holds the compute shaders compiled from it, for the
+browser runner. Converting needs PyTorch.
 """
 from __future__ import annotations
 
@@ -16,8 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-from ganlive.checkpoints import PROGRAM, VARIANTS, WEIGHTS, checkpoint_for, slug_for
-from ganlive.engine.compile import browser_programs
+from ganlive.checkpoints import PROGRAM, WEIGHTS, checkpoint_for, slug_for
+from ganlive.engine.compile import compile_manifest
 from ganlive.files import size_mb, write_json
 from ganlive.tools import add_device, parser
 
@@ -43,11 +41,8 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
-    program, variants = browser_programs(manifest)
+    program = compile_manifest(manifest, browser=True)
     write_json(out / PROGRAM, program, indent=None)
-    for name, variant in variants.items():
-        (out / VARIANTS).mkdir(exist_ok=True)
-        write_json(out / VARIANTS / f"{name}.json", variant, indent=None)
     print(f"{checkpoint.name} -> {out}: {program['width']}x{program['height']}, "
           f"{len(program['steps'])} steps, {size_mb(out / WEIGHTS):.1f} MB of weights, "
           f"{len((program['dials']['directions'] or {}).get('basis', []))} directions, "

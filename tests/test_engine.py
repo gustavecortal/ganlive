@@ -11,7 +11,6 @@ from ganlive.engine.compile import compile_manifest
 from ganlive.engine.convert_fastgan import manifest_of, prepared, probe
 from ganlive.engine.convert_stylegan2 import stylegan2_manifest, stylegan2_net
 from ganlive.engine.probe import PROBE_LEVELS
-from ganlive.engine.program_stylegan2 import browser_variants
 from ganlive.levels import LEVEL
 from ganlive.models import stylegan2 as S2
 from ganlive.models.common import host_latent
@@ -116,11 +115,9 @@ def test_a_converted_fastgan_draws_what_pytorch_draws_at_every_setting(device, p
 WIDER = {"channel_base": 512}
 
 
-@pytest.mark.parametrize(("over", "on", "kernels"),
-                         [({}, "device", None), (WIDER, "gpu", None), (WIDER, "gpu", "f16")],
-                         ids=["direct", "winograd-and-products", "half-precision"])
-def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(request, tmp_path, over, on,
-                                                                          kernels):
+@pytest.mark.parametrize(("over", "on"), [({}, "device"), (WIDER, "gpu")],
+                         ids=["direct", "winograd-and-products"])
+def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(request, tmp_path, over, on):
     """Mapping, truncation, modulated and transposed convolutions, blur and the colour skip."""
     device = request.getfixturevalue(on)
     torch.manual_seed(0)
@@ -132,10 +129,7 @@ def test_a_converted_stylegan2_draws_what_pytorch_draws_at_every_setting(request
     S2.save(tmp_path / "tiny.pt", cfg, fresh.state_dict())
     net, settings = stylegan2_net(tmp_path / "tiny.pt")
     manifest, blob = stylegan2_manifest(net, list(settings.names))
-    plans = browser_variants(manifest)[kernels] if kernels else None
-    if plans and "shader-f16" not in device.features:
-        pytest.skip("this card has no shader-f16")
-    model = Model(device, compile_manifest(manifest, plans, output="f32"), bytes(blob.data))
+    model = Model(device, compile_manifest(manifest, output="f32"), bytes(blob.data))
     for seed, k in enumerate((np.ones(len(settings.names)), np.linspace(0.5, 1.5, len(settings.names)))):
         z = host_latent(cfg.z_dim, seed=seed + 1)
         settings.write[:] = k
