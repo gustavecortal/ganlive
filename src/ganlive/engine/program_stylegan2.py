@@ -720,12 +720,12 @@ def _torgb(b: Builder, op: dict, src: str, prev: str | None, dst: str) -> None:
     so far, blurred up 2x when there is any."""
     cin, h, w = op["cin"], op["h"], op["w"]
     plane = h * w
-    acc = []
-    for c2 in range(cin // 2):
-        e = op["weight"] + 2 * c2 * 3
-        acc.append(f"  {{ let n = unpack2x16float(X[{c2 * plane}u + px]) * {_sv(op, f'{c2}u')};\n"
-                   f"    y += n.x * vec3f(w1({e}u), w1({e + 1}u), w1({e + 2}u))"
-                   f" + n.y * vec3f(w1({e + 3}u), w1({e + 4}u), w1({e + 5}u)); }}")
+    # A loop over channel pairs: unrolled, a 512-channel block took Edge seconds to compile.
+    acc = (f"  for (var c2 = 0u; c2 < {cin // 2}u; c2++) {{\n"
+           f"    let n = unpack2x16float(X[c2 * {plane}u + px]) * {_sv(op, 'c2')};\n"
+           f"    let e = {op['weight']}u + 6u * c2;\n"
+           f"    y += n.x * vec3f(w1(e), w1(e + 1u), w1(e + 2u)) + n.y * vec3f(w1(e + 3u), w1(e + 4u), w1(e + 5u));\n"
+           f"  }}")
     clamp = op["clamp"]
     up = []
     if prev is not None:
@@ -755,7 +755,7 @@ ${acc}
 ${clamp}
 ${up}
   Y[px] = y.x; Y[${plane}u + px] = y.y; Y[${plane2}u + px] = y.z;
-}""", WG=WG, w=w, h=h, bias=op["bias"], acc="\n".join(acc), plane=plane, plane2=2 * plane,
+}""", WG=WG, w=w, h=h, bias=op["bias"], acc=acc, plane=plane, plane2=2 * plane,
                 clamp=f"  y = clamp(y, vec3f({-clamp}), vec3f({clamp}));" if clamp else "",
                 up="\n".join(up))
     b.step(op["name"], code, binds, [math.ceil(w / WG), math.ceil(h / WG), 1])
