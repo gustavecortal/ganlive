@@ -125,6 +125,8 @@ export class Player {
     this.models.push(entry);
     if (this.index < 0) {
       this.lag = await reportLag(this.device);
+      // Stopped meanwhile, as when a phone takes its graphics card back: the model is gone.
+      if (!this.models.includes(entry)) throw new Error("The player stopped while the model loaded.");
       this.runner = new PresetRunner(DEFAULT, this.features.channelOf(), this.fps, entry.layout, this.features.n);
       this.walk = new SlerpWalk(entry.nz, this.runner.walk);
       this.use(0);
