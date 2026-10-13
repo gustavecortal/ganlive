@@ -77,6 +77,10 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
       output: buffers.out, height: program.height, width: program.width, format: program.output,
       screen: program.screen, steps, destroy,
       setLatent: (z) => device.queue.writeBuffer(buffers.Z, 0, z),
+      // A StyleGAN2 is steered in style space: the direction push, `pushWidth` floats, goes to
+      // its own buffer. 0 for a model whose directions are pushed in the latent.
+      pushWidth: buffers.push ? program.buffers.push.size / 4 : 0,
+      setPush: (p) => device.queue.writeBuffer(buffers.push, 0, p),
       setSettings: (k) => device.queue.writeBuffer(buffers.K, 0, k),
       /** Records one frame. With `timestamps` (a GPUQuerySet), one timed pass per step,
        *  writing queries from 2 * `first` on, so that one set can time many frames. */

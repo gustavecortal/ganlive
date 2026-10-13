@@ -7,7 +7,7 @@ import { Layout, readout, Settings } from "../src/ganlive/web/dials.mjs";
 import { parseNotes, parseTrackChannels } from "../src/ganlive/web/kit.mjs";
 import { EncoderMap, formatControls, NoteFeatures, Nrpn, parseControls, parsePressure, PressureMap } from "../src/ganlive/web/midi.mjs";
 import { fromDict, PresetRunner, toDict } from "../src/ganlive/web/presets.mjs";
-import { seededNoise, SlerpWalk } from "../src/ganlive/web/walk.mjs";
+import { seededNoise, SlerpWalk, stylePush } from "../src/ganlive/web/walk.mjs";
 
 const cases = JSON.parse(readFileSync(0, "utf8"));
 const layout = new Layout(cases.knobs);
@@ -23,6 +23,8 @@ out.walk = cases.walk.map(([nz, cfg, rows, amounts, beats]) => {
   const walk = new SlerpWalk(nz, walkConfig({ ...cfg, directions: rows.map((r) => Float32Array.from(r)), amounts }));
   return beats.map((b) => [...walk.latent(b)]);
 });
+out.stylePush = cases.stylePush.map(([rows, amounts, width]) =>
+  [...stylePush(rows.map((r) => Float32Array.from(r)), amounts, width)]);
 
 // A preset played: note-ons and knobs in time, the surface and settings read each frame.
 out.played = (() => {

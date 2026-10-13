@@ -116,6 +116,19 @@ export class SlerpWalk {
   }
 }
 
+/** A frame's push for a model steered in style space (`model.pushWidth` floats, see runner.mjs):
+ *  the `width`-wide direction rows, each times its amount, summed. */
+export function stylePush(rows, amounts, width) {
+  const out = new Float32Array(width);
+  const n = Math.min(amounts.length, rows?.length ?? 0);
+  for (let r = 0; r < n; r++) {
+    const amount = amounts[r];
+    if (!amount || rows[r].length !== width) continue;
+    for (let i = 0; i < width; i++) out[i] += amount * rows[r][i];
+  }
+  return out;
+}
+
 /** `a * z0 + b * z1`, then each direction row pushed by its amount: a frame's latent, from what
  *  a take logs of it as much as from the walk. */
 export function compose(z0, a, z1, b, rows, amounts) {

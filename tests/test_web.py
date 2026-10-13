@@ -32,6 +32,7 @@ from ganlive.walk import SlerpWalk
 NODE = shutil.which("node")
 NZ = 8
 ROWS = np.linalg.qr(np.random.default_rng(3).standard_normal((NZ, 3)))[0].T.astype(np.float32)
+STYLE_ROWS = np.random.default_rng(4).standard_normal((3, 3 * NZ)).astype(np.float32)
 PROGRAM = {"settings": list(fastgan_dials.SETTINGS_WRITTEN),
            "dials": {"directions": {"basis": ROWS.tolist(), "levels": [30.0, 20.0, 12.0],
                                     "report": ""}, "measured": {}}}
@@ -121,6 +122,8 @@ def test_the_web_player_plays_as_the_desktop_does():
         "positions": positions,
         "noise": [[16, 12345], [16, 4294967295]],
         "walk": [[NZ, cfg, ROWS.tolist(), amounts, beats] for cfg, amounts, beats in walks],
+        # A StyleGAN2's directions are style-wide (bands x w_dim), pushed into its own buffer.
+        "stylePush": [[STYLE_ROWS.tolist(), amounts, STYLE_ROWS.shape[1]] for amounts in ([0.5, 0.0, -1.25], [0, 0, 0])],
         "played": PLAYED,
         "nrpn": [[0, 99, 1], [0, 98, 3], [0, 6, 64], [0, 38, 5], [1, 6, 9], [0, 7, 100]],
         "controls": "n1.3=dir1,16=noise,3:17=se_256", "notes": "36=BD,38=SD", "channels": "1-12",
@@ -142,6 +145,10 @@ def test_the_web_player_plays_as_the_desktop_does():
         walk = SlerpWalk(NZ, py)
         for b, z in zip(beats, js, strict=True):
             assert np.allclose(walk.latent(b).reshape(-1), z, atol=1e-4)
+    for (_, amounts, _), js in zip(cases["stylePush"], got["stylePush"], strict=True):
+        into = np.zeros((3, NZ), np.float32)
+        SlerpWalk(NZ, WalkConfig(directions=STYLE_ROWS, amounts=tuple(amounts), push_into=into)).latent(1.0)
+        assert np.allclose(into.reshape(-1), js, atol=1e-5)
     assert close(played(layout, frozenset(live)), got["played"])
 
     controls = parse_controls(cases["controls"])

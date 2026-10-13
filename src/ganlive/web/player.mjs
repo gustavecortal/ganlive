@@ -10,7 +10,9 @@ import { NoteFeatures } from "./midi.mjs";
 import { DEFAULT, PresetRunner } from "./presets.mjs";
 import { loadModel, screen } from "./runner.mjs";
 import { MOST_LOGGED } from "./take.mjs";
-import { SlerpWalk } from "./walk.mjs";
+import { SlerpWalk, stylePush } from "./walk.mjs";
+
+const equal = (a, b) => a === b || (!!a && !!b && a.every((v, i) => v === b[i]));
 
 /** The most the clock moves in one frame, so a stalled frame does not jump the picture. */
 const LONGEST_STEP_S = 0.25;
@@ -208,7 +210,8 @@ export class Player {
     const dt = this.update(m, now);
     // The card is behind: skip rather than queue, which would hold up the page around it.
     if (this.pending >= DEPTH + Math.ceil(this.lag / Math.max(dt * 1000, 4))) return false;
-    const same = !this.redraw && !m.settings.changed && this.shown && this.shown.every((v, i) => v === this.latent[i]);
+    const same = !this.redraw && !m.settings.changed && this.shown && equal(this.shown, this.latent)
+      && equal(this.shownPush, this.push);
     if (same) return false;
     this.draw(m);
     return true;
@@ -225,6 +228,8 @@ export class Player {
     this.runner.apply(features.since, features.features(), m.settings);
     this.clock.advance(Math.min(dt, LONGEST_STEP_S));
     this.latent = this.walk.latent(this.clock.beats);
+    const { directions, amounts } = this.walk.cfg;
+    this.push = m.model.pushWidth ? stylePush(directions, amounts, m.model.pushWidth) : null;
     return dt;
   }
 
@@ -232,7 +237,9 @@ export class Player {
   draw(m) {
     this.redraw = false;
     this.shown = this.latent;
+    this.shownPush = this.push;
     m.model.setLatent(this.latent);
+    if (this.push) m.model.setPush(this.push);
     if (m.settings.changed) {
       m.model.setSettings(m.settings.sent);
       m.settings.changed = false;

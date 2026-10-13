@@ -9,7 +9,7 @@
 // on disk as it comes (the site's private storage). The desktop's takes are `record/video.py`.
 
 import { screen } from "./runner.mjs";
-import { compose } from "./walk.mjs";
+import { compose, stylePush } from "./walk.mjs";
 
 /** Frames a second of every take: drawn after the performance, so any card records them all. */
 export const TAKE_FPS = 60;
@@ -462,6 +462,8 @@ async function draw(device, take, log, { kind, config, quantizer }, file, [width
         const slot = ring[frame % RING];
         await slot.free;
         entry.model.setLatent(compose(z0, a, z1, b, entry.directions, pushes));
+        const width = entry.model.pushWidth;
+        if (width) entry.model.setPush(stylePush(entry.directions, pushes, width));
         // The model's buffers are the page's too: its own settings go back after the frame.
         if (settings) entry.model.setSettings(settings);
         const commands = device.createCommandEncoder();
