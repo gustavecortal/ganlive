@@ -2,7 +2,8 @@
 output pixels and `oct` channels of every weight set, so that every weight read serves all of
 the thread's pixels. A plan may add "f32" (weights made f32 at load, read without converting)
 and "slm" (the workgroup reads the input block it needs into workgroup memory once, rather
-than each thread reading its neighbours from the buffer)."""
+than each thread reading its neighbours from the buffer), or "f16" (the input and the fp16
+weights multiplied in half precision, which needs a device with `shader-f16`)."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ CHOICES = [{"by": by, "bx": bx, "oct": oct, **extra}
            for extra in ({}, {"f32": True}, {"slm": True}, {"f32": True, "slm": True})]
 
 
-def check(plan: dict, name: str, cout: int, h: int, w: int, keys=("by", "bx", "oct", "f32", "slm")) -> dict:
+def check(plan: dict, name: str, cout: int, h: int, w: int, keys=("by", "bx", "oct", "f32", "slm", "f16")) -> dict:
     """`plan` if its tile fits `cout` channels of an h x w map, refused otherwise."""
     if (not set(plan) <= set(keys) or plan["oct"] % 4 or cout % plan["oct"]
             or h % plan["by"] or w % plan["bx"]):
@@ -36,6 +37,13 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
     the WGSL that stores them; `scale`, a vec2f expression of `c2`, scales an input pair."""
     BY, BX, oct = plan["by"], plan["bx"], plan["oct"]
     nv, f32w, tiled = oct // 4, plan.get("f32", False), plan.get("slm", False)
+    half = plan.get("f16", False)
+    if half and f32w:
+        raise ValueError(f"{step}: f16 arithmetic reads the fp16 weights, not f32 ones")
+    # In f16 the input and the weights are read as the fp16 pairs they are stored as: X and
+    # H (the weights again) are declared array<vec2<f16>>.
+    vec2, unpack = ("vec2<f16>", "") if half else ("vec2f", "unpack2x16float")
+    zero = "vec2<f16>(0.0)" if half else "0u"
     pix = [(dy, dx) for dy in range(BY) for dx in range(BX)]
     grid = [(r, c) for r in range(-1, BY + 1) for c in range(-1, BX + 1)]
     each = [(p, j) for p in range(len(pix)) for j in range(nv)]
@@ -64,7 +72,7 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
                  "  workgroupBarrier();",
                  f"  for (var e = li; e < {CH * RY * RX}u; e += {WG * WG}u) {{",
                  f"    let y = y0 + i32((e % {RY * RX}u) / {RX}u); let x = x0 + i32(e % {RX}u);",
-                 f"    F[e] = select(0u, X[(c0 + e / {RY * RX}u) * {h * w}u + u32(y) * {w}u + u32(x)],",
+                 f"    F[e] = select({zero}, X[(c0 + e / {RY * RX}u) * {h * w}u + u32(y) * {w}u + u32(x)],",
                  f"                  y >= 0 && y < {h} && x >= 0 && x < {w});",
                  "  }",
                  "  workgroupBarrier();",
@@ -77,17 +85,22 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
                 f"    let we = c2 * {18 * cout}u + co; let wodd = we + {9 * cout}u;")
     sv = ""
     if scale:
-        body.append(f"    let sv = {scale};")
+        body.append(f"    let sv = {vec2}({scale});" if half else f"    let sv = {scale};")
         sv = " * sv"
     for r, c in grid:
         if tiled:
             dy = f"+ {r}" if r >= 0 else f"- {-r}u"
             dx = f"+ {c}" if c >= 0 else f"- {-c}u"
-            read = f"unpack2x16float(F[base + (ly {dy}) * {RX}u + lx {dx}])"
+            read = f"{unpack}(F[base + (ly {dy}) * {RX}u + lx {dx}])"
         else:
-            read = f"select(vec2f(0.0), unpack2x16float(X[base + i{nb(r, c)}]), v{nb(r, c)})"
+            read = f"select({vec2}(0.0), {unpack}(X[base + i{nb(r, c)}]), v{nb(r, c)})"
         body.append(f"    let {nb(r, c)} = {read}{sv};")
     names = list(mats)
+    # In f16, each channel pair's nine taps sum in half precision, then join the f32 sum:
+    # twice the rate on cards with packed f16, and no sum of thousands of terms in f16.
+    acc = (lambda x, p, j: f"h{x}{p}_{j}") if half else (lambda x, p, j: f"{x}{p}_{j}")
+    if half:
+        body += [f"    var h{x}{p}_{j} = vec4<f16>(0.0);" for p, j in each for x in mats]
     for t in range(9):
         ky, kx = divmod(t, 3)
         for j in range(nv):
@@ -97,13 +110,16 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
                                  for i, x in enumerate(names))
             else:
                 o = f"{t * cout + 4 * j}u"
-                loads = " ".join(f"let {x}e = w4({mats[x]}u + we + {o}); let {x}o = w4({mats[x]}u + wodd + {o});"
+                w4 = "w4h" if half else "w4"
+                loads = " ".join(f"let {x}e = {w4}({mats[x]}u + we + {o}); let {x}o = {w4}({mats[x]}u + wodd + {o});"
                                  for x in names)
             body.append(f"    {{ {loads}")
             for p, (dy, dx) in enumerate(pix):
                 n = nb(dy + ky - 1, dx + kx - 1)
-                body.append("      " + " ".join(f"{x}{p}_{j} += {n}.x * {x}e + {n}.y * {x}o;" for x in names))
+                body.append("      " + " ".join(f"{acc(x, p, j)} += {n}.x * {x}e + {n}.y * {x}o;" for x in names))
             body.append("    }")
+    if half:
+        body += [f"    {x}{p}_{j} += vec4f(h{x}{p}_{j});" for p, j in each for x in mats]
     body.append("  }")
     if tiled:
         body += ["  }", f"  if (oy >= {h}u || ox >= {w}u) {{ return; }}"]
@@ -113,18 +129,28 @@ def conv3x3(b: Builder, *, step: str, cin: int, cout: int, h: int, w: int, plan:
         body.append(finish({x: f"{x}{p}_{j}" for x in names}) + " }")
     if f32w:
         entries = [*entries, ("W", "array<vec4f>", f32_weights(b, step, mats, cin, cout))]
-    shared = f"var<workgroup> F: array<u32, {CH * RY * RX}>;" if tiled else ""
+    if half:
+        entries = [(n, "array<vec2<f16>>" if n == "X" else kind, buf) for n, kind, buf in entries]
+        entries.append(("H", "array<vec2<f16>>", "P"))
+    shared = f"var<workgroup> F: array<{vec2 if half else 'u32'}, {CH * RY * RX}>;" if tiled else ""
     decl, bufs = bindings(entries)
-    code = wgsl(decl + """
+    code = wgsl(("enable f16;\n" if half else "") + decl + """
 ${HELPERS}
+${half}
 ${helpers}
 ${shared}
 @compute @workgroup_size(${WG}, ${WG}, 1)
 fn main(@builtin(global_invocation_id) id: vec3u, @builtin(workgroup_id) wg: vec3u,
         @builtin(local_invocation_id) lid: vec3u, @builtin(local_invocation_index) li: u32) {
 ${body}
-}""", WG=WG, body="\n".join(body), shared=shared, helpers=helpers)
+}""", WG=WG, body="\n".join(body), shared=shared, helpers=helpers, half=W4H if half else "")
     b.step(step, code, bufs, [math.ceil(w / BX / WG), math.ceil(h / BY / WG), cout // oct])
+
+
+#: Four fp16 weights at element offset `e` (even) of H, the weights read as fp16 pairs.
+W4H = """
+fn w4h(e: u32) -> vec4<f16> { let i = e >> 1u; return vec4<f16>(H[i], H[i + 1u]); }
+"""
 
 
 def f32_weights(b: Builder, key: str, mats: dict[str, int], cin: int, cout: int) -> str:

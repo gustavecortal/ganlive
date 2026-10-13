@@ -10,12 +10,20 @@
 const FORMAT = "ganlive-engine/1";
 
 /**
- * `weights`: an ArrayBuffer, or a fetch Response streamed straight into GPU memory
- * (`onProgress(bytes)` reports it). `cache`: a Map of compiled pipelines to share between loads.
+ * `weights`: an ArrayBuffer, a fetch Response streamed straight into GPU memory
+ * (`onProgress(bytes)` reports it), or the `weights` buffer of a model already loaded from the
+ * same weights, copied on the card. `cache`: a Map of compiled pipelines to share between loads.
  * `onStage(name)` is told when "download" and then "compile" begin.
+ * @param {GPUDevice} device
+ * @param {any} program
+ * @param {ArrayBuffer | Response | GPUBuffer} weights
+ * @param {{cache?: Map<string, Promise<GPUComputePipeline>>, onProgress?: (bytes: number) => void,
+ *   onStage?: (stage: string) => void}} [options]
  */
 export async function loadModel(device, program, weights, { cache = new Map(), onProgress, onStage } = {}) {
   if (program.format !== FORMAT) throw new Error(`a ${program.format} program; this runner plays ${FORMAT}`);
+  const missing = (program.features ?? []).filter((f) => !device.features.has(f));
+  if (missing.length) throw new Error(`this program needs ${missing.join(", ")}, which this graphics card lacks`);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
   const limit = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize);
   const buffers = {};
@@ -29,7 +37,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
         throw new Error(`${name}: a ${Math.round(spec.size / 2 ** 20)} MiB buffer is over this ` +
           `device's ${Math.round(limit / 2 ** 20)} MiB limit; request higher limits or use a smaller model`);
       }
-      const streamed = spec.init === "weights" && !(weights instanceof ArrayBuffer);
+      const streamed = spec.init === "weights" && weights instanceof Response;
       const b = buffers[name] = device.createBuffer({ size: spec.size, usage, mappedAtCreation: streamed });
       if (spec.init === "weights") await upload(b, spec.size, weights);
       else if (spec.init === "ones") device.queue.writeBuffer(b, 0, new Float32Array(spec.size / 4).fill(1));
@@ -69,7 +77,7 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
     device.queue.submit([once.finish()]);
 
     return {
-      output: buffers.out, height: program.height, width: program.width, format: program.output,
+      output: buffers.out, weights: buffers.P, height: program.height, width: program.width, format: program.output,
       screen: program.screen, steps, destroy,
       setLatent: (z) => device.queue.writeBuffer(buffers.Z, 0, z),
       setSettings: (k) => device.queue.writeBuffer(buffers.K, 0, k),
@@ -97,6 +105,13 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
   }
 
   async function upload(b, size, source) {
+    if (source instanceof GPUBuffer) {
+      if (source.size !== size) throw new Error(`weights: ${source.size} bytes, the program expects ${size}`);
+      const copy = device.createCommandEncoder();
+      copy.copyBufferToBuffer(source, 0, b, 0, size);
+      device.queue.submit([copy.finish()]);
+      return;
+    }
     if (source instanceof ArrayBuffer) {
       if (source.byteLength !== size) throw new Error(`weights: ${source.byteLength} bytes, the program expects ${size}`);
       device.queue.writeBuffer(b, 0, source);

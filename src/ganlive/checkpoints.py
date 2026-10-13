@@ -13,6 +13,8 @@ MANIFEST = "manifest.json"
 WEIGHTS = "weights.bin"
 #: The compiled shaders `ganlive convert` also writes, for the browser runner.
 PROGRAM = "program.json"
+#: The folder beside it holding the program's kernel variants, one program file each.
+VARIANTS = "variants"
 #: The suffix of the engine model a checkpoint is converted into, beside it, at load.
 ENGINE_SUFFIX = ".engine"
 

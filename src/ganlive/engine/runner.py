@@ -24,7 +24,7 @@ import wgpu
 
 from ganlive.checkpoints import MANIFEST, WEIGHTS
 from ganlive.engine.codegen import FORMAT
-from ganlive.engine.compile import compile_manifest
+from ganlive.engine.compile import F16, compile_manifest
 from ganlive.engine.probe import PROBE_LEVELS, probe_error
 from ganlive.engine.stamp import code_hash
 from ganlive.files import remember
@@ -62,6 +62,9 @@ class Model:
                  deadline: float | None = None) -> None:
         if program.get("format") != FORMAT:
             raise ValueError(f"a {program.get('format')!r} program; this ganlive plays {FORMAT!r}")
+        missing = [f for f in program.get("features", ()) if f not in device.features]
+        if missing:
+            raise ValueError(f"this program needs {', '.join(missing)}, which this device lacks")
         if len(weights) != program["buffers"]["P"]["size"]:
             raise ValueError(f"the weights are {len(weights)} bytes and the program expects "
                              f"{program['buffers']['P']['size']}: they come from different conversions")
@@ -412,5 +415,5 @@ def _device(adapter):
     """A device with the adapter's largest buffers: a 3072x2048 layer is over the defaults."""
     limits = {k: adapter.limits[k] for k in (
         "max-buffer-size", "max-storage-buffer-binding-size", "max-storage-buffers-per-shader-stage")}
-    features = [MAPPABLE] if MAPPABLE in adapter.features else []
+    features = [f for f in (MAPPABLE, F16) if f in adapter.features]
     return adapter.request_device_sync(required_limits=limits, required_features=features)

@@ -530,6 +530,22 @@ def plan_choices(manifest: dict) -> dict[str, list[dict]]:
     return out
 
 
+def browser_variants(manifest: dict) -> dict[str, dict]:
+    """The kernels a browser times against the defaults on its own card, by name: what the
+    fastest is depends on the GPU, so each card chooses (`player.mjs`, `tryKernels`). Without
+    Winograd, the direct conv with fp16 weights or in half precision, and taller products."""
+    convs = [op for op in manifest["ops"] if op["op"] == "conv"]
+    plain = [op for op in convs if not op["up"]]
+    direct_convs = [op["name"] for op in plain if not _as_wino({}, op) and not _as_product({}, op)]
+    tile = {"by": 2, "bx": 2, "oct": 8}
+    return {
+        "nowino": {op["name"]: {"wino": False} for op in plain if _as_wino({}, op)},
+        "fp16w": {n: tile for n in direct_convs},
+        "f16": {n: {**tile, "f16": True} for n in direct_convs},
+        "rm8": {g["name"]: {"rm": 8} for op in convs if op["up"] and _tiles(op, 1) for g in _parities(op)},
+    }
+
+
 def _scratch(b: Builder, op: dict) -> int:
     """The partial sums this layer's largest matrix product keeps. Winograd's 16 always keep them."""
     if op["up"]:

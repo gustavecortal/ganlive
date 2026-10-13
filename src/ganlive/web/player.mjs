@@ -27,7 +27,9 @@ export async function gpu() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU found no graphics card to use.");
   const { maxBufferSize, maxStorageBufferBindingSize, maxStorageBuffersPerShaderStage } = adapter.limits;
-  return adapter.requestDevice({ requiredLimits: { maxBufferSize, maxStorageBufferBindingSize, maxStorageBuffersPerShaderStage } });
+  // Half precision where the card has it, for a program that computes in it.
+  const requiredFeatures = adapter.features.has("shader-f16") ? ["shader-f16"] : [];
+  return adapter.requestDevice({ requiredFeatures, requiredLimits: { maxBufferSize, maxStorageBufferBindingSize, maxStorageBuffersPerShaderStage } });
 }
 
 /** How late this browser says work is done, in ms: at once in Chrome and Safari, on a 100 ms
@@ -43,11 +45,26 @@ async function reportLag(device) {
   return least;
 }
 
+/** Compiled pipelines by shader code, one map per device: a model's kernel variants share
+ *  most of their shaders, so trying one compiles only what differs. */
+const pipelineCaches = new WeakMap();
+const pipelinesOf = (device) => pipelineCaches.get(device) ?? pipelineCaches.set(device, new Map()).get(device);
+
+/** What a card's choice of kernels is remembered under: the model, the conversion it comes
+ *  from, and the card. */
+function kernelKey(device, name, program) {
+  const card = device.adapterInfo ?? {};
+  return [name, program.stamp?.checkpoint, program.stamp?.made_by,
+    card.vendor, card.architecture, card.device, card.description].join("|");
+}
+
 /** One model ready to play: its program (`base` + program.json) and weights, its dials, and
- *  its latent directions. `onStage` is told "download", "compile" and "draw" as each begins:
- *  the first frame is drawn here, since some drivers finish a pipeline only when it first
- *  runs (in Firefox, lichen's first frames took 300 ms each). */
-export async function loadPlayable(device, base, name, { onProgress, onStage, format = navigator.gpu.getPreferredCanvasFormat() } = {}) {
+ *  its latent directions. `kernels` (`{get(key), set(key, value)}`) remembers which of the
+ *  program's kernel variants this card draws fastest (`Player.tryKernels`), and that one is
+ *  loaded. `onStage` is told "download", "compile" and "draw" as each begins: the first frame
+ *  is drawn here, since some drivers finish a pipeline only when it first runs (in Firefox,
+ *  lichen's first frames took 300 ms each). */
+export async function loadPlayable(device, base, name, { onProgress, onStage, kernels = null, format = navigator.gpu.getPreferredCanvasFormat() } = {}) {
   const get = async (file) => {
     let got;
     try {
@@ -58,9 +75,17 @@ export async function loadPlayable(device, base, name, { onProgress, onStage, fo
     if (!got.ok) throw new Error(`The model did not download (${file}: HTTP ${got.status}).`);
     return got;
   };
-  const program = await (await get("program.json")).json();
+  let program = await (await get("program.json")).json();
   if (!program.knobs || !program.screen) throw new Error(`${name}: this program predates the web player; convert it again`);
-  const model = await loadModel(device, program, await get("weights.bin"), { onProgress, onStage });
+  const key = kernelKey(device, name, program);
+  let kernel = kernels?.get(key);
+  if (kernel && program.variants?.includes(kernel)) {
+    // The variant this card chose before. Gone or unreadable, the defaults play.
+    const variant = await get(`variants/${kernel}.json`).then((r) => r.json()).catch(() => null);
+    if (variant) program = { ...variant, variants: program.variants };
+    else kernel = undefined;
+  }
+  const model = await loadModel(device, program, await get("weights.bin"), { onProgress, onStage, cache: pipelinesOf(device) });
   // The first frame, drawn as the canvas will draw it, so the screen's pipeline is ready too.
   onStage?.("draw");
   const onto = screen(device, model, format);
@@ -79,16 +104,41 @@ export async function loadPlayable(device, base, name, { onProgress, onStage, fo
     settings: new Settings(program.settings),
     directions: (found?.basis ?? []).map((row) => Float32Array.from(row)),
     levels: found?.levels ?? [],
-    onto,
+    onto, base, key,
+    kernel: kernel && program.variants?.includes(kernel) ? kernel : "default",
   };
+}
+
+/** Milliseconds a frame of `models`, timed in turns, each its best of two rounds of frames
+ *  long enough that a browser's late report of work done (100 ms in Firefox) hardly counts. */
+async function timeKernels(device, models) {
+  const frames = async (model, n) => {
+    const t = performance.now();
+    for (let i = 0; i < n; i++) {
+      const encoder = device.createCommandEncoder();
+      model.encode(encoder);
+      device.queue.submit([encoder.finish()]);
+    }
+    await device.queue.onSubmittedWorkDone();
+    return (performance.now() - t) / n;
+  };
+  const guess = await Promise.all(models.map(async (m) => (await frames(m, 2), frames(m, 3))))
+    .then((ms) => Math.max(...ms));
+  const n = Math.min(30, Math.max(4, Math.ceil(400 / guess)));
+  const best = models.map(() => Infinity);
+  for (let round = 0; round < 2; round++)
+    for (const [i, m] of models.entries()) best[i] = Math.min(best[i], await frames(m, n));
+  return best;
 }
 
 /** The performance: one clock, one kit, one preset runner and walk, over the models loaded. */
 export class Player {
   /** `canvas` shows the picture; `positions` remembers each model's held dials across
    *  switches and visits (`{get(key), set(key, value)}`). */
-  constructor(device, canvas, { fps = 60, bpm = 130, notes = null, channels = null, positions = null } = {}) {
-    Object.assign(this, { device, canvas, fps, positions });
+  constructor(device, canvas, { fps = 60, bpm = 130, notes = null, channels = null, positions = null, kernels = null } = {}) {
+    Object.assign(this, { device, canvas, fps, positions, kernels });
+    /** While a variant's kernels are timed, nothing else is drawn. */
+    this.holding = false;
     this.clock = new MusicalClock(bpm);
     this.features = new NoteFeatures(12, channels, notes);
     this.models = [];
@@ -147,6 +197,50 @@ export class Player {
     this.fit();
   }
 
+  /** Time model `index`'s kernel variants on this card against those it plays, once per card
+   *  (`kernels` remembers the choice), and play the fastest: `{kernel, ms}`, the ms a frame by
+   *  kernel, or null when there were none to try or the model stopped playing meanwhile. Each
+   *  is built from the weights already on the card while the picture plays on, then the two
+   *  are timed while the picture holds, and the slower is freed. */
+  async tryKernels(index) {
+    const m = this.models[index];
+    const names = (m?.program.variants ?? []).filter((n) => n !== m.kernel);
+    if (!names.length || this.kernels?.get(m.key)) return null;
+    const playing = () => this.models[index] === m && this.index === index && !this.tap;
+    // Kept from the start, so that a trial cut short (a closed tab, a phone that takes its card
+    // back) is not run again: the kernels playing stay.
+    this.kernels?.set(m.key, m.kernel);
+    const ms = {};
+    for (const name of names) {
+      if (!playing()) return null;
+      const program = await fetch(`${m.base}variants/${name}.json`).then((r) => r.json()).catch(() => null);
+      if (!program || (program.features ?? []).some((f) => !this.device.features.has(f))) continue;
+      const model = await loadModel(this.device, program, m.model.weights, { cache: pipelinesOf(this.device) }).catch(() => null);
+      if (!model) continue;
+      if (!playing()) return model.destroy(), null;
+      model.setLatent(this.latent ?? new Float32Array(m.nz));
+      model.setSettings(m.settings.sent);
+      this.holding = true;
+      let now, next;
+      try {
+        [now, next] = await timeKernels(this.device, [m.model, model]);
+      } finally {
+        this.holding = false;
+      }
+      ms[m.kernel] = Math.min(ms[m.kernel] ?? Infinity, now);
+      ms[name] = next;
+      if (next < now * 0.97 && playing()) {
+        m.model.destroy();
+        Object.assign(m, { model, kernel: name, program: { ...program, variants: m.program.variants },
+          onto: screen(this.device, model, this.format) });
+        m.settings.changed = true;
+        this.redraw = true;
+      } else model.destroy();
+    }
+    this.kernels?.set(m.key, m.kernel);
+    return { kernel: m.kernel, ms };
+  }
+
   /** The canvas is shown `w` x `h` device pixels big: draw it at that many pixels, never
    *  more than the model draws. */
   show(w, h) {
@@ -188,7 +282,7 @@ export class Player {
    *  The newest is the one shown. */
   frame(now) {
     const m = this.current;
-    if (!m) return false;
+    if (!m || this.holding) return false;
     const take = this.tap;
     if (!take) return this.step(m, now);
     let logged = false;
