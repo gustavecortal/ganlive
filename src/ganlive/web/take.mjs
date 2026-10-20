@@ -462,8 +462,8 @@ async function draw(device, take, log, { kind, config, quantizer }, file, [width
         const slot = ring[frame % RING];
         await slot.free;
         entry.model.setLatent(compose(z0, a, z1, b, entry.directions, pushes));
-        const width = entry.model.pushWidth;
-        if (width) entry.model.setPush(stylePush(entry.directions, pushes, width));
+        const pushWidth = entry.model.pushWidth;
+        if (pushWidth) entry.model.setPush(stylePush(entry.directions, pushes, pushWidth));
         // The model's buffers are the page's too: its own settings go back after the frame.
         if (settings) entry.model.setSettings(settings);
         const commands = device.createCommandEncoder();
