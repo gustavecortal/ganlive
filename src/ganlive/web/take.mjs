@@ -500,6 +500,10 @@ async function draw(device, take, log, { kind, config, quantizer }, file, [width
     if (failed) throw failed;
     onProgress(1);
   } finally {
+    // Each model's latent, push and picture still hold the take's last frame. Its settings,
+    // marked unsent, make the player draw the live frame again, even while paused, so the
+    // picture it saves is the one on screen.
+    for (const used of screens.keys()) used.settings.changed = true;
     await chain;
     if (encoder.state !== "closed") encoder.close();
     for (const b of [out, shape, ...ring.map((r) => r.buffer)]) b.destroy();
