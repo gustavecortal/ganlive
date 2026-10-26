@@ -12,7 +12,7 @@ const FORMAT = "ganlive-engine/1";
 /**
  * `weights`: an ArrayBuffer, or a fetch Response streamed straight into GPU memory
  * (`onProgress(bytes)` reports it). `cache`: a Map of compiled pipelines to share between loads.
- * `onStage(name)` is told when "download" and then "compile" begin.
+ * `onStage(name)` reports "download", then "compile" while awaiting any remaining compilation.
  * @param {GPUDevice} device
  * @param {any} program
  * @param {ArrayBuffer | Response} weights
@@ -28,6 +28,20 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
 
   device.pushErrorScope("validation");
   try {
+    // Pipelines need the shader source, not the weights. Compile while their body streams.
+    const pipeline = (index) => {
+      const code = program.shaders[index];
+      if (!cache.has(code)) {
+        const p = device.createComputePipelineAsync({ layout: "auto",
+          compute: { module: device.createShaderModule({ code }), entryPoint: "main" } });
+        p.catch(() => cache.delete(code));
+        cache.set(code, p);
+      }
+      return cache.get(code);
+    };
+    const compiling = Promise.all([program.load, program.steps].map((specs) =>
+      Promise.all(specs.map((s) => pipeline(s.shader)))));
+    compiling.catch(() => {});  // a rejection during download is handled at the await below
     onStage?.("download");
     for (const [name, spec] of Object.entries(program.buffers)) {
       if (spec.size > limit) {
@@ -41,24 +55,12 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
       else if (spec.init === "words") device.queue.writeBuffer(b, 0, new Uint32Array(spec.words));
     }
     onStage?.("compile");
-    // Every shader compiles in parallel; identical sources share one compile.
-    const pipeline = (index) => {
-      const code = program.shaders[index];
-      if (!cache.has(code)) {
-        const p = device.createComputePipelineAsync({ layout: "auto",
-          compute: { module: device.createShaderModule({ code }), entryPoint: "main" } });
-        p.catch(() => cache.delete(code));
-        cache.set(code, p);
-      }
-      return cache.get(code);
-    };
-    const compiled = async (specs) => {
-      const pipelines = await Promise.all(specs.map((s) => pipeline(s.shader)));
-      return specs.map((s, i) => ({ name: s.name, groups: s.groups, pipeline: pipelines[i],
+    const [loadPipelines, stepPipelines] = await compiling;
+    const bind = (specs, pipelines) =>
+      specs.map((s, i) => ({ name: s.name, groups: s.groups, pipeline: pipelines[i],
         bind: device.createBindGroup({ layout: pipelines[i].getBindGroupLayout(0),
           entries: s.bind.map((n, j) => ({ binding: j, resource: { buffer: buffers[n] } })) }) }));
-    };
-    const [load, steps] = await Promise.all([compiled(program.load), compiled(program.steps)]);
+    const load = bind(program.load, loadPipelines), steps = bind(program.steps, stepPipelines);
     const error = await device.popErrorScope();
     if (error) throw new Error(error.message);
 

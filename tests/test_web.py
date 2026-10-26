@@ -30,6 +30,16 @@ from ganlive.presets import PresetRunner, from_dict, to_dict
 from ganlive.walk import SlerpWalk
 
 NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(NODE is None, reason="needs Node.js")
+def test_web_loading_overlaps_compilation_and_releases_failed_loads():
+    run = subprocess.run([NODE, "--test", str(Path(__file__).parents[1] /
+                         "src/ganlive/web/runner.test.mjs")],
+                         capture_output=True, text=True, check=False)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
 NZ = 8
 ROWS = np.linalg.qr(np.random.default_rng(3).standard_normal((NZ, 3)))[0].T.astype(np.float32)
 STYLE_ROWS = np.random.default_rng(4).standard_normal((3, 3 * NZ)).astype(np.float32)
