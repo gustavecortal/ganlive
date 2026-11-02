@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from ganlive.engine import int8
 from ganlive.engine.compile import compile_manifest
 from ganlive.engine.convert_fastgan import manifest_of, prepared, probe
 from ganlive.engine.convert_stylegan2 import stylegan2_manifest, stylegan2_net
@@ -156,3 +157,29 @@ def test_a_frame_reaches_a_still_and_the_recorder_as_the_model_drew_it(device):
     picture = picture.permute(2, 0, 1)[None]
     assert np.array_equal(stage.rgb_still(frame), to_bgra(picture).numpy()[..., 2::-1])
     assert np.array_equal(stage.nv12_bytes(frame), to_nv12(picture).numpy())
+
+
+def test_the_browser_8_bit_weights_draw_what_the_fp16_ones_draw(device, tmp_path):
+    """Every matrix the browser downloads at 8 bits (`engine.int8`) is where the manifest says,
+    and the picture it draws is within a level of the fp16 one, on average."""
+    steerable, cfg, names = _prepared()
+    fastgan = manifest_of(steerable, cfg, names), cfg.nz
+    torch.manual_seed(0)
+    s2 = tiny_stylegan2()
+    S2.save(tmp_path / "tiny.pt", s2, S2.Generator(s2).state_dict())
+    net, settings = stylegan2_net(tmp_path / "tiny.pt")
+    for (manifest, blob), nz in (fastgan, (stylegan2_manifest(net, list(settings.names)), s2.z_dim)):
+        table = int8.matrices(manifest)
+        assert table
+        fp16 = bytes(blob.data)
+        small = int8.quantize(fp16, table)
+        assert len(small) < len(fp16)
+        pictures = []
+        for weights in (fp16, int8.expand(small, table, len(fp16))):
+            model = Model(device, compile_manifest(manifest, output="f32"), weights)
+            model.set_latent(host_latent(nz, seed=1))
+            model.set_settings(np.ones(len(manifest["settings"]), np.float32))
+            model.frame()
+            pictures.append(model.read())
+        levels = np.abs(pictures[0] - pictures[1]) * LEVEL
+        assert levels.mean() < 1, levels.mean()           # within a level, on average

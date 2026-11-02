@@ -2,16 +2,22 @@
 // The shaders and the dispatches of a frame come from the program; this file only creates
 // buffers and pipelines and records frames. runner.py does the same through wgpu-py.
 //
-//   const model = await loadModel(device, program, await fetch("weights.bin"));
+//   const model = await loadModel(device, program, await fetch(weightsFile(program)));
 //   model.setLatent(z); model.setSettings(k);
 //   const enc = device.createCommandEncoder(); model.encode(enc); device.queue.submit([enc.finish()]);
 //   // model.output: packed RGBA8 pixels, height x width (f32 planes for an "f32" program)
 
+import { expander } from "./int8.mjs";
+
 const FORMAT = "ganlive-engine/1";
 
+/** The weights a browser downloads: the 8-bit ones a program names, or else weights.bin. */
+export const weightsFile = (program) => program.int8?.file ?? "weights.bin";
+
 /**
- * `weights`: an ArrayBuffer, or a fetch Response streamed straight into GPU memory
- * (`onProgress(bytes)` reports it). `cache`: a Map of compiled pipelines to share between loads.
+ * `weights`: the file `weightsFile` names, as an ArrayBuffer, or a fetch Response streamed
+ * straight into GPU memory (`onProgress(bytes)` reports it). 8-bit weights are expanded to fp16
+ * on the way (int8.mjs). `cache`: a Map of compiled pipelines to share between loads.
  * `onStage(name)` reports "download", then "compile" while awaiting any remaining compilation.
  * @param {GPUDevice} device
  * @param {any} program
@@ -108,25 +114,45 @@ export async function loadModel(device, program, weights, { cache = new Map(), o
   }
 
   async function upload(b, size, source) {
-    if (source instanceof ArrayBuffer) {
+    const streamed = !(source instanceof ArrayBuffer);
+    if (!streamed && !program.int8) {
       if (source.byteLength !== size) throw new Error(`weights: ${source.byteLength} bytes, the program expects ${size}`);
       device.queue.writeBuffer(b, 0, source);
       return;
     }
-    // A Response: streamed into the buffer, mapped at creation, so no copy of it sits in JS.
-    const view = new Uint8Array(b.getMappedRange());
-    let at = 0;
-    for (const reader = source.body.getReader(); ;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (at + value.byteLength > size) throw new Error(`weights: more than the ${size} bytes the program expects`);
-      view.set(value, at);
-      at += value.byteLength;
-      onProgress?.(at);
+    // A Response is streamed into the buffer, mapped at creation, so no copy of it sits in JS.
+    const target = streamed ? b.getMappedRange() : new ArrayBuffer(size);
+    const into = program.int8 ? expander(program.int8.matrices, size, target) : copier(size, target);
+    if (!streamed) into.push(new Uint8Array(source));
+    else {
+      let at = 0;
+      for (const reader = source.body.getReader(); ;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        into.push(value);
+        onProgress?.(at += value.byteLength);
+      }
     }
-    b.unmap();
-    if (at !== size) throw new Error(`weights: got ${at} bytes, the program expects ${size}`);
+    into.done();
+    if (streamed) b.unmap();
+    else device.queue.writeBuffer(b, 0, target);
   }
+}
+
+/** Copies fp16 weights as they come, as `expander` expands 8-bit ones. */
+function copier(size, target) {
+  const view = new Uint8Array(target);
+  let at = 0;
+  return {
+    push(chunk) {
+      if (at + chunk.byteLength > size) throw new Error(`weights: more than the ${size} bytes the program expects`);
+      view.set(chunk, at);
+      at += chunk.byteLength;
+    },
+    done() {
+      if (at !== size) throw new Error(`weights: got ${at} bytes, the program expects ${size}`);
+    },
+  };
 }
 
 /** Draws `model`'s frame onto canvas textures of `format`, with the program's own screen shader

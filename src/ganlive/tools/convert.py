@@ -6,7 +6,8 @@ any GPU and in a browser, without PyTorch.
 The folder holds `weights.bin` (fp16) and `manifest.json`: the model's layers, its dials
 (measured here, drawn by the engine on this machine's GPU), and a probe of the picture PyTorch
 draws, which a backend must match before it is trusted. `program.json` holds the compute shaders compiled from it, for the
-browser runner. Converting needs PyTorch.
+browser runner, which downloads `weights8.bin`: the same weights with 8-bit matrices
+(`engine.int8`). Converting needs PyTorch.
 """
 from __future__ import annotations
 
@@ -14,9 +15,10 @@ import sys
 import time
 from pathlib import Path
 
-from ganlive.checkpoints import PROGRAM, WEIGHTS, checkpoint_for, slug_for
+from ganlive.checkpoints import WEIGHTS, checkpoint_for, slug_for
 from ganlive.engine.compile import compile_manifest
-from ganlive.files import size_mb, write_json
+from ganlive.engine.int8 import WEIGHTS8, add_int8
+from ganlive.files import size_mb
 from ganlive.tools import add_device, parser
 
 
@@ -41,10 +43,10 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
-    program = compile_manifest(manifest, browser=True)
-    write_json(out / PROGRAM, program, indent=None)
+    program = add_int8(out, compile_manifest(manifest, browser=True))
     print(f"{checkpoint.name} -> {out}: {program['width']}x{program['height']}, "
-          f"{len(program['steps'])} steps, {size_mb(out / WEIGHTS):.1f} MB of weights, "
+          f"{len(program['steps'])} steps, {size_mb(out / WEIGHTS):.1f} MB of weights "
+          f"({size_mb(out / WEIGHTS8):.1f} MB at 8 bits), "
           f"{len((program['dials']['directions'] or {}).get('basis', []))} directions, "
           f"in {time.perf_counter() - started:.1f} s")
     return 0

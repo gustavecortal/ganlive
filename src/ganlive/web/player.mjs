@@ -8,7 +8,7 @@ import { MusicalClock } from "./clock.mjs";
 import { Layout, perModel, Settings } from "./dials.mjs";
 import { NoteFeatures } from "./midi.mjs";
 import { DEFAULT, PresetRunner } from "./presets.mjs";
-import { loadModel, screen } from "./runner.mjs";
+import { loadModel, screen, weightsFile } from "./runner.mjs";
 import { MOST_LOGGED } from "./take.mjs";
 import { SlerpWalk, stylePush } from "./walk.mjs";
 
@@ -62,7 +62,7 @@ export async function loadPlayable(device, base, name, { onProgress, onStage, fo
   };
   const program = await (await get("program.json")).json();
   if (!program.knobs || !program.screen) throw new Error(`${name}: this program predates the web player; convert it again`);
-  const model = await loadModel(device, program, await get("weights.bin"), { onProgress, onStage });
+  const model = await loadModel(device, program, await get(weightsFile(program)), { onProgress, onStage });
   // The first frame, drawn as the canvas will draw it, so the screen's pipeline is ready too.
   onStage?.("draw");
   const onto = screen(device, model, format);
