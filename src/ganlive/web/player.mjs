@@ -62,7 +62,11 @@ export async function loadPlayable(device, base, name, { onProgress, onStage, fo
   };
   const program = await (await get("program.json")).json();
   if (!program.knobs || !program.screen) throw new Error(`${name}: this program predates the web player; convert it again`);
-  const model = await loadModel(device, program, await get(weightsFile(program)), { onProgress, onStage });
+  // A host that has the program naming 8-bit weights but not the file yet (it is uploaded beside weights.bin) still
+  // plays, from the 16-bit file.
+  let weights = await fetch(`${base}${weightsFile(program)}`).catch(() => null);
+  if (program.int8 && !weights?.ok) { delete program.int8; weights = null; }
+  const model = await loadModel(device, program, weights?.ok ? weights : await get(weightsFile(program)), { onProgress, onStage });
   // The first frame, drawn as the canvas will draw it, so the screen's pipeline is ready too.
   onStage?.("draw");
   const onto = screen(device, model, format);
