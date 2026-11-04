@@ -8,7 +8,7 @@
 
 ## Play in your browser
 
-Open [the player](https://gustavecortal.com/ganlive/) in a browser with WebGPU, such as a current Chrome, Edge, Firefox or Safari. The model downloads once and runs on your graphics card, whatever its make. Drag a dial to hold it, and let go to return it to the preset. To play from a drum machine, open the Drums tab and press Connect MIDI.
+Open [the player](https://gustavecortal.com/ganlive/) in a browser with WebGPU, such as a current Chrome, Edge, Firefox or Safari. The model downloads once and runs on your graphics card, whatever its make. Drag a dial to move the picture along its direction, and double-click it to return it to the preset. To play from a drum machine, open the Drums tab and press Connect MIDI.
 
 ## Bring your own GAN
 
