@@ -3,17 +3,16 @@ message: "Please cite ganlive when using it in research, software, or creative w
 type: software
 version: "0.1.0"
 date-released: "2026-10-06"
-title: "ganlive: Plug-and-play GAN latent-space exploration in real time"
+title: "ganlive: real-time latent space exploration of GANs"
 authors:
   - family-names: Cortal
     given-names: Gustave
 abstract: >-
-  ganlive is a plug-and-play interface for exploring generative adversarial
-  network (GAN) latent spaces in real time. Load a model and ganlive automatically
-  derives dials for exploration, played by hand, with MIDI, or from drums.
-  It loads StyleGAN2 and FastGAN checkpoints and plays them on any GPU through WebGPU.
+  Real-time latent space exploration of GANs trained on my photographs, played by hand or by a
+  drum machine over MIDI. ganlive converts a FastGAN or StyleGAN2 checkpoint into WebGPU shaders,
+  derives its dials by closed-form factorization, and plays them by hand, with MIDI, or from drums.
 repository-code: "https://github.com/gustavecortal/ganlive"
-url: "https://github.com/gustavecortal/ganlive"
+url: "https://gustavecortal.com/ganlive/"
 license: MIT
 keywords:
   - generative adversarial networks
@@ -24,3 +23,21 @@ keywords:
   - StyleGAN2
   - FastGAN
   - WebGPU
+references:
+  - type: article
+    title: "Closed-Form Factorization of Latent Semantics in GANs"
+    authors:
+      - family-names: Shen
+        given-names: Yujun
+      - family-names: Zhou
+        given-names: Bolei
+    year: 2021
+    url: "https://arxiv.org/abs/2007.06600"
+  - type: article
+    title: "Towards Faster and Stabilized GAN Training for High-fidelity Few-shot Image Synthesis"
+    authors:
+      - family-names: Liu
+        given-names: Bingchen
+      - name: "et al."
+    year: 2021
+    url: "https://arxiv.org/abs/2101.04775"
