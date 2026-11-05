@@ -78,7 +78,10 @@ def _yuv_planes(out: torch.Tensor):
 
 
 def pinned(shape, dtype) -> torch.Tensor:
-    """A host buffer the card reads directly, or a plain one where pinning is refused."""
+    """A host buffer the card reads directly, or a plain one without a CUDA or Intel GPU or where pinning is
+    refused. Pinning without one crashes some builds (macOS) instead of raising."""
+    if not (torch.cuda.is_available() or (hasattr(torch, "xpu") and torch.xpu.is_available())):
+        return torch.zeros(shape, dtype=dtype)
     try:
         return torch.zeros(shape, dtype=dtype, pin_memory=True)
     except (RuntimeError, NotImplementedError):

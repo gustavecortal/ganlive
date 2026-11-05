@@ -12,7 +12,7 @@ Contents: [quick start](#quick-start), [models](#models), [controls](#the-interf
 
 ## Quick start
 
-Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires Python 3.11–3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Supports Windows, macOS, and Linux, on any GPU through Vulkan, Metal, or Direct3D 12.
 
 ```bash

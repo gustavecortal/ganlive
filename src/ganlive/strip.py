@@ -871,7 +871,7 @@ class DialPanel:
         hands = sorted({HAND_WORDS.get(s, s) for s in self.runner.hands_from.values()})
         holding = f"held by {', '.join(hands)}" if hands else "nothing held"
         learning = None if self.encoders is None else self.encoders.learning
-        third = {MODE_ROUTING: "click wires, wheel sets how hard, right-click flips",
+        third = {MODE_ROUTING: "click wires, wheel sets strength, right-click flips",
                  MODE_MODELS: "click plays a loaded model, or loads one"}.get(
                      self.mode, f"LEARN {learning}: turn a knob, l cancels" if learning
                      else f"{self.runner.preset.name}, {holding}, drag to set")
