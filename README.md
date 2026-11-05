@@ -12,7 +12,7 @@ Open [the player](https://gustavecortal.com/ganlive/) in a current Chrome, Edge,
 
 ## Bring your own GAN
 
-Convert a FastGAN or StyleGAN2 checkpoint once, with Python 3.10 to 3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/), then upload it to the Hugging Face Hub:
+Convert a FastGAN or StyleGAN2 checkpoint once, then upload it to the Hugging Face Hub:
 
 ```bash
 git clone https://github.com/gustavecortal/ganlive.git
