@@ -1,6 +1,6 @@
 # ganlive
 
-[ganlive](https://gustavecortal.com/ganlive/): real-time latent space exploration of GANs trained on [my photographs](https://huggingface.co/collections/gustavecortal/ganlive-6ac56a61006a78b3e1ff5406), played by hand or by a drum machine over MIDI. This repository converts a GAN for the browser and plays it on the desktop.
+[ganlive](https://gustavecortal.com/ganlive/): real-time latent space exploration of GANs trained on [my photographs](https://huggingface.co/collections/gustavecortal/ganlive-6ac56a61006a78b3e1ff5406), played by hand or by a drum machine over MIDI. This repository converts a GAN for the [live demo](https://gustavecortal.com/ganlive/) and plays it on the desktop.
 
 <p align="center">
   <a href="https://gustavecortal.com/ganlive/"><img src="docs/demo.webp" width="640" alt="ganlive playing lichen, a FastGAN trained on my photographs: dragging a dial moves the picture along one latent direction"></a>
